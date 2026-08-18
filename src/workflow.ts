@@ -1,6 +1,8 @@
 import { WorkflowEntrypoint, type WorkflowEvent, type WorkflowStep } from "cloudflare:workers";
 import { HfClient, type EntityKind } from "./lib/hf-api";
 import { MAX_PAGES_PER_WALK, ingestPage } from "./lib/ingest";
+import { type ResolveSummary, resolveModelFamilies } from "./lib/model-family";
+import { type ParseSummary, parseRawModels, parseRawSpaces } from "./lib/parse";
 import { addWeeks, weekStart, weekStartIso } from "./lib/time";
 
 /** Parameters accepted when starting a pipeline run. */
@@ -34,6 +36,8 @@ export interface WeeklyPipelineResult {
   weekStart: string;
   since: string;
   ingest: IngestSummary[];
+  parse?: ParseSummary;
+  resolve?: ResolveSummary;
 }
 
 /**
@@ -48,6 +52,11 @@ export interface WeeklyPipelineResult {
 const PAGE_RETRY = {
   retries: { limit: 5, delay: "30 seconds", backoff: "exponential" },
   timeout: "2 minutes",
+} as const;
+
+const SQL_RETRY = {
+  retries: { limit: 3, delay: "5 seconds", backoff: "exponential" },
+  timeout: "5 minutes",
 } as const;
 
 /**
@@ -91,11 +100,24 @@ export class WeeklyPipeline extends WorkflowEntrypoint<Env, WeeklyPipelineParams
       ingest.push(await this.walk(step, client, kind, config.runId, config.since));
     }
 
+    // ── Phase 4: parse raw → typed, then resolve model families ──────────
+    const parse = await step.do("parse", SQL_RETRY, async () => {
+      const models = await parseRawModels(this.env.DB, config.runId);
+      const spaces = await parseRawSpaces(this.env.DB, config.runId);
+      return { models, spaces } satisfies ParseSummary;
+    });
+
+    const resolve = await step.do("resolve-models", SQL_RETRY, async () => {
+      return resolveModelFamilies(this.env.DB);
+    });
+
     return {
       runId: config.runId,
       weekStart: config.weekStart,
       since: config.since,
       ingest,
+      parse,
+      resolve,
     };
   }
 
