@@ -1,3 +1,4 @@
+import { aggregateWeeklyMetrics } from "./lib/aggregate";
 import { isAuthorized } from "./lib/auth";
 import { decodeBase64Utf8 } from "./lib/snapshot";
 import { TAXONOMY_VERSION } from "./lib/taxonomy";
@@ -46,6 +47,10 @@ export default {
 
     if (url.pathname === "/api/coverage") {
       return handleCoverage(request, env, url);
+    }
+
+    if (url.pathname === "/api/admin/aggregate") {
+      return handleAggregate(request, env, url);
     }
 
     if (url.pathname === "/api/admin/stats") {
@@ -391,6 +396,47 @@ async function handleCoverage(request: Request, env: Env, url: URL): Promise<Res
     },
     { headers: CORS_HEADERS },
   );
+}
+
+/**
+ * Re-aggregates one week from data already in the database.
+ *
+ * Aggregation is pure derivation over hf_spaces / hf_classifications and
+ * writes only ~120 metric rows, so it can produce a usable dashboard from an
+ * ingest that already happened — without re-walking the Hub or re-classifying
+ * anything. Useful after a partial run, and after a taxonomy change.
+ */
+async function handleAggregate(request: Request, env: Env, url: URL): Promise<Response> {
+  if (request.method !== "POST") {
+    return Response.json({ error: "method_not_allowed" }, { status: 405, headers: { allow: "POST" } });
+  }
+  if (!isAuthorized(request, env.ADMIN_TOKEN)) {
+    return Response.json({ error: "unauthorized" }, { status: 401 });
+  }
+
+  const week = url.searchParams.get("week");
+  if (!week || !/^\d{4}-\d{2}-\d{2}$/.test(week)) {
+    return Response.json({ error: "invalid_params", detail: "week=YYYY-MM-DD required" }, { status: 400 });
+  }
+  if (weekStartIso(new Date(`${week}T00:00:00.000Z`)) !== week) {
+    return Response.json({ error: "invalid_params", detail: "week must be a Monday" }, { status: 400 });
+  }
+
+  const weekEnd = new Date(
+    new Date(`${week}T00:00:00.000Z`).getTime() + 7 * 86_400_000,
+  ).toISOString();
+
+  try {
+    const result = await aggregateWeeklyMetrics(env.DB, week, weekEnd);
+    return Response.json({ week, ...result });
+  } catch (e) {
+    // Surfaced rather than swallowed: a D1 daily-limit rejection looks
+    // identical to success from the outside otherwise.
+    return Response.json(
+      { error: "aggregate_failed", detail: String(e).slice(0, 400) },
+      { status: 500 },
+    );
+  }
 }
 
 /**
