@@ -14,7 +14,12 @@ import { RULES_PAGE_SIZE, classifyByRules, classifySpacesByRules } from "../src/
 import { dedupSpaces } from "../src/lib/enrich";
 import { parseRawSpaces } from "../src/lib/parse";
 import { insertRawRecords } from "../src/lib/raw-store";
-import { TAXONOMY_VERSION } from "../src/lib/taxonomy";
+import {
+  BATCH_CLASSIFICATION_JSON_SCHEMA,
+  CLASSIFICATION_JSON_SCHEMA,
+  TAXONOMY_VERSION,
+  clampConfidence,
+} from "../src/lib/taxonomy";
 
 const DB = env.DB;
 
@@ -299,5 +304,32 @@ describe("structured-output request shape", () => {
     expect(sent.output_config.format.schema).toBeDefined();
     expect(sent.output_config.format.json_schema).toBeUndefined();
     expect(sent.anthropic_version).toBe("bedrock-2023-05-31");
+  });
+});
+
+describe("structured-output schema compatibility", () => {
+  it("uses no JSON-Schema keyword Bedrock rejects", () => {
+    // Bedrock refuses numeric minimum/maximum outright, which failed every
+    // call at runtime while the schema looked perfectly valid locally.
+    const walk = (n: unknown, hits: string[] = []): string[] => {
+      if (!n || typeof n !== "object") return hits;
+      for (const [k, v] of Object.entries(n as Record<string, unknown>)) {
+        if (k === "minimum" || k === "maximum" || k === "exclusiveMinimum" || k === "exclusiveMaximum") {
+          hits.push(k);
+        }
+        walk(v, hits);
+      }
+      return hits;
+    };
+    expect(walk(BATCH_CLASSIFICATION_JSON_SCHEMA)).toEqual([]);
+    expect(walk(CLASSIFICATION_JSON_SCHEMA)).toEqual([]);
+  });
+
+  it("clamps a confidence the schema can no longer bound", () => {
+    expect(clampConfidence(1.4)).toBe(1);
+    expect(clampConfidence(-0.2)).toBe(0);
+    expect(clampConfidence(0.73)).toBe(0.73);
+    expect(clampConfidence("nonsense")).toBe(0);
+    expect(clampConfidence(undefined)).toBe(0);
   });
 });

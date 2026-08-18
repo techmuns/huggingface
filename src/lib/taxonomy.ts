@@ -120,26 +120,32 @@ export interface Classification {
   rationale: string;
 }
 
+/**
+ * Bedrock's structured output rejects numeric `minimum`/`maximum`
+ * ("For 'number' type, properties maximum, minimum are not supported"), so
+ * the 0–1 range cannot be enforced in the schema. Callers clamp instead —
+ * see clampConfidence.
+ */
 export const CLASSIFICATION_JSON_SCHEMA = {
   type: "object" as const,
   properties: {
     primaryUseCase: { type: "string" as const, enum: [...USE_CASES] },
-    useCaseConfidence: { type: "number" as const, minimum: 0, maximum: 1 },
+    useCaseConfidence: { type: "number" as const },
     verticals: {
       type: "array" as const,
       items: { type: "string" as const, enum: [...VERTICALS] },
     },
-    verticalsConfidence: { type: "number" as const, minimum: 0, maximum: 1 },
+    verticalsConfidence: { type: "number" as const },
     modelFamilies: {
       type: "array" as const,
       items: { type: "string" as const, enum: [...MODEL_FAMILIES] },
     },
-    familiesConfidence: { type: "number" as const, minimum: 0, maximum: 1 },
+    familiesConfidence: { type: "number" as const },
     technologies: {
       type: "array" as const,
       items: { type: "string" as const, enum: [...TECHNOLOGIES] },
     },
-    technologiesConfidence: { type: "number" as const, minimum: 0, maximum: 1 },
+    technologiesConfidence: { type: "number" as const },
     rationale: { type: "string" as const, maxLength: 200 },
   },
   required: [
@@ -175,3 +181,9 @@ export const BATCH_CLASSIFICATION_JSON_SCHEMA = {
   required: ["results"],
   additionalProperties: false,
 };
+
+/** The range the schema can no longer enforce. */
+export function clampConfidence(v: unknown): number {
+  const n = typeof v === "number" && Number.isFinite(v) ? v : 0;
+  return n < 0 ? 0 : n > 1 ? 1 : n;
+}

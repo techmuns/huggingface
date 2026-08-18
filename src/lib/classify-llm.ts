@@ -14,6 +14,7 @@ import { D1_BATCH } from "./raw-store";
 import { BedrockClient, type BedrockRequest, firstText } from "./bedrock";
 import { contentHash } from "./enrich";
 import {
+  clampConfidence,
   type Classification,
   BATCH_CLASSIFICATION_JSON_SCHEMA,
   TAXONOMY_VERSION,
@@ -245,8 +246,10 @@ export async function classifySpacesByLlm(
           JSON.stringify({ space, result }),
         );
 
-        const lowConfidence =
-          result.useCaseConfidence < 0.5 || result.verticalsConfidence < 0.5 ? 1 : 0;
+        // Clamped rather than trusted: the schema can no longer bound these,
+        // so a model returning 1.4 would otherwise sail past every threshold.
+        const useConf = clampConfidence(result.useCaseConfidence);
+        const lowConfidence = useConf < 0.5 ? 1 : 0;
 
         stmts.push(
           db
@@ -282,13 +285,13 @@ export async function classifySpacesByLlm(
               result.spaceId,
               TAXONOMY_VERSION,
               result.primaryUseCase,
-              result.useCaseConfidence,
+              clampConfidence(result.useCaseConfidence),
               JSON.stringify(result.verticals),
-              result.verticalsConfidence,
+              clampConfidence(result.verticalsConfidence),
               JSON.stringify(result.modelFamilies),
-              result.familiesConfidence,
+              clampConfidence(result.familiesConfidence),
               JSON.stringify(result.technologies),
-              result.technologiesConfidence,
+              clampConfidence(result.technologiesConfidence),
               lowConfidence,
               modelId,
               "v1",
