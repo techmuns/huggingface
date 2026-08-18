@@ -1,4 +1,10 @@
 import { WorkflowEntrypoint, type WorkflowEvent, type WorkflowStep } from "cloudflare:workers";
+import {
+  type DedupSummary,
+  type EnrichSummary,
+  dedupSpaces,
+  enrichBlindSpaces,
+} from "./lib/enrich";
 import { HfClient, type EntityKind } from "./lib/hf-api";
 import { MAX_PAGES_PER_WALK, ingestPage } from "./lib/ingest";
 import { type ResolveSummary, resolveModelFamilies } from "./lib/model-family";
@@ -38,6 +44,8 @@ export interface WeeklyPipelineResult {
   ingest: IngestSummary[];
   parse?: ParseSummary;
   resolve?: ResolveSummary;
+  enrich?: EnrichSummary;
+  dedup?: DedupSummary;
 }
 
 /**
@@ -111,6 +119,17 @@ export class WeeklyPipeline extends WorkflowEntrypoint<Env, WeeklyPipelineParams
       return resolveModelFamilies(this.env.DB);
     });
 
+    // ── Phase 5: enrich blind Spaces + dedup ─────────────────────────────
+    const enrich = await this.enrichBlind(step);
+
+    const weekEnd = addWeeks(
+      new Date(`${config.weekStart}T00:00:00.000Z`),
+      1,
+    ).toISOString();
+    const dedup = await step.do("dedup-spaces", SQL_RETRY, async () => {
+      return dedupSpaces(this.env.DB, config.since, weekEnd);
+    });
+
     return {
       runId: config.runId,
       weekStart: config.weekStart,
@@ -118,6 +137,8 @@ export class WeeklyPipeline extends WorkflowEntrypoint<Env, WeeklyPipelineParams
       ingest,
       parse,
       resolve,
+      enrich,
+      dedup,
     };
   }
 
@@ -167,5 +188,49 @@ export class WeeklyPipeline extends WorkflowEntrypoint<Env, WeeklyPipelineParams
     // saying so.
     summary.truncated = true;
     return summary;
+  }
+
+  /**
+   * Fetches READMEs for the blind subset in batches.
+   *
+   * One step per batch of 50 Spaces. Each batch makes up to 50 HTTP requests
+   * to the Hub, which fits within a rate-limit window. The Workflow's durable
+   * step state means a failure resumes at the failed batch, not from scratch.
+   */
+  private async enrichBlind(step: WorkflowStep): Promise<EnrichSummary> {
+    const totals: EnrichSummary = {
+      total: 0,
+      fetched: 0,
+      ok: 0,
+      stub: 0,
+      missing: 0,
+      error: 0,
+      skippedUnchanged: 0,
+    };
+
+    const BATCH_SIZE = 50;
+    const MAX_BATCHES = 200;
+
+    for (let batch = 0; batch < MAX_BATCHES; batch++) {
+      const result = await step.do(`enrich-batch-${batch}`, PAGE_RETRY, async () =>
+        enrichBlindSpaces({
+          db: this.env.DB,
+          batchSize: BATCH_SIZE,
+          offset: 0,
+        }),
+      );
+
+      totals.total += result.total;
+      totals.fetched += result.fetched;
+      totals.ok += result.ok;
+      totals.stub += result.stub;
+      totals.missing += result.missing;
+      totals.error += result.error;
+      totals.skippedUnchanged += result.skippedUnchanged;
+
+      if (result.total < BATCH_SIZE) break;
+    }
+
+    return totals;
   }
 }
