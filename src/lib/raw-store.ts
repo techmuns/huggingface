@@ -22,6 +22,16 @@ import type { EntityKind, HfRecord } from "./hf-api";
  * both the 100 KB statement bound and the 2 MB maximum string size, with
  * enough headroom that an unusually fat page cannot push a statement over.
  */
+/**
+ * Statements per D1 batch.
+ *
+ * Sized for the Workers **Free** plan, which allows 50 queries per Worker
+ * invocation — not the 1,000 the paid plan allows. Every batching decision in
+ * this project was originally made against the 1,000 figure, which fails on
+ * Free at exactly the stages that write per row.
+ */
+export const D1_BATCH = 40;
+
 export const RAW_INSERT_CHUNK = 250;
 
 const INSERT_SQL = `

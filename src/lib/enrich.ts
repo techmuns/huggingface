@@ -6,6 +6,7 @@
  * filter boilerplate, and hash the result.  Dedup clusters Spaces by
  * normalised title so one viral template does not manufacture a fake trend.
  */
+import { D1_BATCH } from "./raw-store";
 
 // ── README fetching ─────────────────────────────────────────────────────────
 
@@ -187,7 +188,9 @@ export async function enrichBlindSpaces(params: EnrichBatchParams): Promise<Enri
     );
   }
 
-  if (stmts.length > 0) await db.batch(stmts);
+  for (let i = 0; i < stmts.length; i += D1_BATCH) {
+    await db.batch(stmts.slice(i, i + D1_BATCH));
+  }
 
   return summary;
 }
@@ -262,7 +265,7 @@ export async function dedupSpaces(db: D1Database, weekStart: string, weekEnd: st
   }
 
   if (stmts.length > 0) {
-    const BATCH = 100;
+    const BATCH = D1_BATCH;
     for (let i = 0; i < stmts.length; i += BATCH) {
       await db.batch(stmts.slice(i, i + BATCH));
     }

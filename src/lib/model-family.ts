@@ -13,6 +13,7 @@
  * After each extraction pass, chain-following inherits from already-resolved
  * parents so that a quantized fine-tune of a Llama is still a Llama.
  */
+import { D1_BATCH } from "./raw-store";
 
 export interface BaseModelInfo {
   target: string;
@@ -98,7 +99,7 @@ export function matchFamilyByName(repoId: string): string | null {
 
 // ── Resolution pipeline ──────────────────────────────────────────────────────
 
-const UPDATE_BATCH = 100;
+const UPDATE_BATCH = D1_BATCH;
 
 async function batchExec(db: D1Database, stmts: D1PreparedStatement[]): Promise<number> {
   if (stmts.length === 0) return 0;

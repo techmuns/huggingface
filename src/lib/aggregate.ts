@@ -8,6 +8,7 @@
  * Precomputed because D1 is single-threaded and these are multi-dimensional
  * group-bys that must not run per page load.
  */
+import { D1_BATCH } from "./raw-store";
 
 import { TAXONOMY_VERSION } from "./taxonomy";
 
@@ -74,7 +75,7 @@ async function batchUpsert(db: D1Database, rows: MetricRow[]): Promise<number> {
       );
   });
 
-  const BATCH = 100;
+  const BATCH = D1_BATCH;
   let total = 0;
   for (let i = 0; i < stmts.length; i += BATCH) {
     const results = await db.batch(stmts.slice(i, i + BATCH));
@@ -614,7 +615,7 @@ async function computeDeltas(db: D1Database, weekStart: string): Promise<number>
   }
 
   let updated = 0;
-  const BATCH = 100;
+  const BATCH = D1_BATCH;
   for (let i = 0; i < updates.length; i += BATCH) {
     const results = await db.batch(updates.slice(i, i + BATCH));
     updated += results.reduce((s, r) => s + (r.meta?.changes ?? 0), 0);

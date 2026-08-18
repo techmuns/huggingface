@@ -9,6 +9,7 @@
  * Model: Haiku 4.5 — the cheapest option that handles structured output.
  * Opus 5 is reserved for the once-weekly narrative (Phase 8).
  */
+import { D1_BATCH } from "./raw-store";
 
 import { BedrockClient, type BedrockRequest, firstText } from "./bedrock";
 import { contentHash } from "./enrich";
@@ -301,7 +302,7 @@ export async function classifySpacesByLlm(
         summary.classified++;
       }
 
-      const STMT_BATCH = 100;
+      const STMT_BATCH = D1_BATCH;
       for (let i = 0; i < stmts.length; i += STMT_BATCH) {
         await db.batch(stmts.slice(i, i + STMT_BATCH));
       }

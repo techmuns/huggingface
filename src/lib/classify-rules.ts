@@ -10,6 +10,7 @@
  * metadata and is usually only inferable from prose, so it falls through to
  * Pass B far more often — that asymmetry is expected, not a gap.
  */
+import { D1_BATCH } from "./raw-store";
 
 import { contentHash } from "./enrich";
 import type {
@@ -402,7 +403,7 @@ export interface ClassifyRulesSummary {
 const LOW_CONFIDENCE_THRESHOLD = 0.6;
 
 /** Rows examined per call. Bounds the statements issued in one invocation. */
-export const RULES_PAGE_SIZE = 400;
+export const RULES_PAGE_SIZE = 120;
 
 export async function classifySpacesByRules(
   db: D1Database,
@@ -522,7 +523,7 @@ export async function classifySpacesByRules(
     summary.classified++;
   }
 
-  const BATCH = 100;
+  const BATCH = D1_BATCH;
   for (let i = 0; i < stmts.length; i += BATCH) {
     await db.batch(stmts.slice(i, i + BATCH));
   }
