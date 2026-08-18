@@ -1,4 +1,13 @@
 import { WorkflowEntrypoint, type WorkflowEvent, type WorkflowStep } from "cloudflare:workers";
+import { BedrockClient } from "./lib/bedrock";
+import {
+  type ClassifyRulesSummary,
+  classifySpacesByRules,
+} from "./lib/classify-rules";
+import {
+  type ClassifyLlmSummary,
+  classifySpacesByLlm,
+} from "./lib/classify-llm";
 import {
   type DedupSummary,
   type EnrichSummary,
@@ -46,6 +55,8 @@ export interface WeeklyPipelineResult {
   resolve?: ResolveSummary;
   enrich?: EnrichSummary;
   dedup?: DedupSummary;
+  classifyRules?: ClassifyRulesSummary;
+  classifyLlm?: ClassifyLlmSummary;
 }
 
 /**
@@ -130,6 +141,13 @@ export class WeeklyPipeline extends WorkflowEntrypoint<Env, WeeklyPipelineParams
       return dedupSpaces(this.env.DB, config.since, weekEnd);
     });
 
+    // ── Phase 6: classify Spaces ────────────────────────────────────────
+    const classifyRules = await step.do("classify-rules", SQL_RETRY, async () => {
+      return classifySpacesByRules(this.env.DB, config.since, weekEnd);
+    });
+
+    const classifyLlm = await this.classifyWithLlm(step, config.since, weekEnd);
+
     return {
       runId: config.runId,
       weekStart: config.weekStart,
@@ -139,6 +157,8 @@ export class WeeklyPipeline extends WorkflowEntrypoint<Env, WeeklyPipelineParams
       resolve,
       enrich,
       dedup,
+      classifyRules,
+      classifyLlm,
     };
   }
 
@@ -229,6 +249,55 @@ export class WeeklyPipeline extends WorkflowEntrypoint<Env, WeeklyPipelineParams
       totals.skippedUnchanged += result.skippedUnchanged;
 
       if (result.total < BATCH_SIZE) break;
+    }
+
+    return totals;
+  }
+
+  /**
+   * Classifies remaining unclassified Spaces via Bedrock LLM in batches.
+   *
+   * One step per batch of 20. Each batch makes one Bedrock API call.
+   */
+  private async classifyWithLlm(
+    step: WorkflowStep,
+    weekStart: string,
+    weekEnd: string,
+  ): Promise<ClassifyLlmSummary> {
+    const totals: ClassifyLlmSummary = {
+      total: 0,
+      classified: 0,
+      batches: 0,
+      inputTokens: 0,
+      outputTokens: 0,
+      cacheReadTokens: 0,
+      cacheCreateTokens: 0,
+      errors: 0,
+    };
+
+    const client = new BedrockClient({
+      apiKey: this.env.BEDROCK_API_KEY,
+      region: this.env.BEDROCK_REGION,
+    });
+    const modelId = this.env.BEDROCK_CLASSIFY_MODEL_ID;
+
+    const MAX_LLM_BATCHES = 200;
+
+    for (let batch = 0; batch < MAX_LLM_BATCHES; batch++) {
+      const result = await step.do(`classify-llm-batch-${batch}`, PAGE_RETRY, async () =>
+        classifySpacesByLlm(this.env.DB, client, modelId, weekStart, weekEnd),
+      );
+
+      totals.total += result.total;
+      totals.classified += result.classified;
+      totals.batches += result.batches;
+      totals.inputTokens += result.inputTokens;
+      totals.outputTokens += result.outputTokens;
+      totals.cacheReadTokens += result.cacheReadTokens;
+      totals.cacheCreateTokens += result.cacheCreateTokens;
+      totals.errors += result.errors;
+
+      if (result.total === 0) break;
     }
 
     return totals;
