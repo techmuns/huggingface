@@ -302,6 +302,17 @@ details.method li { margin-bottom: 7px; max-width: 82ch; }
 </div>
 
 <script>
+/**
+ * Always revalidate. These responses change whenever a run finishes, and a
+ * browser holding a cached empty answer showed "no week has finished
+ * processing" long after the data landed — with no way for the server to
+ * correct it, and no page-level reload that helped, because the API URL was
+ * identical either way.
+ */
+const getJSON = (path) =>
+  fetch(path, { cache: "no-store", headers: { "cache-control": "no-cache" } })
+    .then((r) => (r.ok ? r.json() : Promise.reject(new Error(String(r.status)))));
+
 const CUTS = {
   usecase:  'spaces_by_use_case',
   share:    'share_by_use_case',
@@ -496,8 +507,8 @@ async function loadWeek(week) {
   main.classList.add('stale');           // hold the previous render, never flash
   try {
     const [m, c] = await Promise.all([
-      fetch(`/api/metrics?week=${encodeURIComponent(week)}`).then(r => r.json()),
-      fetch(`/api/coverage?week=${encodeURIComponent(week)}`).then(r => r.json()),
+      getJSON(`/api/metrics?week=${encodeURIComponent(week)}`),
+      getJSON(`/api/coverage?week=${encodeURIComponent(week)}`),
     ]);
     current = { byCut: {}, coverage: c, week };
     for (const row of (m.metrics || [])) {
@@ -514,9 +525,7 @@ async function loadWeek(week) {
 async function loadNarrative(week) {
   const card = document.getElementById('narrative-card');
   try {
-    const r = await fetch(`/api/narrative?week=${encodeURIComponent(week)}`);
-    if (!r.ok) { card.hidden = true; return; }
-    const d = await r.json();
+    const d = await getJSON(`/api/narrative?week=${encodeURIComponent(week)}`);
     if (!d.narrative) { card.hidden = true; return; }
     document.getElementById('narrative-body').innerHTML =
       d.narrative.split(/\n\n+/).map(p => `<p>${esc(p)}</p>`).join('');
@@ -526,7 +535,7 @@ async function loadNarrative(week) {
 
 async function init() {
   const sel = document.getElementById('week-select');
-  const { weeks } = await fetch('/api/weeks').then(r => r.json());
+  const { weeks } = await getJSON('/api/weeks');
 
   if (!weeks?.length) {
     // Render first, THEN write the message — renderAll() repaints the tiles
