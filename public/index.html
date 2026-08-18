@@ -140,6 +140,7 @@
     <li>Primary use case is single-valued (sums to 100%). Verticals, technologies, and model families are multi-label (penetration rates, do NOT sum to 100%).</li>
     <li>Downloads are a rolling 30-day figure (a rate, not a total). Likes are cumulative.</li>
     <li>Small-denominator cuts (&lt;10) are suppressed rather than reported as wild percentages.</li>
+    <li>A percentage marked <code>*</code> sits on a denominator below the reporting threshold &mdash; shown for completeness, not to be read as a trend.</li>
     <li id="coverage-note">Coverage: loading...</li>
     <li id="taxonomy-note">Taxonomy version: loading...</li>
   </ul>
@@ -153,6 +154,12 @@ const CHART_COLORS = [
   '#6c5ce7',
 ];
 let charts = {};
+
+function esc(v) {
+  return String(v ?? '').replace(/[&<>"']/g, c => (
+    { '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;' }[c]
+  ));
+}
 
 function fmt(n) {
   if (n == null) return '—';
@@ -216,11 +223,18 @@ async function loadWeek(week) {
 
 function renderKPIs(byCut, coverage) {
   const strip = document.getElementById('kpi-strip');
-  const totalSpaces = (byCut['spaces_by_use_case'] || []).reduce((s, m) => s + m.value, 0);
+  // Summing spaces_by_use_case counts only CLASSIFIED Spaces — labelling that
+  // "New Spaces" understated the week by however much fell through to
+  // unclassified, and silently contradicted the coverage figure beside it.
+  // The unclassified-inclusive total is carried on every row as `denominator`.
+  const useCaseRows = byCut['spaces_by_use_case'] || [];
+  const classifiedSpaces = useCaseRows.reduce((s, m) => s + m.value, 0);
+  const totalSpaces = coverage.totalSpaces ?? useCaseRows[0]?.denominator ?? classifiedSpaces;
   const totalModels = (byCut['models_by_family'] || []).reduce((s, m) => s + m.value, 0);
 
   strip.innerHTML = `
     <div class="kpi"><div class="value">${fmt(totalSpaces)}</div><div class="label">New Spaces</div></div>
+    <div class="kpi"><div class="value">${fmt(classifiedSpaces)}</div><div class="label">Classified</div></div>
     <div class="kpi"><div class="value">${fmt(totalModels)}</div><div class="label">New Models</div></div>
     <div class="kpi"><div class="value">${fmt(coverage.coveragePercent)}%</div><div class="label">Coverage</div></div>
     <div class="kpi"><div class="value">${coverage.bySource?.rule ?? 0}</div><div class="label">Rule-classified</div></div>
@@ -230,9 +244,16 @@ function renderKPIs(byCut, coverage) {
 }
 
 function renderBarChart(canvasId, data, labelKey, valueKey) {
-  if (!data || !data.length) return;
   const canvas = document.getElementById(canvasId);
-  if (charts[canvasId]) charts[canvasId].destroy();
+  // Destroy before the empty check. Returning early left the previously
+  // selected week's chart painted under the new week's heading, which reads
+  // as data rather than as an absence.
+  if (charts[canvasId]) { charts[canvasId].destroy(); delete charts[canvasId]; }
+  if (!data || !data.length) {
+    const ctx = canvas.getContext('2d');
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    return;
+  }
 
   const sorted = [...data].sort((a, b) => b[valueKey] - a[valueKey]);
   charts[canvasId] = new Chart(canvas, {
@@ -264,27 +285,35 @@ function renderEngagement(data) {
   tbody.innerHTML = '';
   for (const m of (data || [])) {
     const tr = document.createElement('tr');
-    tr.innerHTML = `<td>${m.dimension.replace(/_/g, ' ')}</td><td>${fmt(m.value)}</td><td>${deltaHtml(m.delta_1w)}</td>`;
+    tr.innerHTML = `<td>${esc(m.dimension.replace(/_/g, ' '))}</td><td>${fmt(m.value)}</td><td>${deltaHtml(m.delta_1w)}</td>`;
     tbody.appendChild(tr);
   }
 }
 
 function renderFamilyByUseCase(data) {
-  if (!data || !data.length) return;
+  const thead0 = document.querySelector('#family-usecase-table thead tr');
+  const tbody0 = document.querySelector('#family-usecase-table tbody');
+  if (!data || !data.length) {
+    thead0.innerHTML = '<th>Use Case</th>';
+    tbody0.innerHTML = '<tr><td>No data for this week</td></tr>';
+    return;
+  }
   const families = [...new Set(data.map(d => d.sub_dimension))].sort();
   const usecases = [...new Set(data.map(d => d.dimension))].sort();
 
   const thead = document.querySelector('#family-usecase-table thead tr');
-  thead.innerHTML = '<th>Use Case</th>' + families.map(f => `<th>${f}</th>`).join('');
+  thead.innerHTML = '<th>Use Case</th>' + families.map(f => `<th>${esc(f)}</th>`).join('');
 
   const tbody = document.querySelector('#family-usecase-table tbody');
   tbody.innerHTML = '';
   for (const uc of usecases) {
     const tr = document.createElement('tr');
-    let html = `<td>${uc}</td>`;
+    let html = `<td>${esc(uc)}</td>`;
     for (const f of families) {
       const m = data.find(d => d.dimension === uc && d.sub_dimension === f);
-      html += `<td>${m ? fmt(m.value) + '%' : '—'}</td>`;
+      // A suppressed cell has a denominator too small to report. Printing the
+      // bare percentage made "2 of 3 Spaces" look like a solid 66%.
+      html += `<td>${m ? (m.suppressed ? `<span class="delta">${fmt(m.value)}% *</span>` : fmt(m.value) + '%') : '—'}</td>`;
     }
     tr.innerHTML = html;
     tbody.appendChild(tr);
@@ -299,7 +328,7 @@ async function loadNarrative(week) {
     if (data.narrative) {
       document.getElementById('narrative-section').style.display = '';
       document.getElementById('narrative-text').innerHTML =
-        data.narrative.split('\n\n').map(p => `<p>${p}</p>`).join('');
+        data.narrative.split('\n\n').map(p => `<p>${esc(p)}</p>`).join('');
     } else {
       document.getElementById('narrative-section').style.display = 'none';
     }

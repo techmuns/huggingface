@@ -37,7 +37,12 @@ export async function fetchReadme(
   }
 
   if (!response.ok) {
-    return { text: null, hash: null, status: "missing" };
+    // 404/410 mean the README genuinely is not there — terminal. A 429 or a
+    // 5xx means the Hub was busy, which says nothing about the Space; marking
+    // those 'missing' retired them permanently on the first rate-limit blip
+    // and quietly shrank the enrichable population.
+    const terminal = response.status === 404 || response.status === 410;
+    return { text: null, hash: null, status: terminal ? "missing" : "error" };
   }
 
   const raw = await response.text();
@@ -79,6 +84,8 @@ export async function contentHash(text: string): Promise<string> {
 // ── Batch enrichment ────────────────────────────────────────────────────────
 
 export interface EnrichSummary {
+  /** True if the batch cap was hit before the queue drained. */
+  truncated?: boolean;
   total: number;
   fetched: number;
   ok: number;
@@ -92,6 +99,22 @@ export interface EnrichBatchParams {
   db: D1Database;
   batchSize?: number;
   offset?: number;
+}
+
+/**
+ * Clears transient README failures so the next run retries them.
+ *
+ * Within a run an 'error' row is held out of the queue so a persistently
+ * unreachable Space cannot spin the batch loop. That is only safe if the flag
+ * is eventually cleared — otherwise one rate-limited minute permanently
+ * retires those Spaces from enrichment, and the blind half quietly shrinks
+ * every week. Called once at the start of the enrich phase.
+ */
+export async function resetTransientReadmeErrors(db: D1Database): Promise<number> {
+  const result = await db
+    .prepare("UPDATE hf_spaces SET readme_status = NULL WHERE readme_status = 'error'")
+    .run();
+  return result.meta?.changes ?? 0;
 }
 
 export async function enrichBlindSpaces(params: EnrichBatchParams): Promise<EnrichSummary> {
@@ -185,7 +208,7 @@ export async function dedupSpaces(db: D1Database, weekStart: string, weekEnd: st
 
   const clusters = new Map<string, string[]>();
   for (const row of rows.results) {
-    const key = clusterKey(row.title, row.author, row.linked_models);
+    const key = clusterKey(row.space_id, row.title, row.linked_models);
     const group = clusters.get(key);
     if (group) {
       group.push(row.space_id);
@@ -198,17 +221,12 @@ export async function dedupSpaces(db: D1Database, weekStart: string, weekEnd: st
   let clustered = 0;
   let clusterCount = 0;
 
+  // Singletons are the overwhelming majority and already hold the right state:
+  // is_cluster_primary defaults to 1, and one bulk statement below backfills
+  // dedup_cluster_id for them. Writing a row each was ~7,000 statements inside
+  // a single Workflow step, well past D1's 1,000-queries-per-invocation limit.
   for (const [, members] of clusters) {
-    if (members.length < 2) {
-      stmts.push(
-        db
-          .prepare(
-            `UPDATE hf_spaces SET dedup_cluster_id = ?1, is_cluster_primary = 1 WHERE space_id = ?2`,
-          )
-          .bind(members[0], members[0]),
-      );
-      continue;
-    }
+    if (members.length < 2) continue;
 
     clusterCount++;
     const primary = members[0]!;
@@ -231,14 +249,39 @@ export async function dedupSpaces(db: D1Database, weekStart: string, weekEnd: st
     }
   }
 
+  // Every Space not in a real cluster is its own cluster. One statement rather
+  // than one per row.
+  await db
+    .prepare(
+      `UPDATE hf_spaces
+          SET dedup_cluster_id = space_id, is_cluster_primary = 1
+        WHERE created_at >= ?1 AND created_at < ?2
+          AND dedup_cluster_id IS NULL`,
+    )
+    .bind(weekStart, weekEnd)
+    .run();
+
   return { clustered, clusters: clusterCount };
 }
 
-function clusterKey(title: string | null, author: string | null, linkedModelsJson: string): string {
+function clusterKey(
+  spaceId: string,
+  title: string | null,
+  linkedModelsJson: string,
+): string {
   const norm = normalizeTitle(title ?? "");
   let models: string[] = [];
   try {
-    models = JSON.parse(linkedModelsJson);
-  } catch { /* empty */ }
-  return `${norm}|${models.sort().join(",")}`;
+    const parsed = JSON.parse(linkedModelsJson);
+    if (Array.isArray(parsed)) models = parsed.filter((m) => typeof m === "string");
+  } catch { /* malformed JSON is treated as no linked models */ }
+
+  // A Space with no title and no linked model has nothing to be a duplicate
+  // *of*. Keying it on the empty string collapsed every such Space into a
+  // single cluster and suppressed all but one of them from every metric —
+  // and the untitled ones are a large share of the blind half. Fall back to
+  // the id so it clusters only with itself.
+  if (norm === "" && models.length === 0) return `id:${spaceId}`;
+
+  return `${norm}|${[...models].sort().join(",")}`;
 }

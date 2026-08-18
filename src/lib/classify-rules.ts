@@ -118,7 +118,10 @@ const USE_CASE_MODEL_PATTERNS: ReadonlyArray<[UseCase, RegExp]> = [
   ["image-generation", /diffusion|\bsdxl\b|\bflux\b|dall-?e|kandinsky|playground-v/i],
   ["3d-gaming", /shap-?e|point-?e|triposr|\bhunyuan3d\b|zero123/i],
   ["document-ai", /donut|layoutlm|\bnougat\b|\btrocr\b|surya|\bgot-ocr\b/i],
-  ["coding", /coder|codellama|starcoder|deepseek-coder|codegen|codet5/i],
+  // `coder` unanchored also matched cross-encoder, xdecoder and vocoder
+  // repos, which are not coding tools. Require a boundary that a preceding
+  // "en"/"de"/"vo" cannot satisfy.
+  ["coding", /\\bcoder\\b|codellama|starcoder|deepseek-coder|codegen|codet5/i],
   ["search-research", /\bbge\b|\be5-\b|gte-|sentence-transformers|colbert|reranker/i],
 ];
 
@@ -141,14 +144,18 @@ const USE_CASE_SLUG_PATTERNS: ReadonlyArray<[UseCase, RegExp]> = [
   ["music-generation", /\bmusic\b|\bsong\b|melody|audiocraft/i],
   ["video-generation", /video|\banimate\b|\bsora\b/i],
   ["image-generation", /diffusion|\bsdxl\b|\bflux\b|image[-_]?gen|text2image|txt2img|inpaint|upscal/i],
-  ["3d-gaming", /\b3d\b|\bgame\b|\bunity\b|mesh|render/i],
+  // `render` matched text-rendering, markdown-renderer and pdf-renderer, and
+  // this entry sits above document-ai and coding, so it swallowed them.
+  ["3d-gaming", /\b3d\b|\bgame\b|\bunity\b|\bmesh\b|\brender(er|ing)?\b(?!.*\b(text|markdown|latex|pdf|html)\b)/i],
   ["robotics", /robot|\bdrone\b|embodied/i],
   ["document-ai", /\bocr\b|\bpdf\b|document|invoice|resume|\bdocs?\b/i],
-  ["coding", /\bcode\b|coder|\bsql\b|\bide\b|program|debug|devtool/i],
+  ["coding", /\bcode\b|\bcoder\b|\bsql\b|\bide\b|program|debug|devtool/i],
   ["search-research", /search|retriev|\brag\b|research|\bwiki\b/i],
   ["data-analysis", /analytic|dashboard|visuali[sz]|\bcsv\b|\bbi\b|chart|plot/i],
   ["scientific-tools", /protein|molecul|chem|\bbio\b|genom|climate|physics/i],
-  ["education", /tutor|teach|learn|course|quiz|study/i],
+  // Bare `learn` matched "machine learning", "deep learning" and
+  // "reinforcement learning" — none of which are education Spaces.
+  ["education", /\\btutor|\\bteach|\\blearn(ing)?\\b(?<!(machine|deep|reinforcement|federated|transfer|ensemble)[- ]learning)|\\bcourse\\b|\\bquiz\\b|\\bstudy\\b/i],
   ["chat-assistant", /\bchat|\bbot\b|assistant|\bllm\b|conversat/i],
 ];
 
@@ -310,14 +317,20 @@ const VERTICAL_PATTERNS: ReadonlyArray<[Vertical, RegExp]> = [
   ["cybersecurity", /\bsecurity\b|\bcyber|\bmalware\b|\bphishing\b|\bvulnerabilit|\bthreat\b|\bpentest/i],
   ["ecommerce-retail", /\becommerce\b|\be-commerce\b|\bretail\b|\bshopping\b|\bproduct catalog|\bstorefront\b/i],
   ["industrial-manufacturing", /\bmanufactur|\bindustrial\b|\bfactory\b|\bsupply chain\b|\blogistics\b|\bdefect detect/i],
-  ["media-entertainment", /\bmovie\b|\bfilm\b|\bmusic\b|\bentertainment\b|\bpodcast\b|\bstreaming\b|\bcreative\b|\bart\b/i],
+  ["media-entertainment", /\bmovie\b|\bfilm\b|\bmusic\b|\bentertainment\b|\bpodcast\b|\bstreaming\b|\bcreative\b|(?<!state[- ]of[- ]the[- ])\bart\b/i],
   ["education", /\beducation\b|\btutor|\bteach|\bstudent\b|\bcourse\b|\bclassroom\b|\bhomework\b/i],
   ["scientific-research", /\bscientific\b|\bresearch\b|\bacademi|\bprotein\b|\bgenom|\bchemistry\b|\bphysics\b|\bbiolog/i],
   ["enterprise-productivity", /\benterprise\b|\bproductivity\b|\bworkflow\b|\bcrm\b|\berp\b|\bhr\b|\brecruit|\bmeeting\b/i],
 ];
 
 function verticalsFrom(s: SpaceSignals): Vertical[] {
-  const text = textOf(s);
+  // Tags are included deliberately. Vertical is the dimension least often
+  // stated in prose, so the few tags that do declare one — `medical`,
+  // `finance`, `legal` — are the strongest signal available. Reading only the
+  // free text meant a Space tagged `medical` was routed to the
+  // scientific-tools use case and then recorded with no vertical at all,
+  // losing exactly the healthcare activity the brief asks us to track.
+  const text = `${textOf(s)} ${s.tags.join(" ").toLowerCase()}`;
   const found = new Set<Vertical>();
   for (const [vertical, re] of VERTICAL_PATTERNS) {
     if (re.test(text)) found.add(vertical);
@@ -379,6 +392,8 @@ export function classifyByRules(signals: SpaceSignals): Classification | null {
 // ── Batch DB classify ───────────────────────────────────────────────────────
 
 export interface ClassifyRulesSummary {
+  /** Last space_id examined, or null when the queue is drained. */
+  nextCursor?: string | null;
   total: number;
   classified: number;
   deferredToLlm: number;
@@ -386,13 +401,28 @@ export interface ClassifyRulesSummary {
 
 const LOW_CONFIDENCE_THRESHOLD = 0.6;
 
+/** Rows examined per call. Bounds the statements issued in one invocation. */
+export const RULES_PAGE_SIZE = 400;
+
 export async function classifySpacesByRules(
   db: D1Database,
   weekStart: string,
   weekEnd: string,
+  cursor: string = "",
+  pageSize: number = RULES_PAGE_SIZE,
 ): Promise<ClassifyRulesSummary> {
-  const summary: ClassifyRulesSummary = { total: 0, classified: 0, deferredToLlm: 0 };
+  const summary: ClassifyRulesSummary = {
+    total: 0, classified: 0, deferredToLlm: 0, nextCursor: null,
+  };
 
+  // Paged by space_id rather than by an unbounded scan: this issued one INSERT
+  // per classified Space inside a single Workflow step, and a week is several
+  // thousand Spaces — far past D1's 1,000-queries-per-invocation limit.
+  //
+  // The cursor is on space_id, not an OFFSET, because Spaces the rules cannot
+  // settle are deliberately left unclassified for Pass B. They therefore stay
+  // in this queue, and an offset-free LIMIT would re-read the same
+  // unclassifiable rows forever.
   const rows = await db
     .prepare(
       `SELECT s.space_id, s.title, s.short_description, s.sdk,
@@ -402,9 +432,11 @@ export async function classifySpacesByRules(
          ON c.space_id = s.space_id AND c.taxonomy_version = ?1
        WHERE s.created_at >= ?2 AND s.created_at < ?3
          AND c.id IS NULL
-       ORDER BY s.space_id`,
+         AND s.space_id > ?4
+       ORDER BY s.space_id
+       LIMIT ?5`,
     )
-    .bind(TAXONOMY_VERSION, weekStart, weekEnd)
+    .bind(TAXONOMY_VERSION, weekStart, weekEnd, cursor, pageSize)
     .all<{
       space_id: string;
       title: string | null;
@@ -494,6 +526,13 @@ export async function classifySpacesByRules(
   for (let i = 0; i < stmts.length; i += BATCH) {
     await db.batch(stmts.slice(i, i + BATCH));
   }
+
+  // A short page means the queue is drained; otherwise hand back the last id
+  // so the next step resumes past it, including past rows left for Pass B.
+  summary.nextCursor =
+    rows.results.length < pageSize
+      ? null
+      : rows.results[rows.results.length - 1]!.space_id;
 
   return summary;
 }

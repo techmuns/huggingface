@@ -504,6 +504,12 @@ async function computeDeltas(db: D1Database, weekStart: string): Promise<number>
 
   if (!history.results?.length) return 0;
 
+  // Which weeks were aggregated at all. This is the difference between "this
+  // dimension had no Spaces that week" (a real zero) and "that week was never
+  // computed" (unknown). Dimensions are only emitted when they have at least
+  // one Space, so absence of a row cannot be read on its own.
+  const aggregatedWeeks = new Set(history.results.map((r) => r.week_start));
+
   // key -> weekStart -> row
   const series = new Map<
     string,
@@ -533,9 +539,13 @@ async function computeDeltas(db: D1Database, weekStart: string): Promise<number>
 
     for (let i = 0; i < span; i++) {
       const wk = shiftWeeks(endWeek, -i);
+      if (!aggregatedWeeks.has(wk)) continue;
+      // The week was computed, so a missing row means this dimension genuinely
+      // had no Spaces: a zero, which must stay in the pool. Dropping it would
+      // let a quiet week vanish from the denominator and overstate the rate.
+      present++;
       const row = weeks.get(wk);
       if (!row) continue;
-      present++;
       if (isCount) {
         numerator += row.value;
       } else {
@@ -577,7 +587,11 @@ async function computeDeltas(db: D1Database, weekStart: string): Promise<number>
       // change off a near-empty base is worse than no number at all. Both
       // cases stay null so the page can say "not enough history" rather than
       // print a spurious swing.
-      if (previous.present === 0) continue;
+      // Both windows must be fully covered. Comparing a complete 12-week
+      // current window against a previous window that only has 1 week of
+      // history manufactures a ~12x rise out of perfectly flat activity —
+      // the single most misleading number this file could publish.
+      if (current.present < span || previous.present < span) continue;
       if (previous.denominator < MIN_DENOMINATOR) continue;
       if (previous.value === 0) continue;
 

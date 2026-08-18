@@ -15,6 +15,7 @@ import {
   type EnrichSummary,
   dedupSpaces,
   enrichBlindSpaces,
+  resetTransientReadmeErrors,
 } from "./lib/enrich";
 import { HfClient, type EntityKind } from "./lib/hf-api";
 import { MAX_PAGES_PER_WALK, ingestPage } from "./lib/ingest";
@@ -79,6 +80,12 @@ const PAGE_RETRY = {
   retries: { limit: 5, delay: "30 seconds", backoff: "exponential" },
   timeout: "2 minutes",
 } as const;
+
+/**
+ * Cap on rule-classification pages. 400 Spaces a page, so this covers a
+ * 26-week backfill at the measured ~7k Spaces/week with room to spare.
+ */
+const MAX_RULE_PAGES = 500;
 
 const SQL_RETRY = {
   retries: { limit: 3, delay: "5 seconds", backoff: "exponential" },
@@ -145,14 +152,38 @@ export class WeeklyPipeline extends WorkflowEntrypoint<Env, WeeklyPipelineParams
       new Date(`${config.weekStart}T00:00:00.000Z`),
       1,
     ).toISOString();
-    const dedup = await step.do("dedup-spaces", SQL_RETRY, async () => {
-      return dedupSpaces(this.env.DB, config.since, weekEnd);
-    });
+    // Dedup is defined within a week: "12.8% of new Spaces share a normalised
+    // title within 24h". Running it once across a whole 12-week backfill
+    // window clustered Spaces created months apart, so weeks 2..N undercounted
+    // and disagreed with the same week computed by the weekly cron.
+    const dedup: DedupSummary = { clustered: 0, clusters: 0 };
+    for (let i = config.backfillWeeks - 1; i >= 0; i--) {
+      const target = weekStartIso(addWeeks(new Date(`${config.weekStart}T00:00:00.000Z`), -i));
+      const targetEnd = addWeeks(new Date(`${target}T00:00:00.000Z`), 1).toISOString();
+      const partial = await step.do(`dedup-${target}`, SQL_RETRY, async () =>
+        dedupSpaces(this.env.DB, `${target}T00:00:00.000Z`, targetEnd),
+      );
+      dedup.clustered += partial.clustered;
+      dedup.clusters += partial.clusters;
+    }
 
     // ── Phase 6: classify Spaces ────────────────────────────────────────
-    const classifyRules = await step.do("classify-rules", SQL_RETRY, async () => {
-      return classifySpacesByRules(this.env.DB, config.since, weekEnd);
-    });
+    const classifyRules: ClassifyRulesSummary = {
+      total: 0, classified: 0, deferredToLlm: 0, nextCursor: null,
+    };
+    let rulesCursor = "";
+    for (let page = 0; page < MAX_RULE_PAGES; page++) {
+      const part: ClassifyRulesSummary = await step.do(
+        `classify-rules-${page}`,
+        SQL_RETRY,
+        async () => classifySpacesByRules(this.env.DB, config.since, weekEnd, rulesCursor),
+      );
+      classifyRules.total += part.total;
+      classifyRules.classified += part.classified;
+      classifyRules.deferredToLlm += part.deferredToLlm;
+      if (!part.nextCursor) break;
+      rulesCursor = part.nextCursor;
+    }
 
     const classifyLlm = await this.classifyWithLlm(step, config.since, weekEnd);
 
@@ -281,6 +312,12 @@ export class WeeklyPipeline extends WorkflowEntrypoint<Env, WeeklyPipelineParams
       skippedUnchanged: 0,
     };
 
+    // Clear last run's transient failures so they get another attempt; they
+    // are held out of the queue only for the duration of a single run.
+    await step.do("enrich-reset-errors", SQL_RETRY, async () =>
+      resetTransientReadmeErrors(this.env.DB),
+    );
+
     const BATCH_SIZE = 50;
     const MAX_BATCHES = 200;
 
@@ -301,9 +338,12 @@ export class WeeklyPipeline extends WorkflowEntrypoint<Env, WeeklyPipelineParams
       totals.error += result.error;
       totals.skippedUnchanged += result.skippedUnchanged;
 
-      if (result.total < BATCH_SIZE) break;
+      if (result.total < BATCH_SIZE) return totals;
     }
 
+    // Same contract as walk(): a run that hit the cap covered less than the
+    // queue, and every downstream figure is low without saying so.
+    totals.truncated = true;
     return totals;
   }
 
@@ -353,9 +393,10 @@ export class WeeklyPipeline extends WorkflowEntrypoint<Env, WeeklyPipelineParams
       // A short batch means the queue is drained. Each call classifies the
       // Spaces it pulled, so the next call's "unclassified" filter excludes
       // them and the queue advances without an offset cursor.
-      if (result.total < LLM_BATCH_SIZE) break;
+      if (result.total < LLM_BATCH_SIZE) return totals;
     }
 
+    totals.truncated = true;
     return totals;
   }
 }

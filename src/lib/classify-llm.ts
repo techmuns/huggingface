@@ -10,7 +10,7 @@
  * Opus 5 is reserved for the once-weekly narrative (Phase 8).
  */
 
-import { BedrockClient, type BedrockContent, type BedrockRequest } from "./bedrock";
+import { BedrockClient, type BedrockRequest, firstText } from "./bedrock";
 import { contentHash } from "./enrich";
 import {
   type Classification,
@@ -35,10 +35,10 @@ For each dimension, provide a confidence score (0.0–1.0).
 Write a one-line rationale (max 200 chars) explaining your classification.
 
 Rules:
-- primaryUseCase must be exactly ONE value. Use "model-demo" for Spaces that showcase a model without a clear application use case. Use "other" only as last resort.
+- primaryUseCase must be exactly ONE value, chosen from the list above. Use "other" only as a last resort.
 - verticals should be empty if no specific industry vertical is evident.
 - modelFamilies should reflect models linked to the Space.
-- technologies should reflect the SDK and frameworks used.
+- technologies are AI techniques (RAG, agentic, multimodal, quantized, MoE, long context...), NOT the build framework. Do not infer a technology from the SDK: gradio/streamlit/docker/static are recorded separately and are not technologies.
 - Confidence should reflect certainty: 0.9+ for clear cases, 0.5-0.8 for uncertain, below 0.5 for guesses.`;
 
 // ── Types ───────────────────────────────────────────────────────────────────
@@ -67,6 +67,8 @@ interface BatchResult {
 }
 
 export interface ClassifyLlmSummary {
+  /** True if the batch cap was hit before every Space was classified. */
+  truncated?: boolean;
   total: number;
   classified: number;
   batches: number;
@@ -106,7 +108,9 @@ async function classifyBatch(
 
   const request: BedrockRequest = {
     anthropic_version: "bedrock-2023-05-31",
-    max_tokens: 4096,
+    // ~20 results x 9 fields each. 4096 truncated mid-JSON, which surfaced as
+    // an opaque JSON.parse failure that took the whole batch down.
+    max_tokens: 16384,
     system: [
       {
         type: "text",
@@ -138,8 +142,7 @@ async function classifyBatch(
 
   const response = await client.invoke(modelId, request);
 
-  const text = response.content[0]?.text;
-  if (!text) throw new Error("Empty Bedrock response");
+  const text = firstText(response);
 
   const parsed = JSON.parse(text) as { results: BatchResult[] };
 

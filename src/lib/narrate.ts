@@ -7,7 +7,7 @@
  * tiny base.
  */
 
-import { BedrockClient, type BedrockRequest } from "./bedrock";
+import { BedrockClient, type BedrockRequest, firstText } from "./bedrock";
 import { TAXONOMY_VERSION } from "./taxonomy";
 
 export interface NarrateSummary {
@@ -55,7 +55,10 @@ export async function narrateWeek(
 
   const request: BedrockRequest = {
     anthropic_version: "bedrock-2023-05-31",
-    max_tokens: 2048,
+    // Generous because the narration model runs adaptive thinking, and the
+    // thinking tokens come out of this same budget before a word of prose is
+    // written. 2048 was enough to be spent entirely on reasoning.
+    max_tokens: 8192,
     system: [
       {
         type: "text",
@@ -78,7 +81,7 @@ export async function narrateWeek(
 
   const response = await client.invoke(modelId, request);
 
-  const narrative = response.content[0]?.text ?? "";
+  const narrative = firstText(response);
 
   return {
     narrative,

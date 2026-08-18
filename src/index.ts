@@ -341,26 +341,34 @@ async function handleCoverage(request: Request, env: Env, url: URL): Promise<Res
     .bind(TAXONOMY_VERSION, weekStart, weekEnd)
     .first<{ cnt: number }>();
 
-  const ruleCount = await env.DB.prepare(
-    `SELECT COUNT(*) AS cnt FROM hf_classifications
-     WHERE taxonomy_version = ?1 AND source_kind = 'rule'`,
+  // Joined to hf_spaces and bounded by the week. hf_classifications has no
+  // week column, so counting it alone returned lifetime totals under a
+  // per-week response — the funnel breakdown grew every run and stopped
+  // summing to the week's classified figure directly above it.
+  const bySource = await env.DB.prepare(
+    `SELECT c.source_kind AS kind, COUNT(*) AS cnt
+       FROM hf_classifications c
+       JOIN hf_spaces s ON s.space_id = c.space_id
+      WHERE c.taxonomy_version = ?1
+        AND s.created_at >= ?2 AND s.created_at < ?3
+        AND s.is_cluster_primary = 1
+      GROUP BY c.source_kind`,
   )
-    .bind(TAXONOMY_VERSION)
-    .first<{ cnt: number }>();
-
-  const modelCount = await env.DB.prepare(
-    `SELECT COUNT(*) AS cnt FROM hf_classifications
-     WHERE taxonomy_version = ?1 AND source_kind = 'model'`,
-  )
-    .bind(TAXONOMY_VERSION)
-    .first<{ cnt: number }>();
+    .bind(TAXONOMY_VERSION, weekStart, weekEnd)
+    .all<{ kind: string; cnt: number }>();
 
   const lowConfidence = await env.DB.prepare(
-    `SELECT COUNT(*) AS cnt FROM hf_classifications
-     WHERE taxonomy_version = ?1 AND low_confidence = 1`,
+    `SELECT COUNT(*) AS cnt
+       FROM hf_classifications c
+       JOIN hf_spaces s ON s.space_id = c.space_id
+      WHERE c.taxonomy_version = ?1 AND c.low_confidence = 1
+        AND s.created_at >= ?2 AND s.created_at < ?3
+        AND s.is_cluster_primary = 1`,
   )
-    .bind(TAXONOMY_VERSION)
+    .bind(TAXONOMY_VERSION, weekStart, weekEnd)
     .first<{ cnt: number }>();
+
+  const sourceCounts = new Map((bySource.results ?? []).map((r) => [r.kind, r.cnt]));
 
   const totalCount = total?.cnt ?? 0;
   const classifiedCount = classified?.cnt ?? 0;
@@ -372,8 +380,8 @@ async function handleCoverage(request: Request, env: Env, url: URL): Promise<Res
       classifiedSpaces: classifiedCount,
       coveragePercent: totalCount > 0 ? (classifiedCount / totalCount) * 100 : null,
       bySource: {
-        rule: ruleCount?.cnt ?? 0,
-        model: modelCount?.cnt ?? 0,
+        rule: sourceCounts.get("rule") ?? 0,
+        model: sourceCounts.get("model") ?? 0,
       },
       lowConfidence: lowConfidence?.cnt ?? 0,
     },
