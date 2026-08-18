@@ -1,4 +1,5 @@
 import { isAuthorized } from "./lib/auth";
+import { decodeBase64Utf8 } from "./lib/snapshot";
 import { TAXONOMY_VERSION } from "./lib/taxonomy";
 import { isoWeekLabel, weekStartIso } from "./lib/time";
 import type { WeeklyPipelineParams } from "./workflow";
@@ -294,7 +295,10 @@ async function handleNarrative(request: Request, env: Env, url: URL): Promise<Re
     }
 
     const data = (await res.json()) as { content: string };
-    const decoded = JSON.parse(atob(data.content));
+    // Mirror of the publish-side encoding: atob alone yields Latin-1 code
+    // units, so any multi-byte character in the narrative or a Space title
+    // would come back mojibake.
+    const decoded = JSON.parse(decodeBase64Utf8(data.content));
     return Response.json(
       { weekStart, narrative: decoded.narrative ?? null },
       { headers: CORS_HEADERS },

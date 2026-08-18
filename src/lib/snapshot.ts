@@ -89,13 +89,43 @@ export async function buildSnapshot(
   };
 }
 
+/**
+ * Base64 for the GitHub contents API, UTF-8 safe.
+ *
+ * btoa() is defined over Latin-1 and throws on any code point above U+00FF.
+ * This payload carries LLM-written prose (em dashes, curly quotes) and Space
+ * titles that are routinely CJK or emoji, so encoding the string directly
+ * would throw on the publish step of essentially every real week. Encoding to
+ * UTF-8 bytes first and mapping those into the Latin-1 range keeps btoa in the
+ * domain it actually supports.
+ */
+export function base64Utf8(text: string): string {
+  const bytes = new TextEncoder().encode(text);
+  let binary = "";
+  // Chunked rather than String.fromCharCode(...bytes): a snapshot is tens of
+  // KB, and spreading that many arguments risks a call-stack overflow.
+  const CHUNK = 0x8000;
+  for (let i = 0; i < bytes.length; i += CHUNK) {
+    binary += String.fromCharCode(...bytes.subarray(i, i + CHUNK));
+  }
+  return btoa(binary);
+}
+
+/** Inverse of base64Utf8, for reading a snapshot back out of GitHub. */
+export function decodeBase64Utf8(encoded: string): string {
+  // GitHub wraps its base64 payloads at 60 characters; atob rejects newlines.
+  const binary = atob(encoded.replace(/\s/g, ""));
+  const bytes = Uint8Array.from(binary, (c) => c.charCodeAt(0));
+  return new TextDecoder().decode(bytes);
+}
+
 export async function commitSnapshot(
   payload: SnapshotPayload,
   repo: string,
   token: string,
 ): Promise<SnapshotSummary> {
   const path = `data/weeks/${payload.weekLabel}.json`;
-  const content = btoa(JSON.stringify(payload, null, 2));
+  const content = base64Utf8(JSON.stringify(payload, null, 2));
 
   const existingRes = await fetch(
     `https://api.github.com/repos/${repo}/contents/${path}`,
