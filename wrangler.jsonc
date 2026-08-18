@@ -13,16 +13,14 @@
   // D1 — the single working store (SQLite). Raw records, typed entities,
   // classifications and precomputed weekly metrics all live here.
   //
-  // Before the first `wrangler dev`/`deploy` against a real account, run:
-  //     npx wrangler d1 create huggingface-activity
-  // and paste the returned id over the placeholder below. Local dev and the
-  // vitest pool use a per-project simulated D1 and ignore this value.
+  // Local dev and the vitest pool use a per-project simulated D1 and ignore
+  // the id below; it matters only for `--remote` and for deploys.
   // ---------------------------------------------------------------------
   "d1_databases": [
     {
       "binding": "DB",
       "database_name": "huggingface-activity",
-      "database_id": "00000000-0000-0000-0000-000000000000",
+      "database_id": "c9e602d6-86fd-45e6-aae9-42e6077b61e4",
       "migrations_dir": "migrations"
     }
   ],
