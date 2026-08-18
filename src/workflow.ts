@@ -87,6 +87,16 @@ const PAGE_RETRY = {
  */
 const MAX_RULE_PAGES = 500;
 
+/**
+ * Step budget.
+ *
+ * Cloudflare caps a Workflow instance at 10,000 steps on the paid plan (this
+ * project requires paid regardless). Worst case for the maximum 26-week
+ * backfill: ~1,800 ingest pages + 1,200 enrichment batches + 500 rule pages +
+ * 3,000 classification batches + ~60 per-week and terminal steps, which stays
+ * inside that ceiling. The per-stage caps below are what hold it there, and
+ * each one reports `truncated` rather than quietly covering less.
+ */
 const SQL_RETRY = {
   retries: { limit: 3, delay: "5 seconds", backoff: "exponential" },
   timeout: "5 minutes",
@@ -146,7 +156,7 @@ export class WeeklyPipeline extends WorkflowEntrypoint<Env, WeeklyPipelineParams
     });
 
     // ── Phase 5: enrich blind Spaces + dedup ─────────────────────────────
-    const enrich = await this.enrichBlind(step);
+    const enrich = await this.enrichBlind(step, config.backfillWeeks);
 
     const weekEnd = addWeeks(
       new Date(`${config.weekStart}T00:00:00.000Z`),
@@ -185,7 +195,7 @@ export class WeeklyPipeline extends WorkflowEntrypoint<Env, WeeklyPipelineParams
       rulesCursor = part.nextCursor;
     }
 
-    const classifyLlm = await this.classifyWithLlm(step, config.since, weekEnd);
+    const classifyLlm = await this.classifyWithLlm(step, config.since, weekEnd, config.backfillWeeks);
 
     // ── Phase 7: aggregate weekly metrics ───────────────────────────────
     //
@@ -301,7 +311,7 @@ export class WeeklyPipeline extends WorkflowEntrypoint<Env, WeeklyPipelineParams
    * to the Hub, which fits within a rate-limit window. The Workflow's durable
    * step state means a failure resumes at the failed batch, not from scratch.
    */
-  private async enrichBlind(step: WorkflowStep): Promise<EnrichSummary> {
+  private async enrichBlind(step: WorkflowStep, backfillWeeks: number): Promise<EnrichSummary> {
     const totals: EnrichSummary = {
       total: 0,
       fetched: 0,
@@ -319,7 +329,10 @@ export class WeeklyPipeline extends WorkflowEntrypoint<Env, WeeklyPipelineParams
     );
 
     const BATCH_SIZE = 50;
-    const MAX_BATCHES = 200;
+    // ~4,000 blind Spaces a week at 50 a batch is ~80 steps; 100 leaves room.
+    // Scaled by backfill depth because a flat cap silently covered a twelfth
+    // of a 12-week backfill. See STEP_BUDGET above.
+    const MAX_BATCHES = Math.min(100 * backfillWeeks, 1200);
 
     for (let batch = 0; batch < MAX_BATCHES; batch++) {
       const result = await step.do(`enrich-batch-${batch}`, PAGE_RETRY, async () =>
@@ -356,6 +369,7 @@ export class WeeklyPipeline extends WorkflowEntrypoint<Env, WeeklyPipelineParams
     step: WorkflowStep,
     weekStart: string,
     weekEnd: string,
+    backfillWeeks: number,
   ): Promise<ClassifyLlmSummary> {
     const totals: ClassifyLlmSummary = {
       total: 0,
@@ -374,7 +388,10 @@ export class WeeklyPipeline extends WorkflowEntrypoint<Env, WeeklyPipelineParams
     });
     const modelId = this.env.BEDROCK_CLASSIFY_MODEL_ID;
 
-    const MAX_LLM_BATCHES = 200;
+    // ~175 batched requests a week per PLAN.md; 250 leaves headroom for a
+    // week that runs hot. Scaled by backfill depth for the same reason as
+    // enrichment.
+    const MAX_LLM_BATCHES = Math.min(250 * backfillWeeks, 3000);
 
     for (let batch = 0; batch < MAX_LLM_BATCHES; batch++) {
       const result = await step.do(`classify-llm-batch-${batch}`, PAGE_RETRY, async () =>
