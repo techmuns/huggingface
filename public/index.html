@@ -4,338 +4,544 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>HF Developer Activity Dashboard</title>
-<script src="https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js"></script>
 <style>
-  :root {
-    --bg: #ffffff;
-    --fg: #1a1a2e;
-    --card-bg: #f8f9fa;
-    --border: #dee2e6;
-    --accent: #ff6b35;
-    --accent2: #4ecdc4;
-    --muted: #6c757d;
+/* ─────────────────────────────────────────────────────────────────────────
+   Palette: validated categorical slot 1 (blue) for the single data series,
+   fixed status steps for deltas. Both modes are selected — the dark column
+   is the same hues re-stepped for the dark surface, not an automatic flip.
+   ───────────────────────────────────────────────────────────────────────── */
+:root {
+  color-scheme: light;
+  --plane:        #f9f9f7;
+  --surface:      #fcfcfb;
+  --ink:          #0b0b0b;
+  --ink-2:        #52514e;
+  --ink-muted:    #898781;
+  --grid:         #e1e0d9;
+  --axis:         #c3c2b7;
+  --hairline:     rgba(11,11,11,0.10);
+  --series:       #2a78d6;
+  --series-soft:  #cde2fb;
+  --good:         #006300;
+  --bad:          #d03b3b;
+  --shadow:       0 1px 2px rgba(11,11,11,0.04), 0 1px 3px rgba(11,11,11,0.03);
+}
+@media (prefers-color-scheme: dark) {
+  :root:where(:not([data-theme="light"])) {
+    color-scheme: dark;
+    --plane:       #0d0d0d;
+    --surface:     #1a1a19;
+    --ink:         #ffffff;
+    --ink-2:       #c3c2b7;
+    --ink-muted:   #898781;
+    --grid:        #2c2c2a;
+    --axis:        #383835;
+    --hairline:    rgba(255,255,255,0.10);
+    --series:      #3987e5;
+    --series-soft: #184f95;
+    --good:        #0ca30c;
+    --bad:         #e66767;
+    --shadow:      none;
   }
-  @media (prefers-color-scheme: dark) {
-    :root {
-      --bg: #1a1a2e;
-      --fg: #e8e8e8;
-      --card-bg: #16213e;
-      --border: #2a2a4a;
-      --accent: #ff6b35;
-      --accent2: #4ecdc4;
-      --muted: #9ca3af;
-    }
-  }
-  * { box-sizing: border-box; margin: 0; padding: 0; }
-  body {
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-    background: var(--bg);
-    color: var(--fg);
-    line-height: 1.5;
-    padding: 1rem;
-    max-width: 1200px;
-    margin: 0 auto;
-  }
-  h1 { font-size: 1.5rem; margin-bottom: 0.25rem; }
-  .subtitle { color: var(--muted); font-size: 0.875rem; margin-bottom: 1.5rem; }
-  .week-nav { display: flex; align-items: center; gap: 0.5rem; margin-bottom: 1.5rem; }
-  .week-nav select { padding: 0.375rem 0.75rem; border: 1px solid var(--border); border-radius: 4px; background: var(--card-bg); color: var(--fg); font-size: 0.875rem; }
-  .kpi-strip { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 1rem; margin-bottom: 1.5rem; }
-  .kpi { background: var(--card-bg); border: 1px solid var(--border); border-radius: 8px; padding: 1rem; text-align: center; }
-  .kpi .value { font-size: 1.75rem; font-weight: 700; color: var(--accent); }
-  .kpi .label { font-size: 0.75rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; }
-  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(500px, 1fr)); gap: 1.5rem; margin-bottom: 1.5rem; }
-  .card { background: var(--card-bg); border: 1px solid var(--border); border-radius: 8px; padding: 1.25rem; }
-  .card h2 { font-size: 1rem; margin-bottom: 1rem; }
-  .chart-container { position: relative; width: 100%; max-height: 300px; }
-  table { width: 100%; border-collapse: collapse; font-size: 0.8125rem; }
-  th, td { padding: 0.5rem; text-align: left; border-bottom: 1px solid var(--border); }
-  th { font-weight: 600; color: var(--muted); font-size: 0.75rem; text-transform: uppercase; }
-  .narrative { background: var(--card-bg); border: 1px solid var(--border); border-radius: 8px; padding: 1.25rem; margin-bottom: 1.5rem; }
-  .narrative h2 { font-size: 1rem; margin-bottom: 0.75rem; }
-  .narrative p { font-size: 0.875rem; margin-bottom: 0.5rem; }
-  .methodology { background: var(--card-bg); border: 1px solid var(--border); border-radius: 8px; padding: 1.25rem; margin-top: 1.5rem; }
-  .methodology h2 { font-size: 1rem; margin-bottom: 0.5rem; }
-  .methodology ul { font-size: 0.8125rem; color: var(--muted); padding-left: 1.25rem; }
-  .methodology li { margin-bottom: 0.25rem; }
-  .loading { text-align: center; padding: 3rem; color: var(--muted); }
-  .delta { font-size: 0.75rem; }
-  .delta.pos { color: #22c55e; }
-  .delta.neg { color: #ef4444; }
-  @media (max-width: 600px) { .grid { grid-template-columns: 1fr; } }
+}
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --plane: #0d0d0d; --surface: #1a1a19; --ink: #fff; --ink-2: #c3c2b7;
+  --ink-muted: #898781; --grid: #2c2c2a; --axis: #383835;
+  --hairline: rgba(255,255,255,0.10); --series: #3987e5; --series-soft: #184f95;
+  --good: #0ca30c; --bad: #e66767; --shadow: none;
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+body {
+  font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+  background: var(--plane);
+  color: var(--ink);
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+  padding: 40px 24px 72px;
+}
+.wrap { max-width: 1080px; margin: 0 auto; }
+
+/* ── Masthead ─────────────────────────────────────────────────────────── */
+.masthead {
+  display: flex; align-items: flex-end; justify-content: space-between;
+  gap: 24px; flex-wrap: wrap; margin-bottom: 8px;
+}
+h1 { font-size: 22px; font-weight: 600; letter-spacing: -0.01em; }
+.standfirst { color: var(--ink-2); font-size: 14px; margin-top: 2px; }
+.controls { display: flex; align-items: center; gap: 8px; }
+select, .btn {
+  font: inherit; font-size: 13px; color: var(--ink);
+  background: var(--surface); border: 1px solid var(--hairline);
+  border-radius: 7px; padding: 7px 11px; cursor: pointer;
+  transition: border-color .12s ease;
+}
+select:hover, .btn:hover { border-color: var(--axis); }
+.btn[aria-pressed="true"] { background: var(--series-soft); border-color: transparent; }
+
+.provenance {
+  display: flex; gap: 18px; flex-wrap: wrap;
+  font-size: 12.5px; color: var(--ink-muted);
+  padding: 12px 0 26px; border-bottom: 1px solid var(--hairline); margin-bottom: 28px;
+}
+.provenance b { color: var(--ink-2); font-weight: 500; }
+
+/* ── Stat tiles ───────────────────────────────────────────────────────── */
+.tiles {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(168px, 1fr));
+  gap: 1px; background: var(--hairline);
+  border: 1px solid var(--hairline); border-radius: 10px;
+  overflow: hidden; margin-bottom: 32px;
+}
+.tile { background: var(--surface); padding: 18px 20px 16px; }
+.tile .label {
+  font-size: 11.5px; font-weight: 500; color: var(--ink-muted);
+  text-transform: uppercase; letter-spacing: .06em;
+}
+.tile .value { font-size: 30px; font-weight: 600; letter-spacing: -0.02em; margin-top: 6px; }
+.tile .sub { font-size: 12.5px; color: var(--ink-muted); margin-top: 3px; }
+
+/* Delta always carries a glyph + the word, so hue is never the only signal. */
+.delta { font-size: 12.5px; font-weight: 500; display: inline-flex; align-items: center; gap: 3px; }
+.delta.up   { color: var(--good); }
+.delta.down { color: var(--bad); }
+.delta.flat { color: var(--ink-muted); }
+
+/* ── Cards ────────────────────────────────────────────────────────────── */
+.grid2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(420px, 1fr)); gap: 20px; }
+.card {
+  background: var(--surface); border: 1px solid var(--hairline);
+  border-radius: 10px; padding: 20px 22px 22px; box-shadow: var(--shadow);
+  margin-bottom: 20px;
+}
+.grid2 .card { margin-bottom: 0; }
+.card > header { margin-bottom: 18px; }
+.card h2 { font-size: 14px; font-weight: 600; letter-spacing: -0.005em; }
+.card .hint { font-size: 12.5px; color: var(--ink-muted); margin-top: 2px; }
+
+/* ── Bars ─────────────────────────────────────────────────────────────── */
+.bars { display: flex; flex-direction: column; gap: 9px; }
+.bar-row {
+  display: grid; grid-template-columns: minmax(96px, 27%) 1fr auto;
+  align-items: center; gap: 12px;
+  padding: 2px 4px; margin: -2px -4px; border-radius: 5px;
+  cursor: default; transition: background .1s ease;
+}
+.bar-row:hover { background: color-mix(in srgb, var(--series) 7%, transparent); }
+.bar-label {
+  font-size: 12.5px; color: var(--ink-2);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.bar-track { position: relative; height: 20px; }
+/* No gridlines: there is no value axis here, so ruled lines would imply a
+   scale that isn't drawn. Every bar carries its own number instead. */
+.bar-track::before {
+  content: ""; position: absolute; left: 0; right: 0; bottom: 0;
+  height: 1px; background: var(--grid);
+}
+.bar-fill {
+  position: absolute; left: 0; top: 3px; height: 14px;
+  background: var(--series);
+  border-radius: 0 4px 4px 0;   /* rounded data-end, anchored to baseline */
+  min-width: 2px;
+}
+.bar-value {
+  font-size: 12.5px; font-variant-numeric: tabular-nums;
+  color: var(--ink); min-width: 58px; text-align: right;
+}
+.bar-value .pct { color: var(--ink-muted); font-size: 11.5px; margin-left: 5px; }
+.suppressed { color: var(--ink-muted); }
+/* A residual bucket is not a category — it sits last and is drawn recessive,
+   so a long "Other" bar at the foot of a descending list reads as deliberate
+   rather than as a sorting bug. */
+.bar-row.residual { margin-top: 5px; padding-top: 7px; border-top: 1px solid var(--grid); }
+.bar-row.residual .bar-fill { background: var(--series-soft); }
+.bar-row.residual .bar-label { color: var(--ink-muted); }
+
+/* ── Matrix ───────────────────────────────────────────────────────────── */
+.matrix-scroll { overflow-x: auto; }
+table { border-collapse: collapse; width: 100%; font-size: 12.5px; }
+th, td { padding: 8px 10px; text-align: right; white-space: nowrap; }
+th:first-child, td:first-child { text-align: left; }
+thead th {
+  font-size: 11px; font-weight: 500; color: var(--ink-muted);
+  text-transform: uppercase; letter-spacing: .05em;
+  border-bottom: 1px solid var(--hairline);
+}
+tbody td { font-variant-numeric: tabular-nums; border-bottom: 1px solid var(--grid); }
+tbody tr:last-child td { border-bottom: 0; }
+.cell { display: inline-block; min-width: 42px; padding: 3px 7px; border-radius: 4px; }
+
+/* ── Narrative ────────────────────────────────────────────────────────── */
+.narrative p { font-size: 14px; color: var(--ink-2); max-width: 68ch; }
+.narrative p + p { margin-top: 10px; }
+
+/* ── Empty / loading ──────────────────────────────────────────────────── */
+.empty {
+  font-size: 13px; color: var(--ink-muted);
+  padding: 26px 0; text-align: center;
+}
+.stale { opacity: .45; transition: opacity .15s ease; }  /* hold, never flash */
+
+details.method { margin-top: 28px; border-top: 1px solid var(--hairline); padding-top: 18px; }
+details.method summary {
+  font-size: 13px; font-weight: 500; color: var(--ink-2); cursor: pointer;
+  list-style: none;
+}
+details.method summary::-webkit-details-marker { display: none; }
+details.method summary::before { content: "▸ "; color: var(--ink-muted); }
+details.method[open] summary::before { content: "▾ "; }
+details.method ul { margin: 14px 0 0 18px; font-size: 12.5px; color: var(--ink-muted); }
+details.method li { margin-bottom: 7px; max-width: 82ch; }
+
+@media (max-width: 640px) {
+  body { padding: 24px 14px 48px; }
+  .grid2 { grid-template-columns: 1fr; }
+  .bar-row { grid-template-columns: minmax(78px, 38%) 1fr auto; align-items: center; }
+  .bar-label { white-space: normal; line-height: 1.25; font-size: 12px; }
+}
 </style>
 </head>
 <body>
+<div class="wrap">
 
-<h1>Hugging Face Developer Activity</h1>
-<p class="subtitle">Weekly trends in Spaces, models, and developer tooling</p>
+  <div class="masthead">
+    <div>
+      <h1>Hugging Face Developer Activity</h1>
+      <p class="standfirst">Where developer activity is moving, week over week.</p>
+    </div>
+    <div class="controls">
+      <select id="week-select" aria-label="Week"><option>—</option></select>
+      <button class="btn" id="view-toggle" aria-pressed="false">Table</button>
+    </div>
+  </div>
 
-<div class="week-nav">
-  <label for="week-select">Week:</label>
-  <select id="week-select"><option>Loading...</option></select>
-</div>
+  <div class="provenance" id="provenance"></div>
 
-<div class="kpi-strip" id="kpi-strip">
-  <div class="loading">Loading metrics...</div>
-</div>
+  <div class="tiles" id="tiles"></div>
 
-<div class="narrative" id="narrative-section" style="display:none">
-  <h2>Weekly Summary</h2>
-  <div id="narrative-text"></div>
-</div>
+  <section class="card narrative" id="narrative-card" hidden>
+    <header><h2>Weekly summary</h2></header>
+    <div id="narrative-body"></div>
+  </section>
 
-<div class="grid">
-  <div class="card" id="use-case-card">
-    <h2>New Spaces by Use Case</h2>
-    <div class="chart-container"><canvas id="use-case-chart"></canvas></div>
-  </div>
-  <div class="card" id="share-card">
-    <h2>Share by Use Case (%)</h2>
-    <div class="chart-container"><canvas id="share-chart"></canvas></div>
-  </div>
-  <div class="card" id="vertical-card">
-    <h2>Vertical Penetration (%)</h2>
-    <div class="chart-container"><canvas id="vertical-chart"></canvas></div>
-  </div>
-  <div class="card" id="tech-card">
-    <h2>Technology Penetration (%)</h2>
-    <div class="chart-container"><canvas id="tech-chart"></canvas></div>
-  </div>
-  <div class="card" id="sdk-card">
-    <h2>New Spaces by SDK</h2>
-    <div class="chart-container"><canvas id="sdk-chart"></canvas></div>
-  </div>
-  <div class="card" id="models-card">
-    <h2>New Models by Family</h2>
-    <div class="chart-container"><canvas id="models-chart"></canvas></div>
-  </div>
-  <div class="card" id="engagement-card">
-    <h2>Engagement</h2>
-    <table id="engagement-table">
-      <thead><tr><th>Metric</th><th>Value</th><th>1W</th></tr></thead>
-      <tbody></tbody>
-    </table>
-  </div>
-</div>
+  <div class="grid2">
+    <section class="card">
+      <header>
+        <h2>What developers are building</h2>
+        <p class="hint">Primary use case &mdash; one per Space, so shares total 100%.</p>
+      </header>
+      <div id="c-usecase"></div>
+    </section>
 
-<div class="card" id="family-usecase-card">
-  <h2>Model Family Share by Use Case</h2>
-  <div style="overflow-x:auto">
-    <table id="family-usecase-table">
-      <thead><tr><th>Use Case</th></tr></thead>
-      <tbody></tbody>
-    </table>
-  </div>
-</div>
+    <section class="card">
+      <header>
+        <h2>Where they're building it</h2>
+        <p class="hint">Vertical &mdash; multi-label, so these do not total 100%.</p>
+      </header>
+      <div id="c-vertical"></div>
+    </section>
 
-<div class="methodology">
-  <h2>Methodology</h2>
-  <ul>
-    <li>Data source: Hugging Face Hub API, scraped weekly via cursor walk.</li>
-    <li>Spaces are deduplicated by normalized title + linked model set. Template clones are clustered; only one representative per cluster is counted.</li>
-    <li>~53% of new Spaces are <code>sdk: static</code>. Included in all counts.</li>
-    <li>Classification: deterministic rules (tags, linked models, slug, README prose) first; remaining Spaces classified by Claude Haiku 4.5 via Bedrock.</li>
-    <li>Technology tags are AI techniques (RAG, agentic, multimodal, quantized, MoE&hellip;), not frameworks. The build SDK is reported separately above.</li>
-    <li>Growth windows compare each trailing window against the immediately preceding window of equal length &mdash; 4W compares weeks W-3&ndash;W against W-7&ndash;W-4, not this week against one week three months ago.</li>
-    <li>Primary use case is single-valued (sums to 100%). Verticals, technologies, and model families are multi-label (penetration rates, do NOT sum to 100%).</li>
-    <li>Downloads are a rolling 30-day figure (a rate, not a total). Likes are cumulative.</li>
-    <li>Small-denominator cuts (&lt;10) are suppressed rather than reported as wild percentages.</li>
-    <li>A percentage marked <code>*</code> sits on a denominator below the reporting threshold &mdash; shown for completeness, not to be read as a trend.</li>
-    <li id="coverage-note">Coverage: loading...</li>
-    <li id="taxonomy-note">Taxonomy version: loading...</li>
-  </ul>
+    <section class="card">
+      <header>
+        <h2>What they're building on</h2>
+        <p class="hint">Model family, from declared <code>base_model</code> lineage.</p>
+      </header>
+      <div id="c-family"></div>
+    </section>
+
+    <section class="card">
+      <header>
+        <h2>How they're building it</h2>
+        <p class="hint">Technique &mdash; multi-label. The build SDK is separate, below.</p>
+      </header>
+      <div id="c-tech"></div>
+    </section>
+  </div>
+
+  <section class="card" style="margin-top:20px">
+    <header>
+      <h2>Model family by use case</h2>
+      <p class="hint">Share of each use case's Spaces built on a given family.</p>
+    </header>
+    <div class="matrix-scroll" id="c-matrix"></div>
+  </section>
+
+  <div class="grid2">
+    <section class="card">
+      <header><h2>New Spaces by SDK</h2></header>
+      <div id="c-sdk"></div>
+    </section>
+    <section class="card">
+      <header>
+        <h2>Engagement</h2>
+        <p class="hint">Downloads are a rolling 30-day rate; likes are cumulative.</p>
+      </header>
+      <div id="c-engagement"></div>
+    </section>
+  </div>
+
+  <details class="method">
+    <summary>Methodology &amp; caveats</summary>
+    <ul>
+      <li>Source: Hugging Face Hub API, walked newest-first each week. Raw payloads are stored immutably, so the taxonomy can be re-run over history without re-scraping.</li>
+      <li>Spaces are de-duplicated by normalised title plus linked-model set; template clones collapse to one representative, because a single viral template can otherwise manufacture a trend.</li>
+      <li>Classification runs deterministic rules first (tags, linked models, slug, README prose) at zero cost; only what the rules cannot settle is sent to a model. Every row records which produced it, and a confidence score.</li>
+      <li>Primary use case is single-valued, so its shares total 100%. Vertical, technology and model family are multi-label &mdash; those are <em>penetration rates</em> and deliberately do not total 100%.</li>
+      <li>Growth compares each trailing window against the window of equal length immediately before it: 4W is weeks W&minus;3&ndash;W against W&minus;7&ndash;W&minus;4, never this week against a single week three months ago.</li>
+      <li>A figure on a base below the reporting threshold is shown greyed and marked &ldquo;too few&rdquo; rather than printed as a confident percentage.</li>
+      <li>Roughly half of new Spaces arrive with no description and no linked model. Those get a README fetch; what remains unclassifiable is counted in coverage rather than quietly dropped.</li>
+      <li id="m-taxonomy"></li>
+    </ul>
+  </details>
 </div>
 
 <script>
-const API = '';
-const CHART_COLORS = [
-  '#ff6b35','#4ecdc4','#45b7d1','#96ceb4','#ffeaa7',
-  '#dfe6e9','#a29bfe','#fd79a8','#00b894','#e17055',
-  '#6c5ce7',
-];
-let charts = {};
+const CUTS = {
+  usecase:  'spaces_by_use_case',
+  share:    'share_by_use_case',
+  vertical: 'vertical_penetration',
+  tech:     'technology_penetration',
+  sdk:      'sdk_distribution',
+  family:   'models_by_family',
+  matrix:   'family_share_by_use_case',
+  engage:   'engagement',
+};
 
-function esc(v) {
-  return String(v ?? '').replace(/[&<>"']/g, c => (
-    { '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;' }[c]
-  ));
+let tableView = false;
+let current = { byCut: {}, coverage: null, week: null };
+
+const esc = v => String(v ?? '').replace(/[&<>"']/g, c =>
+  ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c]));
+
+const num = n => n == null ? '—'
+  : n.toLocaleString(undefined, { maximumFractionDigits: n < 10 ? 1 : 0 });
+
+/* Taxonomy slugs carry acronyms that naive title-casing mangles
+   ("Document Ai", "Rag", "Moe"), so the display name is explicit. */
+const LABELS = {
+  coding:'Coding', 'chat-assistant':'Chat / assistant', 'search-research':'Search / research',
+  'document-ai':'Document AI', 'data-analysis':'Data analysis / BI',
+  'image-generation':'Image generation', 'video-generation':'Video generation',
+  'voice-audio':'Voice / speech', 'music-generation':'Music generation',
+  robotics:'Robotics', '3d-gaming':'3D / gaming', education:'Education',
+  'scientific-tools':'Scientific tools', other:'Other',
+  healthcare:'Healthcare', finance:'Finance', legal:'Legal',
+  'enterprise-productivity':'Enterprise', consumer:'Consumer',
+  'media-entertainment':'Media', 'ecommerce-retail':'E-commerce',
+  'industrial-manufacturing':'Industrial', cybersecurity:'Cybersecurity',
+  'scientific-research':'Science / research',
+  qwen:'Qwen', llama:'Llama', deepseek:'DeepSeek', gemma:'Gemma', mistral:'Mistral',
+  'glm-zhipu':'GLM / Zhipu', 'kimi-moonshot':'Kimi / Moonshot',
+  'nvidia-nemotron':'NVIDIA Nemotron', 'other-open':'Other open', 'proprietary-api':'Proprietary API',
+  rag:'RAG', agentic:'Agentic', multimodal:'Multimodal', 'tool-use':'Tool use',
+  'local-inference':'Local inference', quantized:'Quantized', 'long-context':'Long context',
+  'vision-language':'Vision-language', speech:'Speech', diffusion:'Diffusion',
+  moe:'MoE', 'fine-tuned':'Fine-tuned',
+  gradio:'Gradio', streamlit:'Streamlit', docker:'Docker', static:'Static',
+  unknown:'Unresolved',
+  model_downloads:'Model downloads', model_likes:'Model likes', space_likes:'Space likes',
+};
+const titleCase = s => LABELS[s] ?? String(s).replace(/[-_]/g, ' ')
+  .replace(/\b\w/g, c => c.toUpperCase());
+
+/* "Other" is a residual, not a rank — it sits last however large it is. */
+const byValueOtherLast = (a, b) =>
+  (a.dimension === 'other' || a.dimension === 'other-open' ? 1 : 0) -
+  (b.dimension === 'other' || b.dimension === 'other-open' ? 1 : 0) ||
+  b.value - a.value;
+
+/** Delta with a glyph and a word — hue is never the only carrier. */
+function delta(d) {
+  if (d == null) return '<span class="delta flat">— no prior window</span>';
+  const r = Math.round(d * 10) / 10;
+  if (r === 0) return '<span class="delta flat">▬ flat</span>';
+  const up = r > 0;
+  return `<span class="delta ${up ? 'up' : 'down'}">${up ? '▲' : '▼'} ${Math.abs(r)}%</span>`;
 }
 
-function fmt(n) {
-  if (n == null) return '—';
-  return typeof n === 'number' ? n.toLocaleString(undefined, { maximumFractionDigits: 1 }) : n;
-}
+/**
+ * Horizontal bars. One series → one colour for every bar: colouring by
+ * magnitude would double-encode the length and burn the only free channel.
+ */
+function bars(rows, { unit = '', shareOf = null } = {}) {
+  if (!rows.length) return '<p class="empty">No data for this week.</p>';
+  const max = Math.max(...rows.map(r => r.value), 0) || 1;
 
-function deltaHtml(d) {
-  if (d == null) return '';
-  const cls = d > 0 ? 'pos' : d < 0 ? 'neg' : '';
-  const sign = d > 0 ? '+' : '';
-  return `<span class="delta ${cls}">${sign}${fmt(d)}%</span>`;
-}
-
-async function loadWeeks() {
-  const res = await fetch(`${API}/api/weeks`);
-  const data = await res.json();
-  const sel = document.getElementById('week-select');
-  sel.innerHTML = '';
-  for (const w of data.weeks) {
-    const opt = document.createElement('option');
-    opt.value = w;
-    opt.textContent = w;
-    sel.appendChild(opt);
+  if (tableView) {
+    return `<table><thead><tr><th>Category</th><th>Value</th><th>Base</th><th>1W</th></tr></thead><tbody>${
+      rows.map(r => `<tr>
+        <td>${esc(titleCase(r.dimension))}</td>
+        <td>${num(r.value)}${unit}</td>
+        <td>${num(r.denominator)}</td>
+        <td>${delta(r.delta_1w)}</td>
+      </tr>`).join('')}</tbody></table>`;
   }
-  sel.addEventListener('change', () => loadWeek(sel.value));
-  if (data.weeks.length > 0) loadWeek(data.weeks[0]);
-  else document.getElementById('kpi-strip').innerHTML = '<div class="loading">No data yet. Run the pipeline first.</div>';
+
+  return `<div class="bars">${rows.map(r => {
+    const pct = shareOf && shareOf > 0 ? ` <span class="pct">${Math.round(r.value / shareOf * 100)}%</span>` : '';
+    const sup = r.suppressed ? ' suppressed' : '';
+    const residual = (r.dimension === 'other' || r.dimension === 'other-open') ? ' residual' : '';
+    const tip = `${titleCase(r.dimension)}: ${num(r.value)}${unit} of ${num(r.denominator)}`
+      + (r.suppressed ? ' — base too small to report a trend' : '')
+      + (r.delta_1w != null ? ` · 1W ${r.delta_1w > 0 ? '+' : ''}${Math.round(r.delta_1w)}%` : '');
+    return `<div class="bar-row${residual}" title="${esc(tip)}">
+      <span class="bar-label">${esc(titleCase(r.dimension))}</span>
+      <span class="bar-track"><span class="bar-fill" style="width:${(r.value / max * 100).toFixed(1)}%"></span></span>
+      <span class="bar-value${sup}">${num(r.value)}${unit}${pct}</span>
+    </div>`;
+  }).join('')}</div>`;
+}
+
+function renderTiles() {
+  const uc = current.byCut[CUTS.usecase] || [];
+  const fam = current.byCut[CUTS.family] || [];
+  const cov = current.coverage || {};
+  const classified = cov.classifiedSpaces ?? uc.reduce((s, r) => s + r.value, 0);
+  const totalSpaces = cov.totalSpaces ?? uc[0]?.denominator ?? classified;
+  const totalModels = fam.reduce((s, r) => s + r.value, 0);
+  const lead = [...uc].sort((a, b) => b.value - a.value)[0];
+
+  document.getElementById('tiles').innerHTML = `
+    <div class="tile">
+      <div class="label">New Spaces</div>
+      <div class="value">${num(totalSpaces)}</div>
+      <div class="sub">${num(classified)} classified</div>
+    </div>
+    <div class="tile">
+      <div class="label">New Models</div>
+      <div class="value">${num(totalModels)}</div>
+      <div class="sub">${fam.length} families</div>
+    </div>
+    <div class="tile">
+      <div class="label">Leading use case</div>
+      <div class="value" style="font-size:20px;line-height:1.5;margin-top:11px">${lead ? esc(titleCase(lead.dimension)) : '—'}</div>
+      <div class="sub">${lead ? delta(lead.delta_1w) + ' week over week' : ''}</div>
+    </div>
+    <div class="tile">
+      <div class="label">Coverage</div>
+      <div class="value">${cov.coveragePercent == null ? '—' : Math.round(cov.coveragePercent) + '%'}</div>
+      <div class="sub">${num(cov.bySource?.rule ?? 0)} by rule · ${num(cov.bySource?.model ?? 0)} by model</div>
+    </div>`;
+}
+
+function renderMatrix() {
+  const rows = current.byCut[CUTS.matrix] || [];
+  const el = document.getElementById('c-matrix');
+  if (!rows.length) { el.innerHTML = '<p class="empty">No data for this week.</p>'; return; }
+
+  const fams = [...new Set(rows.map(r => r.sub_dimension))].sort();
+  const ucs  = [...new Set(rows.map(r => r.dimension))].sort();
+  const max  = Math.max(...rows.map(r => r.value), 0) || 1;
+
+  el.innerHTML = `<table>
+    <thead><tr><th>Use case</th>${fams.map(f => `<th>${esc(titleCase(f))}</th>`).join('')}</tr></thead>
+    <tbody>${ucs.map(uc => `<tr><td>${esc(titleCase(uc))}</td>${fams.map(f => {
+      const m = rows.find(r => r.dimension === uc && r.sub_dimension === f);
+      if (!m) return '<td><span class="cell" style="color:var(--ink-muted)">—</span></td>';
+      // Sequential: one hue, light→dark, opacity carrying magnitude.
+      const a = 0.10 + (m.value / max) * 0.62;
+      const label = m.suppressed ? `${Math.round(m.value)}%*` : `${Math.round(m.value)}%`;
+      return `<td><span class="cell" style="background:color-mix(in srgb, var(--series) ${(a*100).toFixed(0)}%, transparent)"
+        title="${esc(titleCase(uc))} · ${esc(titleCase(f))}: ${m.value.toFixed(1)}% of ${m.denominator}${m.suppressed ? ' — base too small' : ''}">${label}</span></td>`;
+    }).join('')}</tr>`).join('')}</tbody></table>
+    <p class="hint" style="margin-top:12px">* base below the reporting threshold &mdash; shown for completeness, not as a trend.</p>`;
+}
+
+function renderEngagement() {
+  const rows = current.byCut[CUTS.engage] || [];
+  const el = document.getElementById('c-engagement');
+  if (!rows.length) { el.innerHTML = '<p class="empty">No data for this week.</p>'; return; }
+  el.innerHTML = `<table><thead><tr><th>Metric</th><th>Value</th><th>1W</th></tr></thead><tbody>${
+    rows.map(r => `<tr>
+      <td>${esc(titleCase(r.dimension))}</td>
+      <td>${num(r.value)}</td>
+      <td>${delta(r.delta_1w)}</td>
+    </tr>`).join('')}</tbody></table>`;
+}
+
+function renderAll() {
+  const g = c => [...(current.byCut[c] || [])].sort(byValueOtherLast);
+  const uc = g(CUTS.usecase);
+  const classified = uc.reduce((s, r) => s + r.value, 0);
+
+  renderTiles();
+  document.getElementById('c-usecase').innerHTML  = bars(uc, { shareOf: classified });
+  document.getElementById('c-vertical').innerHTML = bars(g(CUTS.vertical), { unit: '%' });
+  document.getElementById('c-tech').innerHTML     = bars(g(CUTS.tech), { unit: '%' });
+  document.getElementById('c-family').innerHTML   = bars(g(CUTS.family));
+  document.getElementById('c-sdk').innerHTML      = bars(g(CUTS.sdk));
+  renderMatrix();
+  renderEngagement();
+
+  const cov = current.coverage || {};
+  document.getElementById('provenance').innerHTML = current.week
+    ? `<span>Week of <b>${esc(current.week)}</b></span>
+       <span>Classified <b>${num(cov.classifiedSpaces)}</b> of <b>${num(cov.totalSpaces)}</b> Spaces</span>
+       <span>Flagged for review <b>${num(cov.lowConfidence ?? 0)}</b></span>`
+    : '';
 }
 
 async function loadWeek(week) {
-  const [metricsRes, coverageRes] = await Promise.all([
-    fetch(`${API}/api/metrics?week=${week}`),
-    fetch(`${API}/api/coverage?week=${week}`),
-  ]);
-  const metricsData = await metricsRes.json();
-  const coverageData = await coverageRes.json();
-
-  const metrics = metricsData.metrics;
-  const byCut = {};
-  for (const m of metrics) {
-    (byCut[m.metric_cut] = byCut[m.metric_cut] || []).push(m);
-  }
-
-  renderKPIs(byCut, coverageData);
-  renderBarChart('use-case-chart', byCut['spaces_by_use_case'], 'dimension', 'value');
-  renderBarChart('share-chart', byCut['share_by_use_case'], 'dimension', 'value');
-  renderBarChart('vertical-chart', byCut['vertical_penetration'], 'dimension', 'value');
-  renderBarChart('tech-chart', byCut['technology_penetration'], 'dimension', 'value');
-  renderBarChart('sdk-chart', byCut['sdk_distribution'], 'dimension', 'value');
-  renderBarChart('models-chart', byCut['models_by_family'], 'dimension', 'value');
-  renderEngagement(byCut['engagement']);
-  renderFamilyByUseCase(byCut['family_share_by_use_case']);
-
-  document.getElementById('coverage-note').textContent =
-    `Coverage: ${fmt(coverageData.coveragePercent)}% (${coverageData.classifiedSpaces} of ${coverageData.totalSpaces} primary Spaces classified)`;
-  document.getElementById('taxonomy-note').textContent =
-    `Taxonomy version: ${metricsData.taxonomyVersion}`;
-
-  loadNarrative(week);
-}
-
-function renderKPIs(byCut, coverage) {
-  const strip = document.getElementById('kpi-strip');
-  // Summing spaces_by_use_case counts only CLASSIFIED Spaces — labelling that
-  // "New Spaces" understated the week by however much fell through to
-  // unclassified, and silently contradicted the coverage figure beside it.
-  // The unclassified-inclusive total is carried on every row as `denominator`.
-  const useCaseRows = byCut['spaces_by_use_case'] || [];
-  const classifiedSpaces = useCaseRows.reduce((s, m) => s + m.value, 0);
-  const totalSpaces = coverage.totalSpaces ?? useCaseRows[0]?.denominator ?? classifiedSpaces;
-  const totalModels = (byCut['models_by_family'] || []).reduce((s, m) => s + m.value, 0);
-
-  strip.innerHTML = `
-    <div class="kpi"><div class="value">${fmt(totalSpaces)}</div><div class="label">New Spaces</div></div>
-    <div class="kpi"><div class="value">${fmt(classifiedSpaces)}</div><div class="label">Classified</div></div>
-    <div class="kpi"><div class="value">${fmt(totalModels)}</div><div class="label">New Models</div></div>
-    <div class="kpi"><div class="value">${fmt(coverage.coveragePercent)}%</div><div class="label">Coverage</div></div>
-    <div class="kpi"><div class="value">${coverage.bySource?.rule ?? 0}</div><div class="label">Rule-classified</div></div>
-    <div class="kpi"><div class="value">${coverage.bySource?.model ?? 0}</div><div class="label">LLM-classified</div></div>
-    <div class="kpi"><div class="value">${coverage.lowConfidence ?? 0}</div><div class="label">Low Confidence</div></div>
-  `;
-}
-
-function renderBarChart(canvasId, data, labelKey, valueKey) {
-  const canvas = document.getElementById(canvasId);
-  // Destroy before the empty check. Returning early left the previously
-  // selected week's chart painted under the new week's heading, which reads
-  // as data rather than as an absence.
-  if (charts[canvasId]) { charts[canvasId].destroy(); delete charts[canvasId]; }
-  if (!data || !data.length) {
-    const ctx = canvas.getContext('2d');
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
-    return;
-  }
-
-  const sorted = [...data].sort((a, b) => b[valueKey] - a[valueKey]);
-  charts[canvasId] = new Chart(canvas, {
-    type: 'bar',
-    data: {
-      labels: sorted.map(d => d[labelKey]),
-      datasets: [{
-        data: sorted.map(d => d[valueKey]),
-        backgroundColor: CHART_COLORS,
-        borderWidth: 0,
-        borderRadius: 4,
-      }],
-    },
-    options: {
-      indexAxis: 'y',
-      responsive: true,
-      maintainAspectRatio: false,
-      plugins: { legend: { display: false } },
-      scales: {
-        x: { grid: { display: false }, ticks: { color: getComputedStyle(document.body).getPropertyValue('--muted') } },
-        y: { grid: { display: false }, ticks: { color: getComputedStyle(document.body).getPropertyValue('--fg'), font: { size: 11 } } },
-      },
-    },
-  });
-}
-
-function renderEngagement(data) {
-  const tbody = document.querySelector('#engagement-table tbody');
-  tbody.innerHTML = '';
-  for (const m of (data || [])) {
-    const tr = document.createElement('tr');
-    tr.innerHTML = `<td>${esc(m.dimension.replace(/_/g, ' '))}</td><td>${fmt(m.value)}</td><td>${deltaHtml(m.delta_1w)}</td>`;
-    tbody.appendChild(tr);
-  }
-}
-
-function renderFamilyByUseCase(data) {
-  const thead0 = document.querySelector('#family-usecase-table thead tr');
-  const tbody0 = document.querySelector('#family-usecase-table tbody');
-  if (!data || !data.length) {
-    thead0.innerHTML = '<th>Use Case</th>';
-    tbody0.innerHTML = '<tr><td>No data for this week</td></tr>';
-    return;
-  }
-  const families = [...new Set(data.map(d => d.sub_dimension))].sort();
-  const usecases = [...new Set(data.map(d => d.dimension))].sort();
-
-  const thead = document.querySelector('#family-usecase-table thead tr');
-  thead.innerHTML = '<th>Use Case</th>' + families.map(f => `<th>${esc(f)}</th>`).join('');
-
-  const tbody = document.querySelector('#family-usecase-table tbody');
-  tbody.innerHTML = '';
-  for (const uc of usecases) {
-    const tr = document.createElement('tr');
-    let html = `<td>${esc(uc)}</td>`;
-    for (const f of families) {
-      const m = data.find(d => d.dimension === uc && d.sub_dimension === f);
-      // A suppressed cell has a denominator too small to report. Printing the
-      // bare percentage made "2 of 3 Spaces" look like a solid 66%.
-      html += `<td>${m ? (m.suppressed ? `<span class="delta">${fmt(m.value)}% *</span>` : fmt(m.value) + '%') : '—'}</td>`;
+  const main = document.querySelector('.wrap');
+  main.classList.add('stale');           // hold the previous render, never flash
+  try {
+    const [m, c] = await Promise.all([
+      fetch(`/api/metrics?week=${encodeURIComponent(week)}`).then(r => r.json()),
+      fetch(`/api/coverage?week=${encodeURIComponent(week)}`).then(r => r.json()),
+    ]);
+    current = { byCut: {}, coverage: c, week };
+    for (const row of (m.metrics || [])) {
+      (current.byCut[row.metric_cut] ||= []).push(row);
     }
-    tr.innerHTML = html;
-    tbody.appendChild(tr);
+    document.getElementById('m-taxonomy').textContent = `Taxonomy version ${m.taxonomyVersion}.`;
+    renderAll();
+    loadNarrative(week);
+  } finally {
+    main.classList.remove('stale');
   }
 }
 
 async function loadNarrative(week) {
+  const card = document.getElementById('narrative-card');
   try {
-    const res = await fetch(`${API}/api/narrative?week=${week}`);
-    if (!res.ok) { document.getElementById('narrative-section').style.display = 'none'; return; }
-    const data = await res.json();
-    if (data.narrative) {
-      document.getElementById('narrative-section').style.display = '';
-      document.getElementById('narrative-text').innerHTML =
-        data.narrative.split('\n\n').map(p => `<p>${esc(p)}</p>`).join('');
-    } else {
-      document.getElementById('narrative-section').style.display = 'none';
-    }
-  } catch { document.getElementById('narrative-section').style.display = 'none'; }
+    const r = await fetch(`/api/narrative?week=${encodeURIComponent(week)}`);
+    if (!r.ok) { card.hidden = true; return; }
+    const d = await r.json();
+    if (!d.narrative) { card.hidden = true; return; }
+    document.getElementById('narrative-body').innerHTML =
+      d.narrative.split(/\n\n+/).map(p => `<p>${esc(p)}</p>`).join('');
+    card.hidden = false;
+  } catch { card.hidden = true; }
 }
 
-loadWeeks();
+async function init() {
+  const sel = document.getElementById('week-select');
+  const { weeks } = await fetch('/api/weeks').then(r => r.json());
+
+  if (!weeks?.length) {
+    document.getElementById('tiles').innerHTML =
+      '<div class="tile" style="grid-column:1/-1"><p class="empty">No weeks processed yet. Once the pipeline runs, data appears here.</p></div>';
+    renderAll();
+    return;
+  }
+
+  sel.innerHTML = weeks.map(w => `<option value="${esc(w)}">Week of ${esc(w)}</option>`).join('');
+  sel.addEventListener('change', () => loadWeek(sel.value));
+
+  document.getElementById('view-toggle').addEventListener('click', e => {
+    tableView = !tableView;
+    e.currentTarget.setAttribute('aria-pressed', String(tableView));
+    e.currentTarget.textContent = tableView ? 'Charts' : 'Table';
+    renderAll();
+  });
+
+  loadWeek(weeks[0]);
+}
+
+init();
 </script>
 </body>
 </html>
