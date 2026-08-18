@@ -298,6 +298,48 @@ async function technologyPenetration(
   }));
 }
 
+// ── 5b. SDK distribution ────────────────────────────────────────────────────
+
+/**
+ * Counts new Spaces by SDK.
+ *
+ * Reported separately rather than folded into technologies, which the brief
+ * defines as AI techniques. It earns its own cut because roughly half of new
+ * Spaces are `sdk: static` — mostly templates and browser demos — and the
+ * methodology panel takes an explicit position on them, which it can only do
+ * if the number is actually published.
+ */
+async function sdkDistribution(
+  db: D1Database,
+  weekStart: string,
+  weekEnd: string,
+): Promise<MetricRow[]> {
+  const rows = await db
+    .prepare(
+      `SELECT COALESCE(sdk, 'unknown') AS dim, COUNT(*) AS cnt
+       FROM hf_spaces
+       WHERE created_at >= ?1 AND created_at < ?2 AND is_cluster_primary = 1
+       GROUP BY COALESCE(sdk, 'unknown')`,
+    )
+    .bind(weekStart, weekEnd)
+    .all<{ dim: string; cnt: number }>();
+
+  const denominator = (rows.results ?? []).reduce((s, r) => s + r.cnt, 0);
+
+  return (rows.results ?? []).map((r) => ({
+    weekStart,
+    cut: "sdk_distribution",
+    dimension: r.dim,
+    subDimension: "",
+    value: r.cnt,
+    denominator,
+    coverage: null,
+    delta1w: null,
+    delta4w: null,
+    delta12w: null,
+  }));
+}
+
 // ── 6. New models by family ─────────────────────────────────────────────────
 
 async function newModelsByFamily(
@@ -405,59 +447,164 @@ async function downloadLikeTrends(
 
 // ── Delta computation ───────────────────────────────────────────────────────
 
+/**
+ * Cuts whose `value` is a count. Everything else is already a percentage,
+ * and the two aggregate over a multi-week window in different ways — summing
+ * a percentage is meaningless, so the distinction is load-bearing.
+ */
+const COUNT_CUTS = new Set(["spaces_by_use_case", "models_by_family", "engagement", "sdk_distribution"]);
+
+const GROWTH_WINDOWS = [
+  { field: "delta_1w", weeks: 1 },
+  { field: "delta_4w", weeks: 4 },
+  { field: "delta_12w", weeks: 12 },
+] as const;
+
+function shiftWeeks(weekStart: string, weeks: number): string {
+  return new Date(new Date(`${weekStart}T00:00:00.000Z`).getTime() + weeks * 7 * 86_400_000)
+    .toISOString()
+    .slice(0, 10);
+}
+
+/**
+ * Growth of each trailing window against the immediately preceding window of
+ * equal length.
+ *
+ * Not a point-to-point comparison against the single week N weeks ago: that
+ * is what the 1W number already is, and it is exactly the noise the 4W and
+ * 12W windows exist to smooth out. A 4W reading compares weeks W-3..W against
+ * W-7..W-4, so one quiet week or one viral template moves it far less than it
+ * moves the weekly figure.
+ *
+ * Counts pool by summing. Percentages pool by re-deriving the rate over the
+ * whole window — sum(value x denominator) / sum(denominator) — which weights
+ * each week by its own volume instead of letting a 12-Space week count as
+ * much as a 4,000-Space one.
+ */
 async function computeDeltas(db: D1Database, weekStart: string): Promise<number> {
-  const windows = [
-    { field: "delta_1w", weeks: 1 },
-    { field: "delta_4w", weeks: 4 },
-    { field: "delta_12w", weeks: 12 },
-  ] as const;
+  const earliest = shiftWeeks(weekStart, -(2 * 12 - 1));
 
-  let updated = 0;
-
-  for (const { field, weeks } of windows) {
-    const prevWeek = new Date(
-      new Date(`${weekStart}T00:00:00.000Z`).getTime() - weeks * 7 * 86_400_000,
+  const history = await db
+    .prepare(
+      `SELECT week_start, metric_cut, dimension, sub_dimension, value, denominator, suppressed
+       FROM hf_weekly_metrics
+       WHERE taxonomy_version = ?1
+         AND week_start >= ?2 AND week_start <= ?3`,
     )
-      .toISOString()
-      .slice(0, 10);
+    .bind(TAXONOMY_VERSION, earliest, weekStart)
+    .all<{
+      week_start: string;
+      metric_cut: string;
+      dimension: string;
+      sub_dimension: string;
+      value: number;
+      denominator: number;
+      suppressed: number;
+    }>();
 
-    const result = await db
-      .prepare(
-        `UPDATE hf_weekly_metrics SET ${field} =
-           CASE WHEN (
-             SELECT value FROM hf_weekly_metrics prev
-             WHERE prev.week_start = ?1
-               AND prev.metric_cut = hf_weekly_metrics.metric_cut
-               AND prev.dimension = hf_weekly_metrics.dimension
-               AND prev.sub_dimension = hf_weekly_metrics.sub_dimension
-               AND prev.taxonomy_version = hf_weekly_metrics.taxonomy_version
-           ) > 0
-           THEN (hf_weekly_metrics.value - (
-             SELECT value FROM hf_weekly_metrics prev
-             WHERE prev.week_start = ?1
-               AND prev.metric_cut = hf_weekly_metrics.metric_cut
-               AND prev.dimension = hf_weekly_metrics.dimension
-               AND prev.sub_dimension = hf_weekly_metrics.sub_dimension
-               AND prev.taxonomy_version = hf_weekly_metrics.taxonomy_version
-           )) / (
-             SELECT value FROM hf_weekly_metrics prev
-             WHERE prev.week_start = ?1
-               AND prev.metric_cut = hf_weekly_metrics.metric_cut
-               AND prev.dimension = hf_weekly_metrics.dimension
-               AND prev.sub_dimension = hf_weekly_metrics.sub_dimension
-               AND prev.taxonomy_version = hf_weekly_metrics.taxonomy_version
-           ) * 100
-           ELSE NULL END
-         WHERE week_start = ?2
-           AND taxonomy_version = ?3
-           AND suppressed = 0`,
-      )
-      .bind(prevWeek, weekStart, TAXONOMY_VERSION)
-      .run();
+  if (!history.results?.length) return 0;
 
-    updated += result.meta?.changes ?? 0;
+  // key -> weekStart -> row
+  const series = new Map<
+    string,
+    Map<string, { value: number; denominator: number; suppressed: number }>
+  >();
+  for (const r of history.results) {
+    const key = `${r.metric_cut}\u0000${r.dimension}\u0000${r.sub_dimension}`;
+    let weeks = series.get(key);
+    if (!weeks) { weeks = new Map(); series.set(key, weeks); }
+    weeks.set(r.week_start, {
+      value: r.value,
+      denominator: r.denominator,
+      suppressed: r.suppressed,
+    });
   }
 
+  /** Pools `weeks` weeks ending at (and including) `endWeek`. */
+  function pool(
+    weeks: Map<string, { value: number; denominator: number; suppressed: number }>,
+    endWeek: string,
+    span: number,
+    isCount: boolean,
+  ): { value: number; denominator: number; present: number } {
+    let numerator = 0;
+    let denominator = 0;
+    let present = 0;
+
+    for (let i = 0; i < span; i++) {
+      const wk = shiftWeeks(endWeek, -i);
+      const row = weeks.get(wk);
+      if (!row) continue;
+      present++;
+      if (isCount) {
+        numerator += row.value;
+      } else {
+        numerator += row.value * row.denominator;
+      }
+      denominator += row.denominator;
+    }
+
+    return {
+      value: isCount ? numerator : denominator > 0 ? numerator / denominator : 0,
+      denominator,
+      present,
+    };
+  }
+
+  const updates: D1PreparedStatement[] = [];
+
+  for (const [key, weeks] of series) {
+    const [cut, dimension, subDimension] = key.split("\u0000") as [string, string, string];
+    const isCount = COUNT_CUTS.has(cut);
+
+    const deltas: Record<string, number | null> = {
+      delta_1w: null,
+      delta_4w: null,
+      delta_12w: null,
+    };
+
+    // A row whose own denominator was too small to report is not a base to
+    // measure change against either; it stays delta-free rather than pairing
+    // "too few to report" with a confident-looking percentage.
+    const currentRow = weeks.get(weekStart);
+    if (!currentRow || currentRow.suppressed === 1) continue;
+
+    for (const { field, weeks: span } of GROWTH_WINDOWS) {
+      const current = pool(weeks, weekStart, span, isCount);
+      const previous = pool(weeks, shiftWeeks(weekStart, -span), span, isCount);
+
+      // No comparison is possible without a prior window, and a percentage
+      // change off a near-empty base is worse than no number at all. Both
+      // cases stay null so the page can say "not enough history" rather than
+      // print a spurious swing.
+      if (previous.present === 0) continue;
+      if (previous.denominator < MIN_DENOMINATOR) continue;
+      if (previous.value === 0) continue;
+
+      deltas[field] = ((current.value - previous.value) / previous.value) * 100;
+    }
+
+    updates.push(
+      db
+        .prepare(
+          `UPDATE hf_weekly_metrics
+             SET delta_1w = ?1, delta_4w = ?2, delta_12w = ?3
+           WHERE week_start = ?4 AND taxonomy_version = ?5
+             AND metric_cut = ?6 AND dimension = ?7 AND sub_dimension = ?8`,
+        )
+        .bind(
+          deltas.delta_1w, deltas.delta_4w, deltas.delta_12w,
+          weekStart, TAXONOMY_VERSION, cut, dimension, subDimension,
+        ),
+    );
+  }
+
+  let updated = 0;
+  const BATCH = 100;
+  for (let i = 0; i < updates.length; i += BATCH) {
+    const results = await db.batch(updates.slice(i, i + BATCH));
+    updated += results.reduce((s, r) => s + (r.meta?.changes ?? 0), 0);
+  }
   return updated;
 }
 
@@ -476,6 +623,7 @@ export async function aggregateWeeklyMetrics(
     verticalRows,
     familyShareRows,
     techRows,
+    sdkRows,
     modelRows,
     engagementRows,
   ] = await Promise.all([
@@ -484,6 +632,7 @@ export async function aggregateWeeklyMetrics(
     breakdownByVertical(db, weekStart, weekEnd),
     familyShareByUseCase(db, weekStart, weekEnd),
     technologyPenetration(db, weekStart, weekEnd),
+    sdkDistribution(db, weekStart, weekEnd),
     newModelsByFamily(db, weekStart, weekEnd),
     downloadLikeTrends(db, weekStart, weekEnd),
   ]);
@@ -494,6 +643,7 @@ export async function aggregateWeeklyMetrics(
     ...verticalRows,
     ...familyShareRows,
     ...techRows,
+    ...sdkRows,
     ...modelRows,
     ...engagementRows,
   );

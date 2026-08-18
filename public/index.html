@@ -101,6 +101,10 @@
     <h2>Technology Penetration (%)</h2>
     <div class="chart-container"><canvas id="tech-chart"></canvas></div>
   </div>
+  <div class="card" id="sdk-card">
+    <h2>New Spaces by SDK</h2>
+    <div class="chart-container"><canvas id="sdk-chart"></canvas></div>
+  </div>
   <div class="card" id="models-card">
     <h2>New Models by Family</h2>
     <div class="chart-container"><canvas id="models-chart"></canvas></div>
@@ -130,7 +134,9 @@
     <li>Data source: Hugging Face Hub API, scraped weekly via cursor walk.</li>
     <li>Spaces are deduplicated by normalized title + linked model set. Template clones are clustered; only one representative per cluster is counted.</li>
     <li>~53% of new Spaces are <code>sdk: static</code>. Included in all counts.</li>
-    <li>Classification: deterministic rules (tags, SDK, linked models, slug) first; remaining Spaces classified by Claude Haiku 4.5 via Bedrock.</li>
+    <li>Classification: deterministic rules (tags, linked models, slug, README prose) first; remaining Spaces classified by Claude Haiku 4.5 via Bedrock.</li>
+    <li>Technology tags are AI techniques (RAG, agentic, multimodal, quantized, MoE&hellip;), not frameworks. The build SDK is reported separately above.</li>
+    <li>Growth windows compare each trailing window against the immediately preceding window of equal length &mdash; 4W compares weeks W-3&ndash;W against W-7&ndash;W-4, not this week against one week three months ago.</li>
     <li>Primary use case is single-valued (sums to 100%). Verticals, technologies, and model families are multi-label (penetration rates, do NOT sum to 100%).</li>
     <li>Downloads are a rolling 30-day figure (a rate, not a total). Likes are cumulative.</li>
     <li>Small-denominator cuts (&lt;10) are suppressed rather than reported as wild percentages.</li>
@@ -195,6 +201,7 @@ async function loadWeek(week) {
   renderBarChart('share-chart', byCut['share_by_use_case'], 'dimension', 'value');
   renderBarChart('vertical-chart', byCut['vertical_penetration'], 'dimension', 'value');
   renderBarChart('tech-chart', byCut['technology_penetration'], 'dimension', 'value');
+  renderBarChart('sdk-chart', byCut['sdk_distribution'], 'dimension', 'value');
   renderBarChart('models-chart', byCut['models_by_family'], 'dimension', 'value');
   renderEngagement(byCut['engagement']);
   renderFamilyByUseCase(byCut['family_share_by_use_case']);

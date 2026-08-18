@@ -156,9 +156,20 @@ async function classifyBatch(
 
 // ── DB-driven batch classification ──────────────────────────────────────────
 
-const BATCH_SIZE = 20;
-const MAX_BATCHES = 200;
+export const BATCH_SIZE = 20;
 
+/**
+ * Classifies ONE batch of unclassified Spaces and returns.
+ *
+ * Deliberately not a loop: the caller runs this once per Workflow step so a
+ * failure resumes at the failed batch instead of replaying every Bedrock call
+ * made before it, and so no single step approaches the invocation timeout.
+ * The queue advances because each call writes rows that the next call's
+ * `c.id IS NULL` filter then excludes.
+ *
+ * `total` is the number of Spaces this batch pulled; the caller stops when it
+ * comes back short of BATCH_SIZE.
+ */
 export async function classifySpacesByLlm(
   db: D1Database,
   client: BedrockClient,
@@ -177,7 +188,7 @@ export async function classifySpacesByLlm(
     errors: 0,
   };
 
-  for (let batch = 0; batch < MAX_BATCHES; batch++) {
+  {
     const rows = await db
       .prepare(
         `SELECT s.space_id, s.title, s.short_description, s.sdk,
@@ -201,7 +212,7 @@ export async function classifySpacesByLlm(
         readme_text: string | null;
       }>();
 
-    if (!rows.results?.length) break;
+    if (!rows.results?.length) return summary;
 
     summary.total += rows.results.length;
     summary.batches++;
@@ -211,8 +222,8 @@ export async function classifySpacesByLlm(
       title: r.title,
       shortDescription: r.short_description,
       sdk: r.sdk,
-      tags: JSON.parse(r.tags),
-      linkedModels: JSON.parse(r.linked_models),
+      tags: safeJsonArray(r.tags),
+      linkedModels: safeJsonArray(r.linked_models),
       readmeText: r.readme_text,
     }));
 
@@ -291,10 +302,27 @@ export async function classifySpacesByLlm(
       for (let i = 0; i < stmts.length; i += STMT_BATCH) {
         await db.batch(stmts.slice(i, i + STMT_BATCH));
       }
-    } catch {
+    } catch (err) {
+      // Rethrow rather than swallow. Returning normally here would report the
+      // step as succeeded, so the Workflow's retry policy would never fire and
+      // the caller — which stops only when a batch comes back short — would
+      // re-select these same Spaces on every subsequent pass. A failure that
+      // survives the step's retries should fail the run visibly instead of
+      // quietly yielding a week with no LLM classifications.
       summary.errors++;
+      throw err;
     }
   }
 
   return summary;
+}
+
+/** A malformed JSON column degrades one Space's signal, never the batch. */
+function safeJsonArray(raw: string): string[] {
+  try {
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed.filter((v) => typeof v === "string") : [];
+  } catch {
+    return [];
+  }
 }

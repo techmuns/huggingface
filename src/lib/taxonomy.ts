@@ -1,74 +1,109 @@
 /**
  * Phase 6 — taxonomy definitions.
  *
- * Every label the pipeline produces lives here so the taxonomy is one import,
- * one version string, and one place to change when the taxonomy evolves.
+ * These four lists are taken verbatim from the work brief. They are not a
+ * design choice we get to make: the stakeholder named the buckets, and the
+ * whole point of the exercise is answering their four questions in their own
+ * vocabulary. Adding a category they did not ask for silently changes what
+ * "share of new Spaces by use case" means; dropping one hides activity.
  *
  * Cardinality is enforced by the schema:
- *   - primary_use_case: exactly ONE per Space (sums to 100%)
- *   - verticals, model_families, technologies: multi-label (penetration rates)
+ *   - primary_use_case: exactly ONE per Space (shares sum to 100%)
+ *   - verticals, model_families, technologies: multi-label, so percentages
+ *     over them are PENETRATION RATES and do not sum to 100%
  */
 
 export const TAXONOMY_VERSION = "1";
 
+/**
+ * "What are developers building?" — one per Space.
+ *
+ * Note that `agentic` is deliberately NOT here. The brief lists it as a
+ * technology, and it has to stay one: the target sentence "60%+ of new
+ * coding Spaces are agentic" is a cross-tab of use case against technology,
+ * which is impossible if a Space can only be one or the other.
+ */
 export const USE_CASES = [
-  "chatbot",
-  "image-generation",
-  "voice-speech",
-  "code-tool",
-  "data-analysis",
-  "document-processing",
-  "video-media",
-  "agentic",
-  "education-research",
-  "model-demo",
+  "coding",              // Coding / software development
+  "chat-assistant",      // General chat / assistant
+  "search-research",     // Search / research
+  "document-ai",         // Document AI / knowledge work
+  "data-analysis",       // Data analysis / BI
+  "image-generation",    // Image generation / editing
+  "video-generation",    // Video generation / editing
+  "voice-audio",         // Voice / speech / audio
+  "music-generation",    // Music generation
+  "robotics",            // Robotics / embodied AI
+  "3d-gaming",           // 3D / gaming / simulation
+  "education",           // Education / tutoring
+  "scientific-tools",    // Scientific tools
   "other",
 ] as const;
 
 export type UseCase = (typeof USE_CASES)[number];
 
+/** "Where are they building it?" — multi-label. */
 export const VERTICALS = [
-  "healthcare",
+  "healthcare",               // Healthcare / medical
   "finance",
   "legal",
-  "ecommerce-retail",
-  "gaming",
-  "creative-media",
-  "developer-tools",
-  "science-research",
-  "enterprise",
+  "enterprise-productivity",  // Enterprise / productivity
   "consumer",
+  "education",
+  "media-entertainment",      // Media / entertainment
+  "ecommerce-retail",         // E-commerce / retail
+  "industrial-manufacturing", // Industrial / manufacturing
+  "cybersecurity",
+  "scientific-research",      // Scientific / research
+  "other",
 ] as const;
 
 export type Vertical = (typeof VERTICALS)[number];
 
+/**
+ * "What are they building on?" — multi-label.
+ *
+ * Identical to the family list Phase 4 resolves model repos into, so a
+ * Space's declared family and a model repo's resolved family are the same
+ * vocabulary and can be joined without translation.
+ */
 export const MODEL_FAMILIES = [
   "qwen",
   "llama",
   "deepseek",
   "gemma",
   "mistral",
-  "glm-zhipu",
-  "kimi-moonshot",
-  "nvidia-nemotron",
-  "stable-diffusion",
-  "whisper",
-  "other-open",
+  "glm-zhipu",       // GLM / Zhipu
+  "kimi-moonshot",   // Kimi / Moonshot
+  "nvidia-nemotron", // NVIDIA / Nemotron
+  "other-open",      // Other open models
+  "proprietary-api", // Proprietary API, where identifiable
 ] as const;
 
 export type ModelFamily = (typeof MODEL_FAMILIES)[number];
 
+/**
+ * "How are they building it?" — multi-label.
+ *
+ * These are AI techniques, not frameworks. The SDK a Space is built with
+ * (gradio / streamlit / docker / static) is a different axis entirely: it is
+ * already stored on hf_spaces.sdk and reported as its own metric cut, so it
+ * does not belong in here diluting the technique signal.
+ */
 export const TECHNOLOGIES = [
-  "gradio",
-  "streamlit",
-  "docker",
-  "static",
-  "transformers",
-  "diffusers",
-  "langchain",
-  "llamaindex",
-  "mcp",
-  "smolagents",
+  "rag",
+  "agentic",
+  "multimodal",
+  "tool-use",           // Tool use / function calling
+  "local-inference",
+  "quantized",
+  "long-context",
+  "vision-language",
+  "speech",             // Speech-to-text / text-to-speech
+  "diffusion",
+  "moe",                // Mixture of experts
+  "fine-tuned",
+  "other",
 ] as const;
 
 export type Technology = (typeof TECHNOLOGIES)[number];

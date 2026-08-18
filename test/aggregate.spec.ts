@@ -77,8 +77,8 @@ describe("aggregateWeeklyMetrics", () => {
 
   it("computes spaces_by_use_case metrics", async () => {
     await seedClassifiedSpaces([
-      { id: "a/chatbot-1", tags: ["text-generation"] },
-      { id: "b/chatbot-2", tags: ["text-generation"] },
+      { id: "a/chatbot-1", tags: ["conversational"] },
+      { id: "b/chatbot-2", tags: ["conversational"] },
       { id: "c/image-gen", tags: ["text-to-image"] },
     ]);
 
@@ -93,7 +93,7 @@ describe("aggregateWeeklyMetrics", () => {
       .bind(WEEK_START)
       .all<{ dimension: string; value: number }>();
 
-    const chatbot = rows.results?.find((r) => r.dimension === "chatbot");
+    const chatbot = rows.results?.find((r) => r.dimension === "chat-assistant");
     const imageGen = rows.results?.find((r) => r.dimension === "image-generation");
     expect(chatbot?.value).toBe(2);
     expect(imageGen?.value).toBe(1);
@@ -101,7 +101,7 @@ describe("aggregateWeeklyMetrics", () => {
 
   it("computes share_by_use_case that sums to 100%", async () => {
     await seedClassifiedSpaces([
-      { id: "a/chatbot", tags: ["text-generation"] },
+      { id: "a/chatbot", tags: ["conversational"] },
       { id: "b/img", tags: ["text-to-image"] },
     ]);
 
@@ -154,7 +154,7 @@ describe("aggregateWeeklyMetrics", () => {
 
   it("every metric row has a denominator", async () => {
     await seedClassifiedSpaces([
-      { id: "a/chatbot", tags: ["text-generation"] },
+      { id: "a/chatbot", tags: ["conversational"] },
     ]);
 
     await aggregateWeeklyMetrics(DB, WEEK_START, WEEK_END);
@@ -171,7 +171,7 @@ describe("aggregateWeeklyMetrics", () => {
 
   it("is idempotent — re-running upserts rather than duplicates", async () => {
     await seedClassifiedSpaces([
-      { id: "a/chatbot", tags: ["text-generation"] },
+      { id: "a/chatbot", tags: ["conversational"] },
     ]);
 
     await aggregateWeeklyMetrics(DB, WEEK_START, WEEK_END);

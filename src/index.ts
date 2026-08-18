@@ -1,6 +1,6 @@
 import { isAuthorized } from "./lib/auth";
 import { TAXONOMY_VERSION } from "./lib/taxonomy";
-import { weekStartIso } from "./lib/time";
+import { isoWeekLabel, weekStartIso } from "./lib/time";
 import type { WeeklyPipelineParams } from "./workflow";
 
 export { WeeklyPipeline } from "./workflow";
@@ -211,6 +211,7 @@ const VALID_CUTS = new Set([
   "vertical_penetration",
   "family_share_by_use_case",
   "technology_penetration",
+  "sdk_distribution",
   "models_by_family",
   "engagement",
 ]);
@@ -272,7 +273,10 @@ async function handleNarrative(request: Request, env: Env, url: URL): Promise<Re
     );
   }
 
-  const path = `data/weeks/${weekStart}.json`;
+  // Snapshots are committed under their ISO week label (2026-W33), not the
+  // Monday date, so the label has to be derived here or every lookup 404s.
+  const label = isoWeekLabel(new Date(`${weekStart}T00:00:00.000Z`));
+  const path = `data/weeks/${label}.json`;
   try {
     const res = await fetch(
       `https://api.github.com/repos/${env.GITHUB_REPO}/contents/${path}`,

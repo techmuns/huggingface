@@ -6,6 +6,7 @@ import {
   classifySpacesByRules,
 } from "./lib/classify-rules";
 import {
+  BATCH_SIZE as LLM_BATCH_SIZE,
   type ClassifyLlmSummary,
   classifySpacesByLlm,
 } from "./lib/classify-llm";
@@ -110,6 +111,7 @@ export class WeeklyPipeline extends WorkflowEntrypoint<Env, WeeklyPipelineParams
         // fragmenting one logical run across several.
         runId: event.instanceId,
         weekStart: week,
+        backfillWeeks,
         // Inclusive lower bound of the ingest window. A backfill of N weeks
         // reaches back N-1 weeks before the week being processed, so the
         // trailing 4W and 12W comparisons have data to compare against.
@@ -155,9 +157,23 @@ export class WeeklyPipeline extends WorkflowEntrypoint<Env, WeeklyPipelineParams
     const classifyLlm = await this.classifyWithLlm(step, config.since, weekEnd);
 
     // ── Phase 7: aggregate weekly metrics ───────────────────────────────
-    const aggregate = await step.do("aggregate", SQL_RETRY, async () => {
-      return aggregateWeeklyMetrics(this.env.DB, config.weekStart, weekEnd);
-    });
+    //
+    // Every backfilled week is aggregated, oldest first — not just the week
+    // being processed. Ingest, dedup and classify all span the whole backfill
+    // window, and the 4W/12W deltas are computed by reading earlier weeks back
+    // out of hf_weekly_metrics, so aggregating only the final week would leave
+    // the comparison windows with nothing to compare against and make the
+    // backfill pointless. Chronological order matters for the same reason: a
+    // week's deltas read the weeks written before it.
+    const aggregate: AggregateSummary = { metricsWritten: 0 };
+    for (let i = config.backfillWeeks - 1; i >= 0; i--) {
+      const target = weekStartIso(addWeeks(new Date(`${config.weekStart}T00:00:00.000Z`), -i));
+      const targetEnd = addWeeks(new Date(`${target}T00:00:00.000Z`), 1).toISOString();
+      const partial = await step.do(`aggregate-${target}`, SQL_RETRY, async () => {
+        return aggregateWeeklyMetrics(this.env.DB, target, targetEnd);
+      });
+      aggregate.metricsWritten += partial.metricsWritten;
+    }
 
     // ── Phase 8: narrate + publish snapshot ──────────────────────────────
     const bedrockNarrate = new BedrockClient({
@@ -334,7 +350,10 @@ export class WeeklyPipeline extends WorkflowEntrypoint<Env, WeeklyPipelineParams
       totals.cacheCreateTokens += result.cacheCreateTokens;
       totals.errors += result.errors;
 
-      if (result.total === 0) break;
+      // A short batch means the queue is drained. Each call classifies the
+      // Spaces it pulled, so the next call's "unclassified" filter excludes
+      // them and the queue advances without an offset cursor.
+      if (result.total < LLM_BATCH_SIZE) break;
     }
 
     return totals;

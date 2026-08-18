@@ -24,6 +24,8 @@ export interface ResolveSummary {
   byCardData: number;
   byChain: number;
   byName: number;
+  /** Repos with no declared parent, labelled `base`. */
+  byBase: number;
   total: number;
 }
 
@@ -269,6 +271,17 @@ export async function resolveModelFamilies(db: D1Database): Promise<ResolveSumma
     )
     .run();
 
+  // A repo that declares no parent is a base model. The brief asks for all
+  // six derivative types, and without this every repo without a base_model
+  // tag would report a NULL type — indistinguishable from "not yet resolved"
+  // and leaving the single largest bucket unlabelled.
+  const base = await db
+    .prepare(
+      `UPDATE hf_models SET derivative_type = 'base'
+       WHERE base_model IS NULL AND derivative_type IS NULL`,
+    )
+    .run();
+
   const total = byTag + byCardData + byChain + byName;
-  return { byTag, byCardData, byChain, byName, total };
+  return { byTag, byCardData, byChain, byName, byBase: base.meta?.changes ?? 0, total };
 }

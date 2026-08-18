@@ -106,10 +106,17 @@ export async function enrichBlindSpaces(params: EnrichBatchParams): Promise<Enri
     skippedUnchanged: 0,
   };
 
+  // Only rows never attempted. An 'error' row deliberately stays out of the
+  // queue for the rest of the run: the caller drains this batch-by-batch
+  // until it comes back short, and re-selecting failures would put the same
+  // unreachable Spaces back at the head of the queue on every pass, spinning
+  // until the batch cap with no progress. Transient failures are already
+  // covered by the Workflow step's own retries, and anything still broken is
+  // retried a week later by the next run.
   const rows = await db
     .prepare(
       `SELECT space_id, readme_hash FROM hf_spaces
-       WHERE signal_tier = 'blind' AND (readme_status IS NULL OR readme_status = 'error')
+       WHERE signal_tier = 'blind' AND readme_status IS NULL
        ORDER BY space_id
        LIMIT ?1 OFFSET ?2`,
     )
