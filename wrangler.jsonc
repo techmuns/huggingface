@@ -1,10 +1,90 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "huggingface",
-  "main": "src/index.js",
+  "main": "src/index.ts",
   "compatibility_date": "2025-09-01",
   "workers_dev": true,
+
   "observability": {
     "enabled": true
+  },
+
+  // ---------------------------------------------------------------------
+  // D1 — the single working store (SQLite). Raw records, typed entities,
+  // classifications and precomputed weekly metrics all live here.
+  //
+  // Before the first `wrangler dev`/`deploy` against a real account, run:
+  //     npx wrangler d1 create huggingface-activity
+  // and paste the returned id over the placeholder below. Local dev and the
+  // vitest pool use a per-project simulated D1 and ignore this value.
+  // ---------------------------------------------------------------------
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "huggingface-activity",
+      "database_id": "00000000-0000-0000-0000-000000000000",
+      "migrations_dir": "migrations"
+    }
+  ],
+
+  // ---------------------------------------------------------------------
+  // Workflows — the weekly pipeline. Durable per-step state and independent
+  // step retries; classification alone outlives a single Worker invocation.
+  // ---------------------------------------------------------------------
+  "workflows": [
+    {
+      "name": "hf-weekly-pipeline",
+      "binding": "WEEKLY_PIPELINE",
+      "class_name": "WeeklyPipeline"
+    }
+  ],
+
+  // ---------------------------------------------------------------------
+  // Static assets — the dashboard page, served by this same Worker.
+  // `not_found_handling: "none"` lets unmatched paths (e.g. /api/*) fall
+  // through to the fetch handler instead of returning the asset 404.
+  // ---------------------------------------------------------------------
+  "assets": {
+    "directory": "./public/",
+    "binding": "ASSETS",
+    "not_found_handling": "none"
+  },
+
+  // ---------------------------------------------------------------------
+  // Cloudflare cron is UTC only. Monday 06:00 IST (UTC+05:30) == 00:30 UTC.
+  // ---------------------------------------------------------------------
+  "triggers": {
+    "crons": ["30 0 * * 1"]
+  },
+
+  // Declared so a missing value fails loudly at deploy rather than at 03:00
+  // on a Monday. Set each with `wrangler secret put <NAME>`.
+  "secrets": {
+    "required": [
+      "HF_TOKEN",
+      "BEDROCK_API_KEY",
+      "GITHUB_TOKEN",
+      "ADMIN_TOKEN"
+    ]
+  },
+
+  "vars": {
+    "TAXONOMY_VERSION": "1",
+    "GITHUB_REPO": "techmuns/huggingface",
+
+    // Verified against this account: `anthropic.claude-opus-5` and the Haiku
+    // 4.5 release are both INFERENCE_PROFILE-only, so they must be invoked
+    // through a regional profile id (the `us.` prefix), not the bare model id.
+    // us-east-1 is the region that resolves both; ap-south-1 rejects the
+    // `apac.` profile for Opus 5, and Sonnet 4.6 returns 403 on this account.
+    "BEDROCK_REGION": "us-east-1",
+
+    // Cost split. Classification is the only high-volume LLM call (~175
+    // batched requests/week), so it runs on Haiku 4.5 at $1/$5 per 1M rather
+    // than Opus 5 at $5/$25. Narration is a single call per week over already
+    // computed metrics, where the prose is what the stakeholder actually
+    // reads, so it keeps the stronger model at negligible cost.
+    "BEDROCK_CLASSIFY_MODEL_ID": "us.anthropic.claude-haiku-4-5-20251001-v1:0",
+    "BEDROCK_NARRATE_MODEL_ID": "us.anthropic.claude-opus-5"
   }
 }

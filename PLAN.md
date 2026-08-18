@@ -66,12 +66,13 @@ I re-ran the measurements against the live API rather than carrying the old numb
 |---|---|---|---|
 | New Spaces / week | ~9,800 | **~6,800** | 30% less classification volume and cost |
 | New models / week | ~29,000 | **~25,500** | Unchanged conclusion: ingest is trivial |
-| Payload size per record | implied large | **268 B** models, **395 B** spaces | **This is what makes single-store D1 viable** — 9.5 MB/week total |
+| Payload size per record | implied large | **543 B** average, measured over 8,000 records actually ingested | **17.6 MB/week**, not the 9.5 MB estimated. Still single-store D1 territory (26-week retention is ~460 MB against a 10 GB cap), but the retention policy is now load-bearing rather than precautionary |
 | `base_model` declared | ~22% | **17.2%** | Coverage reporting is more important, not less |
 | Spaces with a linked model | not measured | **26.5%** | Strongest classification signal covers only a quarter |
 | Spaces with a short description | not measured | **31.4%** | — |
-| Spaces with **neither** | not measured | **~50%** | **The single most important new fact** |
-| `sdk: static` share of new Spaces | not measured | **53%** | Half of new Spaces are static pages, not apps |
+| Spaces with **neither** | not measured | **58.5%** | **The single most important fact.** Re-measured on a fresh 200-record sample; worse than the 50% first estimated |
+| `sdk: static` share of new Spaces | not measured | **56.5%** | Over half of new Spaces are static pages, not apps |
+| Spaces carrying a `title` | not measured | **97.5%** | But for the blind half the title is just the slug title-cased (`my-telegram-bot` -> "My Telegram Bot"), so it adds almost nothing beyond the slug itself |
 | Template/clone rate | flagged, unquantified | **12.8%** share a normalized title within 24h | Dedup is mandatory and now measurable |
 
 **The finding that reframes the project: roughly half of all new Spaces carry no usable signal beyond their title and slug.** In a single 1,000-record sample, 498 had no linked model, no description, and no meaningful tag. The classifiable universe is about half the raw count — so "new Spaces by use case" is a count over a *resolvable subset*, exactly like model-family resolution, and it needs the same coverage disclosure. Publishing it as an absolute would be the fastest way to lose the stakeholder's trust.
@@ -83,6 +84,11 @@ Three consequences:
 2. **README fetching flips from "don't" to "conditionally yes."** At 6,800 Spaces/week, the blind subset is ~3,400 — that is ~7 rate-limit windows, about 35 minutes of wall clock, which a Workflow absorbs natively with `step.sleep`. The old plan's 20-hour estimate assumed the higher volume and unconditional fetching. **But gate it hard:** I sampled READMEs from the blind subset and **~58% were the 195-byte auto-generated stub** ("Check out the configuration reference at…"), one was a 404, and only ~33% carried real signal. Fetch them, but discard anything under ~250 bytes or matching the stub, and never re-fetch a Space whose content hash is unchanged.
 
 3. **`sdk: static` at 53% needs a stated position in the methodology.** These are overwhelmingly one-click template duplicates and browser-only demos. They are not noise to be silently dropped — some are real (a browser ONNX PCB-defect detector turned up in the sample) — but a trend line that counts them equally with a Docker-deployed agentic Space is measuring something other than developer activity. Report with and without.
+
+Two API-shape facts that only surfaced on contact with the live endpoint:
+
+- **`title` and `shortDescription` are not expandable on Spaces.** The endpoint rejects them and helpfully enumerates what it does accept. Both live inside `cardData`, as `title` and `short_description`.
+- **Cursor pagination re-surfaces records that change mid-walk.** ~0.2% of an 8,000-record ingest arrived twice, each copy carrying a different `lastModified` — genuinely modified between page fetches, not a pagination bug. Append-only raw plus upsert-on-parse absorbs this without special handling, which is a point in favour of the two-layer design rather than a problem to fix.
 
 Also verified unchanged: the API needs **no auth** (a token only raises limits), the rate limit is **500 requests / 5 minutes** anonymous, `limit=1000` works, cursor pagination via the `Link` header works, and `base_model:quantized:Qwen/Qwen3-8B`-style tags come back **directly in the listing** — so family and derivative type are readable without any per-model detail fetch.
 
@@ -149,7 +155,12 @@ Stages 1–7 are one weekly Workflow, each step independently re-runnable. Stage
 - **`.gitignore` currently ignores `.dev.vars` but not `.env`.** Adding a populated `.env` today would commit your AWS credentials. Fix the ignore file in the first commit.
 - Wrangler reads **either** `.dev.vars` **or** `.env` for local dev, not both — if `.dev.vars` exists, `.env` is ignored entirely. Pick one and document it. For deployed environments these are not files at all: each value goes in via `wrangler secret put`. Declare the required names with the `secrets.required` config property so a missing key fails loudly at deploy instead of silently at 3 a.m.
 
-Secrets needed: `HF_TOKEN` (optional, raises rate limits), `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_REGION`, `GITHUB_TOKEN` (snapshot commits), `ADMIN_TOKEN` (guards the manual trigger).
+Secrets needed: `HF_TOKEN` (the Hub API is public; a token only raises the rate limit), `BEDROCK_API_KEY`, `GITHUB_TOKEN` (snapshot commits), `ADMIN_TOKEN` (guards the manual trigger).
+
+**Credentials, once supplied, changed two decisions.** Both were verified live against the account rather than assumed:
+
+- The Bedrock credential is a **long-term API key** (`ABSK…`), not an access-key pair. Bedrock API keys authenticate with a plain `Authorization: Bearer` header, so **the SigV4 signer this plan originally specified is not needed at all** — no `aws4fetch`, no request signing, nothing in the Worker bundle beyond `fetch`. `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` and `AWS_REGION` are all dropped; region becomes a plaintext var.
+- **`us-east-1` is the region, and models must be invoked through a regional inference profile.** Both `anthropic.claude-opus-5` and the Haiku 4.5 release are `INFERENCE_PROFILE`-only on this account, so the bare model id returns 400 — the `us.` prefix is required. `ap-south-1` lists Opus 5 but rejects the `apac.` profile for it, and Sonnet 4.6 returns 403 (`INVALID_PAYMENT_INSTRUMENT`) account-wide. **Usable models are Haiku 4.5 and Opus 5 only.**
 
 **Why it matters.** Everything downstream assumes bindings, migrations and a test harness exist. Doing it as one deliberate phase avoids five ad-hoc half-versions of it.
 
@@ -241,8 +252,8 @@ The judgement-heavy phase, and the one that decides whether the dashboard is tru
 
 Concrete integration, because there is no existing `LlmModule` to reuse:
 
-- **Sign with `aws4fetch`** (65 KB, no Node built-ins) against the Bedrock `InvokeModel` endpoint. Do **not** use `@anthropic-ai/bedrock-sdk` here — it pulls the full AWS SDK v3 plus `@smithy/eventstream-serde-node`, which is Node-specific and heavy against the Worker's 10 MB script limit.
-- **Model:** `anthropic.claude-opus-5` (Bedrock IDs take the `anthropic.` prefix). Body carries `anthropic_version: "bedrock-2023-05-31"`.
+- **Authenticate with a bearer token**, not SigV4: `Authorization: Bearer $BEDROCK_API_KEY` against `https://bedrock-runtime.us-east-1.amazonaws.com/model/{modelId}/invoke`. Body carries `anthropic_version: "bedrock-2023-05-31"`. This is a plain `fetch` call with no signing dependency. Do **not** use `@anthropic-ai/bedrock-sdk` — it pulls the full AWS SDK v3 plus `@smithy/eventstream-serde-node`, which is Node-specific and heavy against the Worker's 10 MB script limit.
+- **Model: `us.anthropic.claude-haiku-4-5-20251001-v1:0`** for classification. Classification is the only high-volume LLM call in the system, so it takes the cheap model; the once-weekly narrative in Phase 8 keeps `us.anthropic.claude-opus-5`, where the cost is negligible and the prose is what the stakeholder actually reads. Both ids carry the `us.` inference-profile prefix, which is mandatory — the bare `anthropic.` id returns 400 on this account.
 - **Structured output** via `output_config.format` — supported on Bedrock — covering all four dimensions plus per-dimension confidence and a one-line rationale. Not the deprecated `output_format`.
 - **Batch ~20 Spaces per request** behind a cached taxonomy prompt. This is the main cost lever: it cuts ~3,500 requests/week to ~175.
 - **Prompt caching is supported on Bedrock but automatic caching is not** — place `cache_control` breakpoints manually on the taxonomy block, and keep the volatile per-batch content after the last breakpoint.
@@ -319,10 +330,11 @@ Add an admin-guarded `POST` that starts the same Workflow on demand — essentia
 | Workers Paid | **$5/mo — mandatory**, free tier cannot run this |
 | D1 storage | ~500 MB/yr under a 26-week raw retention policy; well inside 10 GB |
 | D1 writes | ~65k rows/week ≈ 3.4M/yr ≈ **$3/yr** |
-| Bedrock classification | ~175 batched requests/week. On `claude-opus-5` with prompt caching, roughly **$10–15/week**; a cheaper model cuts that several-fold |
+| Bedrock classification | ~175 batched requests/week on Haiku 4.5 ($1/$5 per 1M) with prompt caching — roughly **$2–3/week**. Opus 5 on the same volume would be ~5x that |
+| Bedrock narration | 1 request/week on Opus 5 over computed metrics — **cents** |
 | GitHub snapshots | free |
 
-**One decision for you.** Classification is the only meaningful running cost, and it is model-dependent. I've specified `claude-opus-5` because label quality *is* dashboard quality here — a misclassification propagates into every headline number and the narrative. If you'd rather trade some accuracy for cost, the gold set from Phase 6 is exactly the instrument for deciding that: run both models against it and look at the per-dimension delta before choosing. Don't guess at it — measure it once, then pick.
+**The model split is a measurement, not a guess.** Classification runs on Haiku 4.5 and narration on Opus 5, which puts the cheap model on the ~175 batched requests/week and the strong model on the 1 request/week whose output is read verbatim. The open question is whether Haiku's per-dimension accuracy is good enough, and the stratified gold set from Phase 6 is exactly the instrument for answering it: score both models against it and look at the per-dimension delta. If Haiku holds on use case and technology but slips on vertical — the dimension that most needs prose inference — the answer is to split by dimension rather than to move the whole workload up a tier. Measure once, then pick; don't guess.
 
 ---
 
