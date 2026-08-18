@@ -1,4 +1,5 @@
 import { isAuthorized } from "./lib/auth";
+import { TAXONOMY_VERSION } from "./lib/taxonomy";
 import { weekStartIso } from "./lib/time";
 import type { WeeklyPipelineParams } from "./workflow";
 
@@ -33,10 +34,28 @@ export default {
       return handleRunStatus(request, env, runStatus[1]);
     }
 
+    // ── Phase 9: read API ────────────────────────────────────────────────
+    if (url.pathname === "/api/metrics") {
+      return handleMetrics(request, env, url);
+    }
+
+    if (url.pathname === "/api/narrative") {
+      return handleNarrative(request, env, url);
+    }
+
+    if (url.pathname === "/api/coverage") {
+      return handleCoverage(request, env, url);
+    }
+
+    if (url.pathname === "/api/review-queue") {
+      return handleReviewQueue(request, env);
+    }
+
+    if (url.pathname === "/api/weeks") {
+      return handleWeeksList(request, env);
+    }
+
     if (url.pathname === "/api" || url.pathname.startsWith("/api/")) {
-      // Phase 9 mounts the read API here. Answering explicitly keeps unknown
-      // /api paths from falling through to the dashboard's HTML, which would
-      // hand an API caller a 200 and a page instead of a 404 and JSON.
       return Response.json({ error: "not_found", path: url.pathname }, { status: 404 });
     }
 
@@ -177,4 +196,227 @@ export function parseRunParams(
   }
 
   return { params };
+}
+
+// ── Phase 9: read API handlers ──────────────────────────────────────────────
+
+const CORS_HEADERS = {
+  "Access-Control-Allow-Origin": "*",
+  "Cache-Control": "public, max-age=3600",
+};
+
+const VALID_CUTS = new Set([
+  "spaces_by_use_case",
+  "share_by_use_case",
+  "vertical_penetration",
+  "family_share_by_use_case",
+  "technology_penetration",
+  "models_by_family",
+  "engagement",
+]);
+
+async function handleMetrics(request: Request, env: Env, url: URL): Promise<Response> {
+  if (request.method !== "GET") {
+    return Response.json({ error: "method_not_allowed" }, { status: 405, headers: { allow: "GET" } });
+  }
+
+  const weekStart = url.searchParams.get("week");
+  const cut = url.searchParams.get("cut");
+
+  if (!weekStart || !/^\d{4}-\d{2}-\d{2}$/.test(weekStart)) {
+    return Response.json(
+      { error: "invalid_params", detail: "week is required (YYYY-MM-DD)" },
+      { status: 400 },
+    );
+  }
+
+  if (cut && !VALID_CUTS.has(cut)) {
+    return Response.json(
+      { error: "invalid_params", detail: `unknown cut: ${cut}. Valid: ${[...VALID_CUTS].join(", ")}` },
+      { status: 400 },
+    );
+  }
+
+  const query = cut
+    ? `SELECT metric_cut, dimension, sub_dimension, value, denominator, coverage,
+              delta_1w, delta_4w, delta_12w, suppressed
+       FROM hf_weekly_metrics
+       WHERE week_start = ?1 AND taxonomy_version = ?2 AND metric_cut = ?3
+       ORDER BY metric_cut, value DESC`
+    : `SELECT metric_cut, dimension, sub_dimension, value, denominator, coverage,
+              delta_1w, delta_4w, delta_12w, suppressed
+       FROM hf_weekly_metrics
+       WHERE week_start = ?1 AND taxonomy_version = ?2
+       ORDER BY metric_cut, value DESC`;
+
+  const rows = cut
+    ? await env.DB.prepare(query).bind(weekStart, TAXONOMY_VERSION, cut).all()
+    : await env.DB.prepare(query).bind(weekStart, TAXONOMY_VERSION).all();
+
+  return Response.json(
+    { weekStart, taxonomyVersion: TAXONOMY_VERSION, metrics: rows.results ?? [] },
+    { headers: CORS_HEADERS },
+  );
+}
+
+async function handleNarrative(request: Request, env: Env, url: URL): Promise<Response> {
+  if (request.method !== "GET") {
+    return Response.json({ error: "method_not_allowed" }, { status: 405, headers: { allow: "GET" } });
+  }
+
+  const weekStart = url.searchParams.get("week");
+  if (!weekStart || !/^\d{4}-\d{2}-\d{2}$/.test(weekStart)) {
+    return Response.json(
+      { error: "invalid_params", detail: "week is required (YYYY-MM-DD)" },
+      { status: 400 },
+    );
+  }
+
+  const path = `data/weeks/${weekStart}.json`;
+  try {
+    const res = await fetch(
+      `https://api.github.com/repos/${env.GITHUB_REPO}/contents/${path}`,
+      {
+        headers: {
+          Authorization: `Bearer ${env.GITHUB_TOKEN}`,
+          Accept: "application/vnd.github.v3+json",
+          "User-Agent": "hf-activity-worker",
+        },
+      },
+    );
+
+    if (!res.ok) {
+      return Response.json({ error: "not_found", weekStart }, { status: 404 });
+    }
+
+    const data = (await res.json()) as { content: string };
+    const decoded = JSON.parse(atob(data.content));
+    return Response.json(
+      { weekStart, narrative: decoded.narrative ?? null },
+      { headers: CORS_HEADERS },
+    );
+  } catch {
+    return Response.json({ error: "not_found", weekStart }, { status: 404 });
+  }
+}
+
+async function handleCoverage(request: Request, env: Env, url: URL): Promise<Response> {
+  if (request.method !== "GET") {
+    return Response.json({ error: "method_not_allowed" }, { status: 405, headers: { allow: "GET" } });
+  }
+
+  const weekStart = url.searchParams.get("week");
+  if (!weekStart || !/^\d{4}-\d{2}-\d{2}$/.test(weekStart)) {
+    return Response.json(
+      { error: "invalid_params", detail: "week is required (YYYY-MM-DD)" },
+      { status: 400 },
+    );
+  }
+
+  const weekEnd = new Date(
+    new Date(`${weekStart}T00:00:00.000Z`).getTime() + 7 * 86_400_000,
+  ).toISOString();
+
+  const total = await env.DB.prepare(
+    `SELECT COUNT(*) AS cnt FROM hf_spaces
+     WHERE created_at >= ?1 AND created_at < ?2 AND is_cluster_primary = 1`,
+  )
+    .bind(weekStart, weekEnd)
+    .first<{ cnt: number }>();
+
+  const classified = await env.DB.prepare(
+    `SELECT COUNT(*) AS cnt FROM hf_spaces s
+     JOIN hf_classifications c ON c.space_id = s.space_id AND c.taxonomy_version = ?1
+     WHERE s.created_at >= ?2 AND s.created_at < ?3
+       AND s.is_cluster_primary = 1`,
+  )
+    .bind(TAXONOMY_VERSION, weekStart, weekEnd)
+    .first<{ cnt: number }>();
+
+  const ruleCount = await env.DB.prepare(
+    `SELECT COUNT(*) AS cnt FROM hf_classifications
+     WHERE taxonomy_version = ?1 AND source_kind = 'rule'`,
+  )
+    .bind(TAXONOMY_VERSION)
+    .first<{ cnt: number }>();
+
+  const modelCount = await env.DB.prepare(
+    `SELECT COUNT(*) AS cnt FROM hf_classifications
+     WHERE taxonomy_version = ?1 AND source_kind = 'model'`,
+  )
+    .bind(TAXONOMY_VERSION)
+    .first<{ cnt: number }>();
+
+  const lowConfidence = await env.DB.prepare(
+    `SELECT COUNT(*) AS cnt FROM hf_classifications
+     WHERE taxonomy_version = ?1 AND low_confidence = 1`,
+  )
+    .bind(TAXONOMY_VERSION)
+    .first<{ cnt: number }>();
+
+  const totalCount = total?.cnt ?? 0;
+  const classifiedCount = classified?.cnt ?? 0;
+
+  return Response.json(
+    {
+      weekStart,
+      totalSpaces: totalCount,
+      classifiedSpaces: classifiedCount,
+      coveragePercent: totalCount > 0 ? (classifiedCount / totalCount) * 100 : null,
+      bySource: {
+        rule: ruleCount?.cnt ?? 0,
+        model: modelCount?.cnt ?? 0,
+      },
+      lowConfidence: lowConfidence?.cnt ?? 0,
+    },
+    { headers: CORS_HEADERS },
+  );
+}
+
+async function handleReviewQueue(request: Request, env: Env): Promise<Response> {
+  if (request.method !== "GET") {
+    return Response.json({ error: "method_not_allowed" }, { status: 405, headers: { allow: "GET" } });
+  }
+
+  if (!isAuthorized(request, env.ADMIN_TOKEN)) {
+    return Response.json({ error: "unauthorized" }, { status: 401 });
+  }
+
+  const rows = await env.DB.prepare(
+    `SELECT c.space_id, c.primary_use_case, c.use_case_confidence,
+            c.verticals, c.verticals_confidence,
+            c.source_kind, c.rationale,
+            s.title, s.short_description
+     FROM hf_classifications c
+     JOIN hf_spaces s ON s.space_id = c.space_id
+     WHERE c.taxonomy_version = ?1
+       AND c.low_confidence = 1
+       AND c.reviewed = 0
+     ORDER BY c.use_case_confidence ASC
+     LIMIT 100`,
+  )
+    .bind(TAXONOMY_VERSION)
+    .all();
+
+  return Response.json({ items: rows.results ?? [] });
+}
+
+async function handleWeeksList(request: Request, env: Env): Promise<Response> {
+  if (request.method !== "GET") {
+    return Response.json({ error: "method_not_allowed" }, { status: 405, headers: { allow: "GET" } });
+  }
+
+  const rows = await env.DB.prepare(
+    `SELECT DISTINCT week_start FROM hf_weekly_metrics
+     WHERE taxonomy_version = ?1
+     ORDER BY week_start DESC
+     LIMIT 52`,
+  )
+    .bind(TAXONOMY_VERSION)
+    .all<{ week_start: string }>();
+
+  return Response.json(
+    { weeks: (rows.results ?? []).map((r) => r.week_start) },
+    { headers: CORS_HEADERS },
+  );
 }

@@ -1,4 +1,5 @@
 import { WorkflowEntrypoint, type WorkflowEvent, type WorkflowStep } from "cloudflare:workers";
+import { type AggregateSummary, aggregateWeeklyMetrics } from "./lib/aggregate";
 import { BedrockClient } from "./lib/bedrock";
 import {
   type ClassifyRulesSummary,
@@ -17,7 +18,9 @@ import {
 import { HfClient, type EntityKind } from "./lib/hf-api";
 import { MAX_PAGES_PER_WALK, ingestPage } from "./lib/ingest";
 import { type ResolveSummary, resolveModelFamilies } from "./lib/model-family";
+import { type NarrateSummary, narrateWeek } from "./lib/narrate";
 import { type ParseSummary, parseRawModels, parseRawSpaces } from "./lib/parse";
+import { type SnapshotSummary, buildSnapshot, commitSnapshot } from "./lib/snapshot";
 import { addWeeks, weekStart, weekStartIso } from "./lib/time";
 
 /** Parameters accepted when starting a pipeline run. */
@@ -57,6 +60,9 @@ export interface WeeklyPipelineResult {
   dedup?: DedupSummary;
   classifyRules?: ClassifyRulesSummary;
   classifyLlm?: ClassifyLlmSummary;
+  aggregate?: AggregateSummary;
+  narrate?: NarrateSummary;
+  snapshot?: SnapshotSummary;
 }
 
 /**
@@ -148,6 +154,34 @@ export class WeeklyPipeline extends WorkflowEntrypoint<Env, WeeklyPipelineParams
 
     const classifyLlm = await this.classifyWithLlm(step, config.since, weekEnd);
 
+    // ── Phase 7: aggregate weekly metrics ───────────────────────────────
+    const aggregate = await step.do("aggregate", SQL_RETRY, async () => {
+      return aggregateWeeklyMetrics(this.env.DB, config.weekStart, weekEnd);
+    });
+
+    // ── Phase 8: narrate + publish snapshot ──────────────────────────────
+    const bedrockNarrate = new BedrockClient({
+      apiKey: this.env.BEDROCK_API_KEY,
+      region: this.env.BEDROCK_REGION,
+    });
+
+    const narrate = await step.do("narrate", PAGE_RETRY, async () => {
+      return narrateWeek(
+        this.env.DB,
+        bedrockNarrate,
+        this.env.BEDROCK_NARRATE_MODEL_ID,
+        config.weekStart,
+      );
+    });
+
+    let snapshot: SnapshotSummary | undefined;
+    if (!config.dryRun) {
+      snapshot = await step.do("snapshot", PAGE_RETRY, async () => {
+        const payload = await buildSnapshot(this.env.DB, config.weekStart, narrate.narrative);
+        return commitSnapshot(payload, this.env.GITHUB_REPO, this.env.GITHUB_TOKEN);
+      });
+    }
+
     return {
       runId: config.runId,
       weekStart: config.weekStart,
@@ -159,6 +193,9 @@ export class WeeklyPipeline extends WorkflowEntrypoint<Env, WeeklyPipelineParams
       dedup,
       classifyRules,
       classifyLlm,
+      aggregate,
+      narrate,
+      snapshot,
     };
   }
 

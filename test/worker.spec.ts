@@ -11,7 +11,7 @@ describe("worker", () => {
   it("serves the dashboard page from the assets binding", async () => {
     const res = await SELF.fetch("https://example.com/");
     expect(res.status).toBe(200);
-    expect(await res.text()).toContain("<title>HF Developer Activity</title>");
+    expect(await res.text()).toContain("<title>HF Developer Activity Dashboard</title>");
   });
 });
 
