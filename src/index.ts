@@ -210,9 +210,20 @@ export function parseRunParams(
 
 // ── Phase 9: read API handlers ──────────────────────────────────────────────
 
+/**
+ * Short, revalidated cache.
+ *
+ * An hour looked reasonable for weekly data and was actively harmful: a
+ * browser that loaded the page before the first run finished cached
+ * `{"weeks":[]}` and kept showing an empty dashboard for an hour after the
+ * data actually landed — with no way for the server to correct it. Week
+ * *availability* changes at unpredictable times (a backfill, a re-run, a
+ * taxonomy rebuild), so the cheap re-check is worth far more than the saved
+ * request.
+ */
 const CORS_HEADERS = {
   "Access-Control-Allow-Origin": "*",
-  "Cache-Control": "public, max-age=3600",
+  "Cache-Control": "public, max-age=60, must-revalidate",
 };
 
 const VALID_CUTS = new Set([
