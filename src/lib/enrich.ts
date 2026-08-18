@@ -149,8 +149,24 @@ export async function enrichBlindSpaces(params: EnrichBatchParams): Promise<Enri
   if (!rows.results?.length) return summary;
   summary.total = rows.results.length;
 
-  for (const row of rows.results) {
-    const result = await fetchReadme(row.space_id, row.readme_hash);
+  // Fetched with bounded concurrency and written in one batch. Sequentially,
+  // a batch of 50 was 50 round-trips to the Hub plus 50 separate UPDATEs, and
+  // the blind subset is thousands of Spaces a week — the stage dominated the
+  // whole run. The cap is deliberate: unbounded parallelism would trip the
+  // Hub's rate limit and convert a slow stage into a failing one.
+  const CONCURRENCY = 8;
+  const results: Array<{ row: (typeof rows.results)[number]; result: ReadmeResult }> = [];
+
+  for (let i = 0; i < rows.results.length; i += CONCURRENCY) {
+    const slice = rows.results.slice(i, i + CONCURRENCY);
+    const settled = await Promise.all(
+      slice.map(async (row) => ({ row, result: await fetchReadme(row.space_id, row.readme_hash) })),
+    );
+    results.push(...settled);
+  }
+
+  const stmts: D1PreparedStatement[] = [];
+  for (const { row, result } of results) {
     summary.fetched++;
     summary[result.status]++;
 
@@ -159,16 +175,19 @@ export async function enrichBlindSpaces(params: EnrichBatchParams): Promise<Enri
       continue;
     }
 
-    await db
-      .prepare(
-        `UPDATE hf_spaces
-           SET readme_text = ?1, readme_hash = ?2,
-               readme_fetched_at = datetime('now'), readme_status = ?3
-         WHERE space_id = ?4`,
-      )
-      .bind(result.text, result.hash, result.status, row.space_id)
-      .run();
+    stmts.push(
+      db
+        .prepare(
+          `UPDATE hf_spaces
+             SET readme_text = ?1, readme_hash = ?2,
+                 readme_fetched_at = datetime('now'), readme_status = ?3
+           WHERE space_id = ?4`,
+        )
+        .bind(result.text, result.hash, result.status, row.space_id),
+    );
   }
+
+  if (stmts.length > 0) await db.batch(stmts);
 
   return summary;
 }
