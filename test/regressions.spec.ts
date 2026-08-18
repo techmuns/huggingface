@@ -9,7 +9,7 @@
 import { env } from "cloudflare:test";
 import { beforeEach, describe, expect, it } from "vitest";
 import { aggregateWeeklyMetrics } from "../src/lib/aggregate";
-import { type BedrockResponse, firstText } from "../src/lib/bedrock";
+import { BedrockClient, type BedrockResponse, firstText } from "../src/lib/bedrock";
 import { RULES_PAGE_SIZE, classifyByRules, classifySpacesByRules } from "../src/lib/classify-rules";
 import { dedupSpaces } from "../src/lib/enrich";
 import { parseRawSpaces } from "../src/lib/parse";
@@ -258,5 +258,46 @@ describe("firstText", () => {
       content: [{ type: "thinking", thinking: "..." }],
     } as BedrockResponse;
     expect(() => firstText(res)).toThrow(/no text block/i);
+  });
+});
+
+// ── Bedrock request shape ───────────────────────────────────────────────────
+
+describe("structured-output request shape", () => {
+  it("puts the schema directly under format, with no json_schema wrapper", async () => {
+    // The OpenAI-style { json_schema: { name, schema } } wrapper type-checks
+    // perfectly and is rejected by the API with "Unexpected key 'json_schema'",
+    // so every classification call 400'd and the pipeline stalled in retry
+    // backoff with no error surfaced. Caught only by inspecting the wire body.
+    let sent: any = null;
+    const client = new BedrockClient({ apiKey: "k", region: "us-east-1" });
+    const original = globalThis.fetch;
+    globalThis.fetch = (async (_url: string, init: RequestInit) => {
+      sent = JSON.parse(String(init.body));
+      return new Response(
+        JSON.stringify({
+          id: "m", type: "message", role: "assistant", model: "x",
+          stop_reason: "end_turn", content: [{ type: "text", text: '{"results":[]}' }],
+          usage: { input_tokens: 1, output_tokens: 1 },
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    }) as typeof fetch;
+
+    try {
+      await client.invoke("model-id", {
+        anthropic_version: "bedrock-2023-05-31",
+        max_tokens: 16,
+        messages: [{ role: "user", content: [{ type: "text", text: "hi" }] }],
+        output_config: { format: { type: "json_schema", schema: { type: "object" } } },
+      });
+    } finally {
+      globalThis.fetch = original;
+    }
+
+    expect(sent.output_config.format.type).toBe("json_schema");
+    expect(sent.output_config.format.schema).toBeDefined();
+    expect(sent.output_config.format.json_schema).toBeUndefined();
+    expect(sent.anthropic_version).toBe("bedrock-2023-05-31");
   });
 });

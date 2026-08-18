@@ -133,10 +133,7 @@ async function classifyBatch(
     output_config: {
       format: {
         type: "json_schema",
-        json_schema: {
-          name: "batch_classification",
-          schema: BATCH_CLASSIFICATION_JSON_SCHEMA,
-        },
+        schema: BATCH_CLASSIFICATION_JSON_SCHEMA,
       },
     },
   };

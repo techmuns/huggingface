@@ -20,13 +20,16 @@ export interface BedrockRequest {
   max_tokens: number;
   messages: BedrockMessage[];
   system?: BedrockContent[];
+  /**
+   * Structured output. The schema sits directly under `format` — the
+   * OpenAI-style `json_schema: { name, schema }` wrapper is rejected with
+   * "Unexpected key 'json_schema'", which fails every call at runtime while
+   * type-checking perfectly.
+   */
   output_config?: {
     format: {
       type: "json_schema";
-      json_schema: {
-        name: string;
-        schema: Record<string, unknown>;
-      };
+      schema: Record<string, unknown>;
     };
   };
 }
