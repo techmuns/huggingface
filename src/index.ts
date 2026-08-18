@@ -48,6 +48,10 @@ export default {
       return handleCoverage(request, env, url);
     }
 
+    if (url.pathname === "/api/admin/stats") {
+      return handleStats(request, env);
+    }
+
     if (url.pathname === "/api/review-queue") {
       return handleReviewQueue(request, env);
     }
@@ -387,6 +391,58 @@ async function handleCoverage(request: Request, env: Env, url: URL): Promise<Res
     },
     { headers: CORS_HEADERS },
   );
+}
+
+/**
+ * Pipeline progress, by table.
+ *
+ * A Workflow reports only "running" until it returns, which is useless for a
+ * run whose slow stages are thousands of sequential README fetches and LLM
+ * calls. Row counts per stage show where it actually is.
+ */
+async function handleStats(request: Request, env: Env): Promise<Response> {
+  if (request.method !== "GET") {
+    return Response.json({ error: "method_not_allowed" }, { status: 405, headers: { allow: "GET" } });
+  }
+  if (!isAuthorized(request, env.ADMIN_TOKEN)) {
+    return Response.json({ error: "unauthorized" }, { status: 401 });
+  }
+
+  const one = async (sql: string) =>
+    (await env.DB.prepare(sql).first<{ n: number }>())?.n ?? 0;
+
+  const [raw, models, spaces, blind, enriched, classified, metrics, weeks] = await Promise.all([
+    one("SELECT COUNT(*) AS n FROM hf_raw_records"),
+    one("SELECT COUNT(*) AS n FROM hf_models"),
+    one("SELECT COUNT(*) AS n FROM hf_spaces"),
+    one("SELECT COUNT(*) AS n FROM hf_spaces WHERE signal_tier = 'blind'"),
+    one("SELECT COUNT(*) AS n FROM hf_spaces WHERE readme_status IS NOT NULL"),
+    one("SELECT COUNT(*) AS n FROM hf_classifications"),
+    one("SELECT COUNT(*) AS n FROM hf_weekly_metrics"),
+    one("SELECT COUNT(DISTINCT week_start) AS n FROM hf_weekly_metrics"),
+  ]);
+
+  const oldest = await env.DB
+    .prepare("SELECT MIN(created_at) AS a, MAX(created_at) AS b FROM hf_spaces")
+    .first<{ a: string | null; b: string | null }>();
+
+  return Response.json({
+    stage: raw === 0 ? "ingesting (nothing written yet)"
+      : spaces === 0 ? "ingesting — raw records landing, not yet parsed"
+      : enriched < blind ? `enriching READMEs (${enriched}/${blind} blind Spaces done)`
+      : classified === 0 ? "classifying"
+      : metrics === 0 ? "aggregating"
+      : "complete or idle",
+    rawRecords: raw,
+    models,
+    spaces,
+    blindSpaces: blind,
+    readmesFetched: enriched,
+    classifications: classified,
+    metricRows: metrics,
+    weeksAggregated: weeks,
+    spaceDateRange: { oldest: oldest?.a ?? null, newest: oldest?.b ?? null },
+  });
 }
 
 async function handleReviewQueue(request: Request, env: Env): Promise<Response> {

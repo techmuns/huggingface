@@ -522,9 +522,13 @@ async function init() {
   const { weeks } = await fetch('/api/weeks').then(r => r.json());
 
   if (!weeks?.length) {
-    document.getElementById('tiles').innerHTML =
-      '<div class="tile" style="grid-column:1/-1"><p class="empty">No weeks processed yet. Once the pipeline runs, data appears here.</p></div>';
+    // Render first, THEN write the message — renderAll() repaints the tiles
+    // and would otherwise replace it with a row of zeros, which reads as
+    // "we measured zero" rather than "nothing has been measured yet".
     renderAll();
+    document.getElementById('tiles').innerHTML =
+      '<div class="tile" style="grid-column:1/-1"><p class="empty">No week has finished processing yet. Figures appear here as soon as the first run completes.</p></div>';
+    sel.innerHTML = '<option>—</option>';
     return;
   }
 
