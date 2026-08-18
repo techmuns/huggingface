@@ -330,3 +330,30 @@ describe("classifySpacesByRules", () => {
     ).rejects.toThrow(/json_valid/);
   });
 });
+
+// ── Regex precision ─────────────────────────────────────────────────────────
+
+describe("model-name pattern precision", () => {
+  it("tags genuine MoE models", () => {
+    for (const model of ["Qwen/Qwen3-30B-A3B", "mistralai/Mixtral-8x7B"]) {
+      expect(
+        classifyByRules(signals({ tags: ["conversational"], linkedModels: [model] }))!.technologies,
+      ).toContain("moe");
+    }
+  });
+
+  it("does not tag dense models as MoE", () => {
+    // The active-parameter suffix (-A3B) is the real signal; an unanchored
+    // match also fired inside ordinary names like llama3b.
+    for (const model of [
+      "meta-llama/Llama-3-8B",
+      "someone/llama3b",
+      "org/Yi-34B",
+      "google/gemma-2-9b",
+    ]) {
+      expect(
+        classifyByRules(signals({ tags: ["conversational"], linkedModels: [model] }))!.technologies,
+      ).not.toContain("moe");
+    }
+  });
+});

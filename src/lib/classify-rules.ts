@@ -231,7 +231,10 @@ const TECH_MODEL_PATTERNS: ReadonlyArray<[Technology, RegExp]> = [
   ["diffusion", /diffusion|\bsdxl\b|\bflux\b/i],
   ["speech", /whisper|\btts\b|\bxtts\b|wav2vec|speecht5/i],
   ["vision-language", /\bllava\b|\bvlm\b|qwen.*-vl|internvl|\bidefics\b|\bblip\b/i],
-  ["moe", /mixtral|-moe|a\d+b/i],
+  // Anchored to a separator: the bare `a\d+b` matched inside ordinary names
+  // (llama3b), tagging dense models as MoE. The convention this targets is the
+  // active-parameter suffix, as in Qwen3-30B-A3B.
+  ["moe", /mixtral|[-_]moe\b|[-_]a\d+b\b/i],
 ];
 
 function technologiesFrom(s: SpaceSignals): Technology[] {
