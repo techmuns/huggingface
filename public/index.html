@@ -1559,7 +1559,7 @@ function renderTrendInto(el, { rows, weeks, cut, unit = '', chartId, extraNote =
   if (w.length === 1) notes.push('Only one week has been processed so far — the line starts once there are two.');
   if (state.cumulative && isCount) notes.push(`Each point is the running total of every week shown, starting from ${shortWeek(w[0])}.`);
   if (state.cumulative && !isCount) notes.push('Each point is the average of every week up to it, counting busier weeks more heavily.');
-  if (prepared.hasGaps) notes.push('A week that was never measured leaves a gap in the line rather than a straight line through it.');
+  if (prepared.hasGaps) notes.push(gapNote());
   if (picked.dropped) notes.push(`The ${picked.dropped} smallest are left off the chart — these are shares, and adding them together would not mean anything. They are all in the table.`);
   if (atHistoryCap(w)) notes.push(HISTORY_CAP_NOTE);
   if (extraNote) notes.push(extraNote);
@@ -1597,6 +1597,18 @@ function renderTrendInto(el, { rows, weeks, cut, unit = '', chartId, extraNote =
 const HISTORY_CAP = 52;
 const HISTORY_CAP_NOTE = 'This is the most recent year — the page keeps 52 weeks of history.';
 const atHistoryCap = weeks => state.win >= HISTORY_CAP && weeks.length >= HISTORY_CAP;
+
+/**
+ * What an unmeasured week looks like, in the reading currently on screen.
+ *
+ * Week by week the line breaks. In a running total it cannot: a total does
+ * not un-happen because a week went unmeasured, so the line runs flat across
+ * it. Saying "leaves a gap" under a line that visibly has none is the kind of
+ * small contradiction that costs a reader their trust in the rest of it.
+ */
+const gapNote = () => state.cumulative
+  ? 'A week that was never measured adds nothing, so the total runs flat across it.'
+  : 'A week that was never measured leaves a gap in the line rather than a straight line through it.';
 
 /** The most recent figure a series actually has. */
 function lastValue(values) {
@@ -1682,7 +1694,12 @@ function renderHeadline() {
   const t = weeklyTotals();
   if (!t.weeks.length) { setHTML(el, '<p class="empty">No weeks have been processed yet.</p>'); return; }
 
-  const w = windowed(t.weeks, [t.spaces, t.classified]);
+  // Ends at the week the reader picked, not always at the newest one. The
+  // tiles above it are that week's figures and the intro says so — a line
+  // running three weeks past them would be answering a different question.
+  const at = current.week ? t.weeks.indexOf(current.week) : -1;
+  const upto = at < 0 ? t.weeks.length : at + 1;
+  const w = windowed(t.weeks.slice(0, upto), [t.spaces.slice(0, upto), t.classified.slice(0, upto)]);
   const prepared = prepareSeries(w.weeks, [
     { dimension: 'spaces', values: w.arrays[0], denominators: w.arrays[0], suppressed: w.arrays[0].map(() => 0) },
     { dimension: 'classified', values: w.arrays[1], denominators: w.arrays[0], suppressed: w.arrays[1].map(() => 0) },
@@ -1704,7 +1721,8 @@ function renderHeadline() {
   const notes = [];
   if (weeks.length === 1) notes.push('Only one week has been processed so far — the line starts once there are two.');
   if (state.cumulative) notes.push(`Each point is the running total of every week shown, starting from ${shortWeek(weeks[0])}.`);
-  if (prepared.hasGaps) notes.push('A week that was never measured leaves a gap in the line.');
+  if (prepared.hasGaps) notes.push(gapNote());
+  if (at >= 0 && at < t.weeks.length - 1) notes.push('The line ends at the week you picked above.');
   if (atHistoryCap(weeks)) notes.push(HISTORY_CAP_NOTE);
   trendChart(el, {
     weeks, lines, chartId: 'headline',
@@ -1769,7 +1787,7 @@ function renderTrendsTab() {
     const notes = [];
     if (state.cumulative && isCount) notes.push(`Each point is the running total of every week shown, starting from ${shortWeek(weeks[0])}.`);
     if (state.cumulative && !isCount) notes.push('Each point is the average of every week up to it, counting busier weeks more heavily.');
-    if (prepared.hasGaps) notes.push('A week that was never measured leaves a gap in the line.');
+    if (prepared.hasGaps) notes.push(gapNote());
     if (atHistoryCap(weeks)) notes.push(HISTORY_CAP_NOTE);
 
     if (state.table) {
