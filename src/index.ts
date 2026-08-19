@@ -388,6 +388,23 @@ async function handleCoverage(request: Request, env: Env, url: URL): Promise<Res
     .bind(TAXONOMY_VERSION, weekStart, weekEnd)
     .first<{ cnt: number }>();
 
+  // Which model produced the LLM half. Restricted to source_kind = 'model'
+  // deliberately: rule rows carry their rationale in source_ref, so grouping
+  // across both kinds would return thousands of one-row groups.
+  const llmModel = await env.DB.prepare(
+    `SELECT c.source_ref AS ref, COUNT(*) AS cnt
+       FROM hf_classifications c
+       JOIN hf_spaces s ON s.space_id = c.space_id
+      WHERE c.taxonomy_version = ?1 AND c.source_kind = 'model'
+        AND s.created_at >= ?2 AND s.created_at < ?3
+        AND s.is_cluster_primary = 1
+      GROUP BY c.source_ref
+      ORDER BY cnt DESC
+      LIMIT 1`,
+  )
+    .bind(TAXONOMY_VERSION, weekStart, weekEnd)
+    .first<{ ref: string | null; cnt: number }>();
+
   const sourceCounts = new Map((bySource.results ?? []).map((r) => [r.kind, r.cnt]));
 
   const totalCount = total?.cnt ?? 0;
@@ -403,6 +420,7 @@ async function handleCoverage(request: Request, env: Env, url: URL): Promise<Res
         rule: sourceCounts.get("rule") ?? 0,
         model: sourceCounts.get("model") ?? 0,
       },
+      llmModel: llmModel?.ref ?? null,
       lowConfidence: lowConfidence?.cnt ?? 0,
     },
     { headers: CORS_HEADERS },

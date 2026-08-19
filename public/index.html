@@ -87,6 +87,11 @@ select:hover, .btn:hover { border-color: var(--axis); }
   padding: 12px 0 26px; border-bottom: 1px solid var(--hairline); margin-bottom: 28px;
 }
 .provenance b { color: var(--ink-2); font-weight: 500; }
+.provenance .wip { color: var(--ink-2); }
+.provenance .wip::before {
+  content: "\25CB"; margin-right: 6px;   /* icon, not colour: the marker has to
+                                             survive a monochrome print */
+}
 
 /* ── Stat tiles ───────────────────────────────────────────────────────── */
 .tiles {
@@ -441,7 +446,7 @@ function renderTiles() {
     <div class="tile">
       <div class="label">Coverage</div>
       <div class="value">${cov.coveragePercent == null ? '—' : Math.round(cov.coveragePercent) + '%'}</div>
-      <div class="sub">${num(cov.bySource?.rule ?? 0)} by rule · ${num(cov.bySource?.model ?? 0)} by model</div>
+      <div class="sub">${num(cov.bySource?.rule ?? 0)} by rule &middot; ${num(cov.bySource?.model ?? 0)} by LLM</div>
     </div>`;
 }
 
@@ -495,11 +500,34 @@ function renderAll() {
   renderEngagement();
 
   const cov = current.coverage || {};
+  const byRule = cov.bySource?.rule ?? 0;
+  const byLlm  = cov.bySource?.model ?? 0;
   document.getElementById('provenance').innerHTML = current.week
     ? `<span>Week of <b>${esc(current.week)}</b></span>
        <span>Classified <b>${num(cov.classifiedSpaces)}</b> of <b>${num(cov.totalSpaces)}</b> Spaces</span>
-       <span>Flagged for review <b>${num(cov.lowConfidence ?? 0)}</b></span>`
+       <span>Method <b>${num(byRule)}</b> by rule &middot; <b>${num(byLlm)}</b> by LLM${
+         byLlm && cov.llmModel ? ` (${esc(prettyModel(cov.llmModel))})` : ''}</span>
+       <span>Flagged for review <b>${num(cov.lowConfidence ?? 0)}</b></span>
+       ${inProgress(current.week)
+         ? '<span class="wip">Week still open &mdash; counts are partial and rise until it closes</span>'
+         : ''}`
     : '';
+}
+
+/**
+ * A week's row exists as soon as the first run aggregates it, which can be
+ * days before the week itself ends. Saying so is the difference between a
+ * reader seeing a quiet week and a reader seeing two days of one.
+ */
+function inProgress(week) {
+  const end = Date.parse(week + 'T00:00:00Z') + 7 * 86400000;
+  return Number.isFinite(end) && Date.now() < end;
+}
+
+/** `us.anthropic.claude-haiku-4-5-20251001-v1:0` -> `claude-haiku-4-5`. */
+function prettyModel(id) {
+  const m = /claude-[a-z]+-[0-9]+(?:-[0-9]+)?/.exec(String(id));
+  return m ? m[0] : String(id);
 }
 
 async function loadWeek(week) {

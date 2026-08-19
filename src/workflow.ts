@@ -90,12 +90,25 @@ const MAX_RULE_PAGES = 500;
 /**
  * Step budget.
  *
- * Cloudflare caps a Workflow instance at 10,000 steps on the paid plan (this
- * project requires paid regardless). Worst case for the maximum 26-week
- * backfill: ~1,800 ingest pages + 1,200 enrichment batches + 500 rule pages +
- * 3,000 classification batches + ~60 per-week and terminal steps, which stays
- * inside that ceiling. The per-stage caps below are what hold it there, and
- * each one reports `truncated` rather than quietly covering less.
+ * Cloudflare caps a Workflow instance at 1,024 steps on the Free plan and
+ * 10,000 on Paid. The routine weekly run (backfillWeeks = 1) is the case that
+ * has to fit inside 1,024, and measured against a real week it does:
+ *
+ *   ingest pages          ~100
+ *   enrichment batches     130  (cap; ~82 used at 4,089 blind Spaces)
+ *   rule pages              18
+ *   LLM batches            400  (cap; ~275 used at 5,500 unsettled Spaces)
+ *   per-week + terminal     ~25
+ *   -------------------------------
+ *   worst case             ~673  of 1,024
+ *
+ * The caps are deliberately above measured demand — a week that runs hot
+ * should absorb into headroom, not silently truncate. Deep backfills
+ * (backfillWeeks > 1) exceed 1,024 by design and need the Paid plan; their
+ * ceiling is ~1,800 ingest pages + 1,200 enrichment + 500 rule + 3,000
+ * classification + ~60 terminal, inside the 10,000 limit.
+ *
+ * Every stage reports `truncated` rather than quietly covering less.
  */
 const SQL_RETRY = {
   retries: { limit: 3, delay: "5 seconds", backoff: "exponential" },
@@ -331,10 +344,13 @@ export class WeeklyPipeline extends WorkflowEntrypoint<Env, WeeklyPipelineParams
     );
 
     const BATCH_SIZE = 50;
-    // ~4,000 blind Spaces a week at 50 a batch is ~80 steps; 100 leaves room.
+    // A measured week leaves 4,089 Spaces blind: ~82 steps at 50 a batch. The
+    // old cap of 100 sat 22% above that, which is inside the week-to-week
+    // variance we measured (29% spread), so a busy week would have truncated.
+    // 130 covers 6,500 blind Spaces and costs 48 steps we are not using.
     // Scaled by backfill depth because a flat cap silently covered a twelfth
-    // of a 12-week backfill. See STEP_BUDGET above.
-    const MAX_BATCHES = Math.min(100 * backfillWeeks, 1200);
+    // of a 12-week backfill. See the step budget above.
+    const MAX_BATCHES = Math.min(130 * backfillWeeks, 1200);
 
     for (let batch = 0; batch < MAX_BATCHES; batch++) {
       const result = await step.do(`enrich-batch-${batch}`, PAGE_RETRY, async () =>
@@ -390,10 +406,12 @@ export class WeeklyPipeline extends WorkflowEntrypoint<Env, WeeklyPipelineParams
     });
     const modelId = this.env.BEDROCK_CLASSIFY_MODEL_ID;
 
-    // ~175 batched requests a week per PLAN.md; 250 leaves headroom for a
-    // week that runs hot. Scaled by backfill depth for the same reason as
-    // enrichment.
-    const MAX_LLM_BATCHES = Math.min(250 * backfillWeeks, 3000);
+    // PLAN.md estimated ~175 batched requests a week. The real figure is ~275:
+    // rules settle only ~22% of a week's Spaces, leaving ~5,500 for the LLM at
+    // 20 a batch. The old cap of 250 therefore truncated ~500 Spaces (9%) every
+    // week while 550 steps of budget sat unused. 400 covers 8,000 Spaces.
+    // Scaled by backfill depth for the same reason as enrichment.
+    const MAX_LLM_BATCHES = Math.min(400 * backfillWeeks, 3000);
 
     for (let batch = 0; batch < MAX_LLM_BATCHES; batch++) {
       const result = await step.do(`classify-llm-batch-${batch}`, PAGE_RETRY, async () =>
