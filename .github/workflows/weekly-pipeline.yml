@@ -52,8 +52,21 @@ jobs:
             THIS_MON=$(date -u -d "-$((DOW - 1)) days" +%Y-%m-%d)
             WEEK=$(date -u -d "$THIS_MON -7 days" +%Y-%m-%d)
           fi
+          # The scheduled run is always exactly one week: the one that just
+          # closed. Backfill depth is an operator's tool for repairing history,
+          # never something the cron reaches for — a wider window multiplies Hub
+          # requests and Bedrock spend, and re-processes weeks that are already
+          # correct. Pinned on the event rather than left to the empty-input
+          # fallback, so changing the dispatch default cannot widen the cron.
+          if [ "${{ github.event_name }}" = "schedule" ]; then
+            BACKFILL=1
+          else
+            BACKFILL="${{ github.event.inputs.backfillWeeks || 1 }}"
+          fi
+
           echo "week=$WEEK" >> "$GITHUB_OUTPUT"
-          echo "Processing week of $WEEK"
+          echo "backfill=$BACKFILL" >> "$GITHUB_OUTPUT"
+          echo "Processing week of $WEEK (backfillWeeks=$BACKFILL)"
 
       - name: Check the database schema matches the deployed code
         env:
@@ -87,7 +100,7 @@ jobs:
 
           BODY=$(printf '{"weekStart":"%s","backfillWeeks":%s,"dryRun":%s}' \
             "${{ steps.week.outputs.week }}" \
-            "${{ github.event.inputs.backfillWeeks || 1 }}" \
+            "${{ steps.week.outputs.backfill }}" \
             "${{ github.event.inputs.dryRun || false }}")
 
           for attempt in 1 2 3; do
