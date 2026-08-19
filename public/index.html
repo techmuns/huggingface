@@ -1181,14 +1181,7 @@ function paintChart(host) {
   const mobile = width < 520;
   const height = host._spec.height || (mobile ? 220 : 300);
 
-  // Direct end labels earn their space only when few enough lines separate at
-  // the right edge; otherwise the legend carries identity and the padding goes
-  // back to the plot.
-  // One line needs no end label — the card title already names it, and the
-  // 118px it would reserve is better spent on the plot.
-  const canLabel = shown.length >= 2 && shown.length <= 4 && !mobile;
-  const padL = mobile ? 40 : 52, padR = canLabel ? 118 : 16, padT = 12, padB = 30;
-  const plotW = Math.max(10, width - padL - padR);
+  const padL = mobile ? 40 : 52, padT = 12, padB = 30;
   const plotH = height - padT - padB;
 
   const values = shown.flatMap(l => l.values.filter(v => v != null));
@@ -1196,8 +1189,26 @@ function paintChart(host) {
   const ticks = axisTicks(max);
   const top = ticks[ticks.length - 1] || 1;
 
-  const x = i => padL + (weeks.length === 1 ? plotW / 2 : (i * plotW) / (weeks.length - 1));
+  // The vertical scale does not depend on the right-hand gutter, so it can be
+  // settled first — which is what makes it possible to ask whether the end
+  // labels would collide before deciding to reserve room for them.
   const y = v => padT + plotH - (v / top) * plotH;
+
+  // Direct end labels earn their space only when few enough lines separate at
+  // the right edge. One line needs none — the card title already names it —
+  // and labels that would sit on top of each other are worse than none at all:
+  // nudging them apart detaches them from their lines. When they collide the
+  // legend and the tooltip carry identity, and the 118px goes back to the plot.
+  const ends = shown
+    .map(l => { const i = l.values.reduce((a, v, k) => (v == null ? a : k), -1); return i < 0 ? null : y(l.values[i]); })
+    .filter(v => v != null)
+    .sort((a, b) => a - b);
+  const tightest = ends.slice(1).reduce((m, v, i) => Math.min(m, v - ends[i]), Infinity);
+  const canLabel = shown.length >= 2 && shown.length <= 4 && !mobile && tightest >= 14;
+
+  const padR = canLabel ? 118 : 16;
+  const plotW = Math.max(10, width - padL - padR);
+  const x = i => padL + (weeks.length === 1 ? plotW / 2 : (i * plotW) / (weeks.length - 1));
 
   const gridEls = ticks.map(t => `
     <line x1="${padL}" y1="${y(t).toFixed(1)}" x2="${(padL + plotW).toFixed(1)}" y2="${y(t).toFixed(1)}"
