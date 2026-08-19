@@ -181,3 +181,44 @@ describe("schema drift probe", () => {
     ).resolves.toEqual([]);
   });
 });
+
+describe("run registry", () => {
+  it("requires auth to list runs", async () => {
+    const res = await SELF.fetch("https://example.com/api/admin/runs");
+    expect(res.status).toBe(401);
+  });
+
+  it("lists runs for an authorised caller", async () => {
+    const res = await SELF.fetch("https://example.com/api/admin/runs", {
+      headers: { authorization: `Bearer ${env.ADMIN_TOKEN}` },
+    });
+    expect(res.status).toBe(200);
+    await expect(res.json()).resolves.toMatchObject({ runs: expect.any(Array) });
+  });
+
+  it("requires auth to terminate a run", async () => {
+    const res = await SELF.fetch("https://example.com/api/admin/run/abc123/terminate", {
+      method: "POST",
+    });
+    expect(res.status).toBe(401);
+  });
+
+  it("rejects GET on terminate", async () => {
+    // Terminating is destructive, so it must never be reachable by following
+    // a link or by a browser prefetching a URL someone pasted.
+    const res = await SELF.fetch("https://example.com/api/admin/run/abc123/terminate", {
+      headers: { authorization: `Bearer ${env.ADMIN_TOKEN}` },
+    });
+    expect(res.status).toBe(405);
+  });
+
+  it("does not route a terminate path to the status handler", async () => {
+    // The status route's regex allows the same characters as an instance id,
+    // so an ordering mistake would have `/terminate` swallowed as part of the
+    // id and silently return status instead of stopping anything.
+    const res = await SELF.fetch("https://example.com/api/admin/run/abc123/terminate", {
+      headers: { authorization: `Bearer ${env.ADMIN_TOKEN}` },
+    });
+    expect(res.status).not.toBe(200);
+  });
+});

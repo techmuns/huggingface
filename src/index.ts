@@ -31,6 +31,15 @@ export default {
       return handleAdminRun(request, env);
     }
 
+    if (url.pathname === "/api/admin/runs") {
+      return handleRunList(request, env);
+    }
+
+    const runTerminate = /^\/api\/admin\/run\/([A-Za-z0-9_-]{1,128})\/terminate$/.exec(url.pathname);
+    if (runTerminate?.[1]) {
+      return handleRunTerminate(request, env, runTerminate[1]);
+    }
+
     const runStatus = /^\/api\/admin\/run\/([A-Za-z0-9_-]{1,128})$/.exec(url.pathname);
     if (runStatus?.[1]) {
       return handleRunStatus(request, env, runStatus[1]);
@@ -122,10 +131,107 @@ async function handleAdminRun(request: Request, env: Env): Promise<Response> {
   }
 
   const instance = await env.WEEKLY_PIPELINE.create({ params: parsed.params });
+
+  // Best-effort, and deliberately not awaited into the failure path: losing
+  // the registry row costs observability, while letting it throw would mean a
+  // database that has not had 0004 applied cannot start a run at all. The
+  // schema probe in /api/admin/stats is what surfaces the missing table.
+  try {
+    await env.DB
+      .prepare(
+        `INSERT INTO hf_runs (instance_id, week_start, params, started_at)
+         VALUES (?1, ?2, ?3, datetime('now'))
+         ON CONFLICT(instance_id) DO NOTHING`,
+      )
+      .bind(
+        instance.id,
+        parsed.params.weekStart ?? weekStartIso(new Date()),
+        JSON.stringify(parsed.params),
+      )
+      .run();
+  } catch {
+    // ignored — see above
+  }
+
   return Response.json(
     { id: instance.id, status: await instance.status(), params: parsed.params },
     { status: 202 },
   );
+}
+
+/**
+ * Lists recent runs with their live status.
+ *
+ * The Workflows binding has create() and get(id) but no list, so without the
+ * registry a run whose id was lost could only be reached through the
+ * Cloudflare dashboard by hand.
+ */
+async function handleRunList(request: Request, env: Env): Promise<Response> {
+  if (request.method !== "GET") {
+    return Response.json({ error: "method_not_allowed" }, { status: 405, headers: { allow: "GET" } });
+  }
+  if (!isAuthorized(request, env.ADMIN_TOKEN)) {
+    return Response.json({ error: "unauthorized" }, { status: 401 });
+  }
+
+  let rows: { instance_id: string; week_start: string; started_at: string }[] = [];
+  try {
+    const q = await env.DB
+      .prepare(
+        `SELECT instance_id, week_start, started_at FROM hf_runs
+         ORDER BY started_at DESC LIMIT 20`,
+      )
+      .all<{ instance_id: string; week_start: string; started_at: string }>();
+    rows = q.results ?? [];
+  } catch {
+    return Response.json(
+      { error: "registry_missing", detail: "apply migrations/0004_run_registry.sql" },
+      { status: 503 },
+    );
+  }
+
+  const runs = await Promise.all(
+    rows.map(async (r) => {
+      let status: unknown = null;
+      try {
+        status = await (await env.WEEKLY_PIPELINE.get(r.instance_id)).status();
+      } catch {
+        // An instance Cloudflare has aged out is reported as such rather than
+        // failing the whole listing.
+        status = { status: "unknown" };
+      }
+      return { id: r.instance_id, weekStart: r.week_start, startedAt: r.started_at, status };
+    }),
+  );
+
+  return Response.json({ runs });
+}
+
+/**
+ * Stops a run.
+ *
+ * A wedged instance is the one state that makes a schema migration unsafe —
+ * rebuilding a table underneath a live pipeline is exactly what must not
+ * happen — and until now the only way to stop one was the Cloudflare
+ * dashboard.
+ */
+async function handleRunTerminate(request: Request, env: Env, id: string): Promise<Response> {
+  if (request.method !== "POST") {
+    return Response.json({ error: "method_not_allowed" }, { status: 405, headers: { allow: "POST" } });
+  }
+  if (!isAuthorized(request, env.ADMIN_TOKEN)) {
+    return Response.json({ error: "unauthorized" }, { status: 401 });
+  }
+
+  let instance: Awaited<ReturnType<typeof env.WEEKLY_PIPELINE.get>>;
+  try {
+    instance = await env.WEEKLY_PIPELINE.get(id);
+  } catch {
+    return Response.json({ error: "not_found", id }, { status: 404 });
+  }
+
+  await instance.terminate();
+  return Response.json({ id, terminated: true, status: await instance.status() });
 }
 
 /**
@@ -539,6 +645,7 @@ async function handleStats(request: Request, env: Env): Promise<Response> {
 const EXPECTED_COLUMNS: ReadonlyArray<[table: string, column: string]> = [
   ["hf_models", "card_base_model"], // 0002_model_card_base
   ["hf_models", "model_type"],      // 0003_model_config_type
+  ["hf_runs", "instance_id"],       // 0004_run_registry
 ];
 
 /**
