@@ -6,14 +6,18 @@
 <title>HF Developer Activity Dashboard</title>
 <style>
 /* ─────────────────────────────────────────────────────────────────────────
-   Palette: validated categorical slot 1 (blue) for the single data series,
-   fixed status steps for deltas. Both modes are selected — the dark column
-   is the same hues re-stepped for the dark surface, not an automatic flip.
+   Palette: the validated eight-slot categorical order for the trend lines,
+   plus fixed status steps for deltas. Both modes are selected — the dark
+   column is the same hues re-stepped for the dark surface, not an automatic
+   flip. Slots are assigned in order and never cycled: past the eighth series
+   the tail folds into one recessive "other" line rather than inventing a
+   ninth hue that nobody with colour-vision deficiency could tell apart.
    ───────────────────────────────────────────────────────────────────────── */
 :root {
   color-scheme: light;
   --plane:        #f9f9f7;
   --surface:      #fcfcfb;
+  --raised:       #ffffff;
   --ink:          #0b0b0b;
   --ink-2:        #52514e;
   --ink-muted:    #898781;
@@ -25,12 +29,16 @@
   --good:         #006300;
   --bad:          #d03b3b;
   --shadow:       0 1px 2px rgba(11,11,11,0.04), 0 1px 3px rgba(11,11,11,0.03);
+
+  --s1: #2a78d6;  --s2: #eb6834;  --s3: #1baf7a;  --s4: #eda100;
+  --s5: #e87ba4;  --s6: #008300;  --s7: #4a3aa7;  --s8: #e34948;
 }
 @media (prefers-color-scheme: dark) {
   :root:where(:not([data-theme="light"])) {
     color-scheme: dark;
     --plane:       #0d0d0d;
     --surface:     #1a1a19;
+    --raised:      #212120;
     --ink:         #ffffff;
     --ink-2:       #c3c2b7;
     --ink-muted:   #898781;
@@ -42,14 +50,19 @@
     --good:        #0ca30c;
     --bad:         #e66767;
     --shadow:      none;
+
+    --s1: #3987e5;  --s2: #d95926;  --s3: #199e70;  --s4: #c98500;
+    --s5: #d55181;  --s6: #008300;  --s7: #9085e9;  --s8: #e66767;
   }
 }
 :root[data-theme="dark"] {
   color-scheme: dark;
-  --plane: #0d0d0d; --surface: #1a1a19; --ink: #fff; --ink-2: #c3c2b7;
-  --ink-muted: #898781; --grid: #2c2c2a; --axis: #383835;
+  --plane: #0d0d0d; --surface: #1a1a19; --raised: #212120; --ink: #fff;
+  --ink-2: #c3c2b7; --ink-muted: #898781; --grid: #2c2c2a; --axis: #383835;
   --hairline: rgba(255,255,255,0.10); --series: #3987e5; --series-soft: #184f95;
   --good: #0ca30c; --bad: #e66767; --shadow: none;
+  --s1: #3987e5;  --s2: #d95926;  --s3: #199e70;  --s4: #c98500;
+  --s5: #d55181;  --s6: #008300;  --s7: #9085e9;  --s8: #e66767;
 }
 
 * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -60,18 +73,92 @@ body {
   color: var(--ink);
   line-height: 1.5;
   -webkit-font-smoothing: antialiased;
-  padding: 40px 24px 72px;
+  padding: 0 24px 72px;
 }
-.wrap { max-width: 1080px; margin: 0 auto; }
+.wrap { max-width: 1140px; margin: 0 auto; }
+
+:where(a, button, select, input, [tabindex]):focus-visible {
+  outline: 2px solid var(--series);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+.skip {
+  position: absolute; left: -9999px; top: 8px;
+  background: var(--surface); color: var(--ink); padding: 8px 12px;
+  border: 1px solid var(--hairline); border-radius: 7px; font-size: 13px;
+}
+.skip:focus { left: 24px; z-index: 20; }
+
+@media (prefers-reduced-motion: reduce) {
+  * { transition: none !important; animation: none !important; }
+}
 
 /* ── Masthead ─────────────────────────────────────────────────────────── */
 .masthead {
   display: flex; align-items: flex-end; justify-content: space-between;
-  gap: 24px; flex-wrap: wrap; margin-bottom: 8px;
+  gap: 24px; flex-wrap: wrap; padding-top: 40px; margin-bottom: 8px;
 }
 h1 { font-size: 22px; font-weight: 600; letter-spacing: -0.01em; }
 .standfirst { color: var(--ink-2); font-size: 14px; margin-top: 2px; }
-.controls { display: flex; align-items: center; gap: 8px; }
+
+.provenance {
+  display: flex; gap: 18px; flex-wrap: wrap;
+  font-size: 12.5px; color: var(--ink-muted);
+  padding: 12px 0 18px;
+}
+.provenance b { color: var(--ink-2); font-weight: 500; }
+.load-error {
+  font-size: 12.5px; color: var(--bad); padding: 0 0 12px;
+}
+.load-error::before { content: "\26A0"; margin-right: 6px; }
+.provenance .wip { color: var(--ink-2); }
+.provenance .wip::before {
+  content: "\25CB"; margin-right: 6px;   /* icon, not colour: the marker has to
+                                             survive a monochrome print */
+}
+
+/* ── Tabs ─────────────────────────────────────────────────────────────── */
+.tabs {
+  display: flex; gap: 2px; flex-wrap: wrap;
+  border-bottom: 1px solid var(--hairline);
+}
+.tabs button {
+  font: inherit; font-size: 14px; font-weight: 500;
+  color: var(--ink-muted); background: none; border: 0;
+  border-bottom: 2px solid transparent;
+  padding: 10px 14px; margin-bottom: -1px; cursor: pointer;
+  transition: color .12s ease, border-color .12s ease;
+}
+.tabs button:hover { color: var(--ink-2); }
+.tabs button[aria-selected="true"] { color: var(--ink); border-bottom-color: var(--series); }
+.tabs button[disabled] { opacity: .4; cursor: default; }
+
+/* Sub-tabs are chips, not a second underline: two identical tab strips stacked
+   on top of each other read as one broken strip. */
+.subtabs { display: flex; gap: 6px; flex-wrap: wrap; margin: 20px 0 4px; }
+.subtabs button {
+  font: inherit; font-size: 13px; color: var(--ink-2);
+  background: var(--surface); border: 1px solid var(--hairline);
+  border-radius: 999px; padding: 5px 13px; cursor: pointer;
+  transition: background .12s ease, border-color .12s ease, color .12s ease;
+}
+.subtabs button:hover { border-color: var(--axis); }
+.subtabs button[aria-selected="true"] {
+  background: var(--series-soft); border-color: transparent; color: var(--ink);
+  font-weight: 500;
+}
+
+/* ── Toolbar (one row, above everything it scopes) ────────────────────── */
+.toolbar {
+  display: flex; align-items: center; gap: 18px; flex-wrap: wrap;
+  padding: 16px 0 4px;
+}
+.tool { display: flex; align-items: center; gap: 8px; }
+.tool-label {
+  font-size: 11.5px; font-weight: 500; color: var(--ink-muted);
+  text-transform: uppercase; letter-spacing: .06em;
+}
 select, .btn {
   font: inherit; font-size: 13px; color: var(--ink);
   background: var(--surface); border: 1px solid var(--hairline);
@@ -81,24 +168,32 @@ select, .btn {
 select:hover, .btn:hover { border-color: var(--axis); }
 .btn[aria-pressed="true"] { background: var(--series-soft); border-color: transparent; }
 
-.provenance {
-  display: flex; gap: 18px; flex-wrap: wrap;
-  font-size: 12.5px; color: var(--ink-muted);
-  padding: 12px 0 26px; border-bottom: 1px solid var(--hairline); margin-bottom: 28px;
+.seg {
+  display: inline-flex; background: var(--surface);
+  border: 1px solid var(--hairline); border-radius: 8px; overflow: hidden;
 }
-.provenance b { color: var(--ink-2); font-weight: 500; }
-.provenance .wip { color: var(--ink-2); }
-.provenance .wip::before {
-  content: "\25CB"; margin-right: 6px;   /* icon, not colour: the marker has to
-                                             survive a monochrome print */
+.seg button {
+  font: inherit; font-size: 13px; color: var(--ink-2);
+  background: none; border: 0; border-left: 1px solid var(--hairline);
+  padding: 6px 12px; cursor: pointer; transition: background .12s ease, color .12s ease;
 }
+.seg button:first-child { border-left: 0; }
+.seg button:hover { background: color-mix(in srgb, var(--series) 8%, transparent); }
+.seg button[aria-pressed="true"] { background: var(--series-soft); color: var(--ink); font-weight: 500; }
+.seg button[disabled] { opacity: .4; cursor: default; background: none; }
+
+.check { font-size: 13px; color: var(--ink-2); cursor: pointer; user-select: none; }
+.check input { accent-color: var(--series); margin-right: 6px; vertical-align: -2px; }
+.check.off { color: var(--ink-muted); cursor: default; }
+.check .why { display: block; font-size: 11.5px; color: var(--ink-muted); max-width: 40ch; }
+.check .why:empty { display: none; }
 
 /* ── Stat tiles ───────────────────────────────────────────────────────── */
 .tiles {
-  display: grid; grid-template-columns: repeat(auto-fit, minmax(168px, 1fr));
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(196px, 1fr));
   gap: 1px; background: var(--hairline);
   border: 1px solid var(--hairline); border-radius: 10px;
-  overflow: hidden; margin-bottom: 32px;
+  overflow: hidden; margin-bottom: 20px;
 }
 .tile { background: var(--surface); padding: 18px 20px 16px; }
 .tile .label {
@@ -106,7 +201,9 @@ select:hover, .btn:hover { border-color: var(--axis); }
   text-transform: uppercase; letter-spacing: .06em;
 }
 .tile .value { font-size: 30px; font-weight: 600; letter-spacing: -0.02em; margin-top: 6px; }
+.tile .value.word { font-size: 20px; line-height: 1.5; margin-top: 11px; }
 .tile .sub { font-size: 12.5px; color: var(--ink-muted); margin-top: 3px; }
+.tile .spark { display: block; margin-top: 10px; }
 
 /* Delta always carries a glyph + the word, so hue is never the only signal. */
 .delta { font-size: 12.5px; font-weight: 500; display: inline-flex; align-items: center; gap: 3px; }
@@ -125,12 +222,13 @@ select:hover, .btn:hover { border-color: var(--axis); }
 .grid2 .card { margin-bottom: 0; }
 .card > header { margin-bottom: 18px; }
 .card h2 { font-size: 14px; font-weight: 600; letter-spacing: -0.005em; }
-.card .hint { font-size: 12.5px; color: var(--ink-muted); margin-top: 2px; }
+.card .hint { font-size: 12.5px; color: var(--ink-muted); margin-top: 2px; max-width: 74ch; }
+.panel-intro { font-size: 13.5px; color: var(--ink-2); margin: 14px 0 18px; max-width: 74ch; }
 
 /* ── Bars ─────────────────────────────────────────────────────────────── */
 .bars { display: flex; flex-direction: column; gap: 9px; }
 .bar-row {
-  display: grid; grid-template-columns: minmax(96px, 27%) 1fr auto;
+  display: grid; grid-template-columns: minmax(96px, 22%) 1fr auto minmax(64px, auto);
   align-items: center; gap: 12px;
   padding: 2px 4px; margin: -2px -4px; border-radius: 5px;
   cursor: default; transition: background .1s ease;
@@ -158,6 +256,7 @@ select:hover, .btn:hover { border-color: var(--axis); }
   color: var(--ink); min-width: 58px; text-align: right;
 }
 .bar-value .pct { color: var(--ink-muted); font-size: 11.5px; margin-left: 5px; }
+.bar-delta { text-align: right; }
 .suppressed { color: var(--ink-muted); }
 /* A residual bucket is not a category — it sits last and is drawn recessive,
    so a long "Other" bar at the foot of a descending list reads as deliberate
@@ -167,8 +266,8 @@ select:hover, .btn:hover { border-color: var(--axis); }
 .bar-row.residual .bar-label { color: var(--ink-muted); }
 
 /* ── Matrix ───────────────────────────────────────────────────────────── */
-.matrix-scroll, .card > table { display: block; overflow-x: auto; max-width: 100%; }
-.card > table { white-space: nowrap; }
+.matrix-scroll, .card > table, .table-scroll { display: block; overflow-x: auto; max-width: 100%; }
+.card > table, .table-scroll table { white-space: nowrap; }
 table { border-collapse: collapse; width: 100%; font-size: 12.5px; }
 th, td { padding: 8px 10px; text-align: right; white-space: nowrap; }
 th:first-child, td:first-child { text-align: left; }
@@ -180,6 +279,75 @@ thead th {
 tbody td { font-variant-numeric: tabular-nums; border-bottom: 1px solid var(--grid); }
 tbody tr:last-child td { border-bottom: 0; }
 .cell { display: inline-block; min-width: 42px; padding: 3px 7px; border-radius: 4px; }
+.key-line {
+  display: inline-block; width: 12px; height: 2px; border-radius: 1px;
+  vertical-align: middle; margin-right: 6px;
+}
+
+/* ── Trend chart ──────────────────────────────────────────────────────── */
+.chart-legend { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 14px; }
+.legend-chip {
+  font: inherit; font-size: 12px; color: var(--ink-2);
+  background: none; border: 1px solid var(--hairline); border-radius: 999px;
+  padding: 3px 10px 3px 8px; cursor: pointer; display: inline-flex; align-items: center;
+  transition: border-color .12s ease, opacity .12s ease;
+}
+.legend-chip:hover { border-color: var(--axis); }
+/* Switched off is carried by a struck-through name and a hollow key, not by a
+   wash that drops the label to about 2:1 against the card. */
+.legend-chip[aria-pressed="false"] { color: var(--ink-2); }
+.legend-chip[aria-pressed="false"] .label { text-decoration: line-through; }
+.legend-chip[aria-pressed="false"] .key-line {
+  background: transparent !important;
+  box-shadow: inset 0 0 0 1px var(--ink-muted);
+  height: 6px; border-radius: 2px;
+}
+.legend-msg { font-size: 12px; color: var(--ink-muted); align-self: center; order: 99; }
+.legend-msg:empty { display: none; }
+
+.plot { position: relative; }
+.plot svg { display: block; width: 100%; height: auto; touch-action: pan-y; }
+.plot svg:focus-visible { outline: 2px solid var(--series); outline-offset: 2px; }
+.tip {
+  position: absolute; z-index: 5; pointer-events: none;
+  background: var(--raised); border: 1px solid var(--hairline);
+  border-radius: 8px; padding: 9px 11px; min-width: 148px;
+  box-shadow: 0 4px 14px rgba(11,11,11,.10);
+  font-size: 12px; color: var(--ink-2);
+}
+.tip.hidden { display: none; }
+.tip .tip-week { font-size: 11.5px; color: var(--ink-muted); margin-bottom: 6px; }
+.tip .tip-row { display: flex; align-items: baseline; gap: 8px; justify-content: space-between; }
+.tip .tip-row + .tip-row { margin-top: 3px; }
+.tip .tip-name { color: var(--ink-2); }
+.tip .tip-val { color: var(--ink); font-weight: 600; font-variant-numeric: tabular-nums; }
+.chart-note { font-size: 12px; color: var(--ink-muted); margin-top: 12px; max-width: 78ch; }
+.multiple + .multiple { margin-top: 20px; }
+.multiple h3 { font-size: 12.5px; font-weight: 500; color: var(--ink-2); margin-bottom: 4px; }
+
+/* ── Movers ───────────────────────────────────────────────────────────── */
+.movers { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(260px,100%), 1fr)); gap: 22px; }
+.movers h3 { font-size: 12px; font-weight: 500; color: var(--ink-muted);
+  text-transform: uppercase; letter-spacing: .06em; margin-bottom: 10px; }
+.mover-row { display: flex; justify-content: space-between; gap: 12px; font-size: 13px; padding: 4px 0; }
+.mover-row + .mover-row { border-top: 1px solid var(--grid); }
+.mover-row .name { color: var(--ink-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* ── Glossary ─────────────────────────────────────────────────────────── */
+/* The seven retained section names, on the page a reader lands on: a tab hides
+   its contents from Ctrl+F, so without this the only way to find "Where
+   they're building it" is to guess which tab it is behind. */
+.index-list { list-style: none; display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(300px,100%), 1fr)); gap: 8px 26px; }
+.index-list li { display: flex; justify-content: space-between; gap: 12px;
+  align-items: baseline; padding: 4px 0; border-bottom: 1px solid var(--grid); }
+.index-list a { color: var(--ink); font-size: 13px; text-decoration: none; }
+.index-list a:hover { text-decoration: underline; }
+.index-list span { font-size: 11.5px; color: var(--ink-muted); white-space: nowrap; }
+
+.glossary dl { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(240px,100%), 1fr)); gap: 14px 26px; }
+.glossary dt { font-size: 13px; font-weight: 600; }
+.glossary dd { font-size: 12.5px; color: var(--ink-muted); margin-top: 1px; }
 
 /* ── Narrative ────────────────────────────────────────────────────────── */
 .narrative p { font-size: 14px; color: var(--ink-2); max-width: 68ch; }
@@ -201,95 +369,272 @@ details.method summary::-webkit-details-marker { display: none; }
 details.method summary::before { content: "▸ "; color: var(--ink-muted); }
 details.method[open] summary::before { content: "▾ "; }
 details.method ul { margin: 14px 0 0 18px; font-size: 12.5px; color: var(--ink-muted); }
+details.method h3 {
+  font-size: 12px; font-weight: 500; color: var(--ink-2); margin-top: 18px;
+  text-transform: uppercase; letter-spacing: .06em;
+}
+details.method li b { color: var(--ink-2); font-weight: 500; }
 details.method li { margin-bottom: 7px; max-width: 82ch; }
 
+/* Tabs hide content from Ctrl+F and from a printer. On paper there are no
+   tabs to click, so every panel opens — which is also why the open-week marker
+   is a glyph rather than a colour. */
+@media print {
+  [role="tabpanel"] { display: block !important; }
+  .tabs, .subtabs, .toolbar, .skip { display: none !important; }
+  details.method, details.glossary { display: block; }
+  .card { break-inside: avoid; }
+}
+
 @media (max-width: 640px) {
-  body { padding: 24px 14px 48px; }
+  body { padding: 0 14px 48px; }
+  .masthead { padding-top: 24px; }
   .grid2 { grid-template-columns: 1fr; }
-  .bar-row { grid-template-columns: minmax(78px, 38%) 1fr auto; align-items: center; }
+  .bar-row { grid-template-columns: minmax(72px, 34%) 1fr auto; align-items: center; }
+  .bar-delta { display: none; }   /* the value stays; the trend lives in the
+                                     Over time view and the table */
   th, td { padding: 8px 7px; }
   .bar-label { white-space: normal; line-height: 1.25; font-size: 12px; }
+  /* One strip that scrolls sideways, rather than a block of wrapped tabs that
+     pushes the numbers below the fold on every phone. */
+  .tabs, .subtabs {
+    flex-wrap: nowrap; overflow-x: auto; scroll-snap-type: x proximity;
+    -webkit-overflow-scrolling: touch;
+  }
+  .tabs::-webkit-scrollbar, .subtabs::-webkit-scrollbar { height: 0; }
+  /* The scrollbar is hidden, so the strip has to show its own edge or the
+     fifth tab is simply invisible on a narrow phone. */
+  .tabs { -webkit-mask-image: linear-gradient(to right, #000 88%, transparent);
+          mask-image: linear-gradient(to right, #000 88%, transparent); }
+  .tabs button, .subtabs button { flex: 0 0 auto; scroll-snap-align: start; scroll-margin: 8px; }
+  .tabs { gap: 0; }
+  .tabs button { padding: 10px 10px; font-size: 13px; }
+  .toolbar { gap: 12px; }
+  .tool { flex-wrap: wrap; }
 }
 </style>
 </head>
 <body>
+<a class="skip" href="#main">Skip to the numbers</a>
 <div class="wrap">
 
-  <div class="masthead">
+  <header class="masthead">
     <div>
       <h1>Hugging Face Developer Activity</h1>
       <p class="standfirst">Where developer activity is moving, week over week.</p>
     </div>
-    <div class="controls">
-      <select id="week-select" aria-label="Week"><option>—</option></select>
-      <button class="btn" id="view-toggle" aria-pressed="false">Table</button>
-    </div>
-  </div>
+  </header>
 
   <div class="provenance" id="provenance"></div>
+  <p class="load-error" id="load-error" role="status" hidden></p>
 
-  <div class="tiles" id="tiles"></div>
+  <nav class="tabs" role="tablist" aria-label="Dashboard sections">
+    <button role="tab" id="tab-overview"   data-tab="overview"   aria-selected="true"  aria-controls="panel-overview">Overview</button>
+    <button role="tab" id="tab-trends"     data-tab="trends"     aria-selected="false" aria-controls="panel-trends"     tabindex="-1">Trends</button>
+    <button role="tab" id="tab-build"      data-tab="build"      aria-selected="false" aria-controls="panel-build"      tabindex="-1">What they build</button>
+    <button role="tab" id="tab-tech"       data-tab="tech"       aria-selected="false" aria-controls="panel-tech"       tabindex="-1">How they build</button>
+    <button role="tab" id="tab-engagement" data-tab="engagement" aria-selected="false" aria-controls="panel-engagement" tabindex="-1">Engagement</button>
+  </nav>
 
-  <section class="card narrative" id="narrative-card" hidden>
-    <header><h2>Weekly summary</h2></header>
-    <div id="narrative-body"></div>
-  </section>
+  <div class="toolbar" id="toolbar">
+    <div class="tool" id="tool-week">
+      <span class="tool-label" id="lbl-week">Week</span>
+      <select id="week-select" aria-labelledby="lbl-week"><option>—</option></select>
+    </div>
 
-  <div class="grid2">
-    <section class="card">
-      <header>
-        <h2>What developers are building</h2>
-        <p class="hint">Primary use case &mdash; one per Space, so shares total 100%.</p>
-      </header>
-      <div id="c-usecase"></div>
-    </section>
+    <div class="tool" id="tool-view">
+      <span class="tool-label" id="lbl-view">Show</span>
+      <div class="seg" role="group" aria-labelledby="lbl-view">
+        <button class="btn-view" data-view="bars"  aria-pressed="true">This week</button>
+        <button class="btn-view" data-view="trend" aria-pressed="false">Over time</button>
+      </div>
+    </div>
 
-    <section class="card">
-      <header>
-        <h2>Where they're building it</h2>
-        <p class="hint">Vertical &mdash; multi-label, so these do not total 100%.</p>
-      </header>
-      <div id="c-vertical"></div>
-    </section>
+    <div class="tool" id="tool-table">
+      <button class="btn" id="table-toggle" aria-pressed="false"
+        title="Show the numbers behind whatever is on screen">Table</button>
+    </div>
 
-    <section class="card">
-      <header>
-        <h2>What they're building on</h2>
-        <p class="hint">Model family, from declared <code>base_model</code> lineage.</p>
-      </header>
-      <div id="c-family"></div>
-    </section>
+    <div class="tool" id="tool-track">
+      <span class="tool-label" id="lbl-track">Track</span>
+      <select id="track-select" aria-labelledby="lbl-track"></select>
+    </div>
 
-    <section class="card">
-      <header>
-        <h2>How they're building it</h2>
-        <p class="hint">Technique &mdash; multi-label. The build SDK is separate, below.</p>
-      </header>
-      <div id="c-tech"></div>
-    </section>
+    <div class="tool" id="tool-usecase">
+      <span class="tool-label" id="lbl-usecase">Use case</span>
+      <select id="usecase-select" aria-labelledby="lbl-usecase"></select>
+    </div>
+
+    <div class="tool" id="tool-window">
+      <span class="tool-label" id="lbl-window">Weeks shown</span>
+      <div class="seg" role="group" aria-labelledby="lbl-window">
+        <button class="btn-win" data-win="12" aria-pressed="false">12</button>
+        <button class="btn-win" data-win="26" aria-pressed="true">26</button>
+        <button class="btn-win" data-win="52" aria-pressed="false">All</button>
+      </div>
+    </div>
+
+    <label class="tool check" id="tool-cumulative">
+      <input type="checkbox" id="cumulative"> <span id="cumulative-label">Add up over time</span>
+      <span class="why" id="cumulative-why"></span>
+    </label>
   </div>
 
-  <section class="card" style="margin-top:20px">
-    <header>
-      <h2>Model family by use case</h2>
-      <p class="hint">Share of each use case's Spaces built on a given family.</p>
-    </header>
-    <div class="matrix-scroll" id="c-matrix"></div>
-  </section>
+  <main id="main">
 
-  <div class="grid2">
-    <section class="card">
-      <header><h2>New Spaces by SDK</h2></header>
-      <div id="c-sdk"></div>
+    <!-- ── Overview ─────────────────────────────────────────────────── -->
+    <section role="tabpanel" id="panel-overview" aria-labelledby="tab-overview" tabindex="-1">
+      <p class="panel-intro">The headline numbers for the week you picked, and the line they sit on.</p>
+
+      <div class="tiles" id="tiles"></div>
+
+      <section class="card narrative" id="narrative-card" hidden>
+        <header><h2>Weekly summary</h2></header>
+        <div id="narrative-body"></div>
+      </section>
+
+      <section class="card">
+        <header>
+          <h2>New Spaces, week by week</h2>
+          <p class="hint">One point per week. Tick <em>Add up over time</em> to see the running total instead.</p>
+        </header>
+        <div id="c-headline"></div>
+      </section>
+
+      <section class="card" id="movers-card">
+        <header>
+          <h2>Biggest moves this week</h2>
+          <p class="hint">Use cases that grew or shrank the most against last week.</p>
+        </header>
+        <div id="c-movers"></div>
+      </section>
+
+      <section class="card" id="index-card">
+        <header>
+          <h2>Where to find each section</h2>
+          <p class="hint">Everything the old single page showed is still here, one click away.</p>
+        </header>
+        <ul class="index-list">
+          <li><a href="#tab=build&sub=usecase">What developers are building</a> <span>What they build &rsaquo; Use case</span></li>
+          <li><a href="#tab=build&sub=vertical">Where they're building it</a> <span>What they build &rsaquo; Industry</span></li>
+          <li><a href="#tab=tech&sub=family">What they're building on</a> <span>How they build &rsaquo; Model family</span></li>
+          <li><a href="#tab=tech&sub=tech">How they're building it</a> <span>How they build &rsaquo; Technique</span></li>
+          <li><a href="#tab=tech&sub=sdk">New Spaces by SDK</a> <span>How they build &rsaquo; SDK</span></li>
+          <li><a href="#tab=tech&sub=matrix">Model family by use case</a> <span>How they build &rsaquo; Family by use case</span></li>
+          <li><a href="#tab=engagement">Engagement</a> <span>Its own tab</span></li>
+        </ul>
+      </section>
+
+      <details class="method glossary" id="glossary">
+        <summary>New here? What these words mean</summary>
+        <dl>
+          <dt>Space</dt><dd>An app someone published on Hugging Face — a demo, a tool, a chatbot.</dd>
+          <dt>Model</dt><dd>The AI model itself, published for other people to build on.</dd>
+          <dt>Use case</dt><dd>The main job a Space does, such as chat, coding help or image generation.</dd>
+          <dt>Model family</dt><dd>The line a model comes from — Qwen, Llama, Gemma and so on.</dd>
+          <dt>SDK</dt><dd>The toolkit a Space is shipped with, such as Gradio or Docker.</dd>
+          <dt>Week</dt><dd>Monday to Sunday. The newest week is still filling up, so its numbers keep rising.</dd>
+        </dl>
+      </details>
     </section>
-    <section class="card">
-      <header>
-        <h2>Engagement</h2>
-        <p class="hint">Downloads are a rolling 30-day rate; likes are cumulative.</p>
-      </header>
-      <div id="c-engagement"></div>
+
+    <!-- ── Trends ───────────────────────────────────────────────────── -->
+    <section role="tabpanel" id="panel-trends" aria-labelledby="tab-trends" tabindex="-1" hidden>
+      <p class="panel-intro">Pick one thing to track and watch it move. The line grows a point every week, so
+        the longer this runs, the more history you get.</p>
+
+      <section class="card">
+        <header>
+          <h2 id="trend-title">Trend</h2>
+          <p class="hint" id="trend-hint"></p>
+        </header>
+        <div id="c-trend"></div>
+      </section>
     </section>
-  </div>
+
+    <!-- ── What they build ──────────────────────────────────────────── -->
+    <section role="tabpanel" id="panel-build" aria-labelledby="tab-build" tabindex="-1" hidden>
+      <div class="subtabs" role="tablist" aria-label="What they build">
+        <button role="tab" id="subtab-usecase" data-sub="usecase"  aria-selected="true"  aria-controls="sub-usecase" title="What developers are building">Use case</button>
+        <button role="tab" id="subtab-vertical" data-sub="vertical" aria-selected="false" aria-controls="sub-vertical" tabindex="-1" title="Where they're building it">Industry</button>
+      </div>
+      <p class="panel-intro">What people are making, and who it is for.</p>
+
+      <section class="card" role="tabpanel" id="sub-usecase" aria-labelledby="subtab-usecase" tabindex="-1">
+        <header>
+          <h2>What developers are building</h2>
+          <p class="hint">The main job each new Space does. Every Space counts once, so these add up to 100%.</p>
+        </header>
+        <div id="c-usecase"></div>
+      </section>
+
+      <section class="card" role="tabpanel" id="sub-vertical" aria-labelledby="subtab-vertical" tabindex="-1" hidden>
+        <header>
+          <h2>Where they're building it</h2>
+          <p class="hint">The industries a Space serves. One Space can serve several, so these do not add up to 100%.</p>
+        </header>
+        <div id="c-vertical"></div>
+      </section>
+    </section>
+
+    <!-- ── How they build ───────────────────────────────────────────── -->
+    <section role="tabpanel" id="panel-tech" aria-labelledby="tab-tech" tabindex="-1" hidden>
+      <div class="subtabs" role="tablist" aria-label="How they build">
+        <button role="tab" id="subtab-family" data-sub="family" aria-selected="true"  aria-controls="sub-family" title="What they're building on">Model family</button>
+        <button role="tab" id="subtab-tech" data-sub="tech"   aria-selected="false" aria-controls="sub-tech"   tabindex="-1" title="How they're building it">Technique</button>
+        <button role="tab" id="subtab-sdk" data-sub="sdk"    aria-selected="false" aria-controls="sub-sdk"    tabindex="-1" title="New Spaces by SDK">SDK</button>
+        <button role="tab" id="subtab-matrix" data-sub="matrix" aria-selected="false" aria-controls="sub-matrix" tabindex="-1">Family by use case</button>
+      </div>
+      <p class="panel-intro">The models, the methods and the tools behind the Spaces.</p>
+
+      <section class="card" role="tabpanel" id="sub-family" aria-labelledby="subtab-family" tabindex="-1">
+        <header>
+          <h2>What they're building on</h2>
+          <p class="hint">The model family behind each new model, read from the model it says it came from.</p>
+        </header>
+        <div id="c-family"></div>
+      </section>
+
+      <section class="card" role="tabpanel" id="sub-tech" aria-labelledby="subtab-tech" tabindex="-1" hidden>
+        <header>
+          <h2>How they're building it</h2>
+          <p class="hint">Methods used inside a Space. One Space can use several, so these do not add up to 100%.
+            The toolkit it ships with is on the SDK tab.</p>
+        </header>
+        <div id="c-tech"></div>
+      </section>
+
+      <section class="card" role="tabpanel" id="sub-sdk" aria-labelledby="subtab-sdk" tabindex="-1" hidden>
+        <header>
+          <h2>New Spaces by SDK</h2>
+          <p class="hint">The toolkit each new Space is shipped with.</p>
+        </header>
+        <div id="c-sdk"></div>
+      </section>
+
+      <section class="card" role="tabpanel" id="sub-matrix" aria-labelledby="subtab-matrix" tabindex="-1" hidden>
+        <header>
+          <h2>Model family by use case</h2>
+          <p class="hint">Within each use case, the share of Spaces built on a given model family.</p>
+        </header>
+        <div class="matrix-scroll" id="c-matrix"></div>
+      </section>
+    </section>
+
+    <!-- ── Engagement ───────────────────────────────────────────────── -->
+    <section role="tabpanel" id="panel-engagement" aria-labelledby="tab-engagement" tabindex="-1" hidden>
+      <p class="panel-intro">How much attention the week's new work is getting.</p>
+
+      <section class="card">
+        <header>
+          <h2>Engagement</h2>
+          <p class="hint">Downloads count the last 30 days and keep moving; likes are a running total that only grows.</p>
+        </header>
+        <div id="c-engagement"></div>
+      </section>
+    </section>
+
+  </main>
 
   <details class="method">
     <summary>Methodology &amp; caveats</summary>
@@ -301,7 +646,19 @@ details.method li { margin-bottom: 7px; max-width: 82ch; }
       <li>Growth compares each trailing window against the window of equal length immediately before it: 4W is weeks W&minus;3&ndash;W against W&minus;7&ndash;W&minus;4, never this week against a single week three months ago.</li>
       <li>A figure on a base below the reporting threshold is shown greyed and marked &ldquo;too few&rdquo; rather than printed as a confident percentage.</li>
       <li>Roughly half of new Spaces arrive with no description and no linked model. Those get a README fetch; what remains unclassifiable is counted in coverage rather than quietly dropped.</li>
+      <li>Trend lines read one point per week from the stored weekly metrics. A category with no row in a week the pipeline did measure scored zero and is drawn as zero; a week nothing was measured in is a gap in the line, and a point carried across one is marked as carried. Counts add up into a running total; percentages cannot be added, so they pool into an average weighted by each week's base, the same way the 4W and 12W windows above are pooled.</li>
       <li id="m-taxonomy"></li>
+    </ul>
+
+    <h3>What each chart counts</h3>
+    <ul>
+      <li><b>What developers are building.</b> Primary use case &mdash; one per Space, so shares total 100%.</li>
+      <li><b>Where they're building it.</b> Vertical &mdash; multi-label, so these do not total 100%.</li>
+      <li><b>What they're building on.</b> Model family, from declared <code>base_model</code> lineage.</li>
+      <li><b>How they're building it.</b> Technique &mdash; multi-label. The build SDK is separate, on its own sub-tab.</li>
+      <li><b>Model family by use case.</b> Share of each use case's Spaces built on a given family.</li>
+      <li><b>Engagement.</b> Downloads are a rolling 30-day rate; likes are cumulative.</li>
+      <li><b>The matrix asterisk.</b> Base below the reporting threshold &mdash; shown for completeness, not as a trend.</li>
     </ul>
   </details>
 </div>
@@ -329,14 +686,35 @@ const CUTS = {
   engage:   'engagement',
 };
 
-let tableView = false;
-let current = { byCut: {}, coverage: null, week: null };
+/**
+ * Cuts whose `value` is a count rather than a percentage. Only these can be
+ * added up over time: a running total of "24% of Spaces used RAG" is not a
+ * number that means anything. Mirrors COUNT_CUTS in src/lib/aggregate.ts.
+ */
+const COUNT_CUTS = new Set([CUTS.usecase, CUTS.family, CUTS.engage, CUTS.sdk]);
 
 const esc = v => String(v ?? '').replace(/[&<>"']/g, c =>
   ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c]));
 
 const num = n => n == null ? '—'
   : n.toLocaleString(undefined, { maximumFractionDigits: n < 10 ? 1 : 0 });
+
+/** A precise figure, for a tooltip or a table cell — where rounding 53,412 to
+    "53K" throws away the exact number the reader opened it for. */
+function exact(v, unit = '') {
+  if (v == null) return '—';
+  return unit === '%' ? v.toFixed(1) + '%' : num(v) + unit;
+}
+
+/** Axis and tile figures. 4,744,760 as an axis tick is unreadable; 4.7M is not. */
+function compact(n) {
+  if (n == null) return '—';
+  const a = Math.abs(n);
+  if (a >= 1e9) return (n / 1e9).toFixed(a < 1e10 ? 1 : 0) + 'B';
+  if (a >= 1e6) return (n / 1e6).toFixed(a < 1e7 ? 1 : 0) + 'M';
+  if (a >= 1e4) return Math.round(n / 1e3) + 'K';
+  return num(n);
+}
 
 /* Taxonomy slugs carry acronyms that naive title-casing mangles
    ("Document Ai", "Rag", "Moe"), so the display name is explicit. */
@@ -372,6 +750,80 @@ const byValueOtherLast = (a, b) =>
   (RESIDUAL.has(a.dimension) ? 1 : 0) - (RESIDUAL.has(b.dimension) ? 1 : 0) ||
   b.value - a.value;
 
+/**
+ * What the Trends tab can track.
+ *
+ * `total` entries are derived per week from the cuts we already hold, so the
+ * headline lines cost no extra request. `unit: '%'` marks the ones that must
+ * never be added up.
+ */
+const TRACK_GROUPS = ['How many', 'Out of every 100'];
+
+const TRACKS = [
+  { id: 'spaces_total', label: 'All new Spaces', kind: 'total', source: 'spaces',
+    title: 'All new Spaces', hint: 'Every Space published in the week, whether or not we could classify it.' },
+  { id: 'models_total', label: 'All new models', kind: 'total', source: 'models',
+    title: 'All new models', hint: 'Every model published in the week.' },
+  { id: 'usecase', label: 'New Spaces by use case', kind: 'cut', cut: CUTS.usecase,
+    title: 'New Spaces by use case', hint: 'How many Spaces each use case gained, week by week.' },
+  { id: 'share', label: 'Share of Spaces by use case', kind: 'cut', cut: CUTS.share, unit: '%',
+    title: 'Share of Spaces by use case', hint: 'The slice of each week that went to each use case. Shares cannot be added up, so ticking the box averages them instead.' },
+  { id: 'vertical', label: 'Industries served', kind: 'cut', cut: CUTS.vertical, unit: '%',
+    title: 'Industries served', hint: 'The share of each week’s Spaces serving an industry. A Space can serve several.' },
+  { id: 'tech', label: 'Techniques used', kind: 'cut', cut: CUTS.tech, unit: '%',
+    title: 'Techniques used', hint: 'The share of each week’s Spaces using a method. A Space can use several.' },
+  { id: 'sdk', label: 'New Spaces by SDK', kind: 'cut', cut: CUTS.sdk,
+    title: 'New Spaces by SDK', hint: 'Which toolkit new Spaces ship with, week by week.' },
+  { id: 'family', label: 'New models by family', kind: 'cut', cut: CUTS.family,
+    title: 'New models by family', hint: 'How many new models each family gained, week by week.' },
+  { id: 'engagement', label: 'Downloads and likes', kind: 'multiples', cut: CUTS.engage,
+    title: 'Downloads and likes', hint: 'Three different scales, so they get one small chart each rather than one misleading shared axis.' },
+  { id: 'coverage', label: 'How much we could classify', kind: 'total', source: 'coverage', unit: '%',
+    title: 'How much we could classify', hint: 'The share of each week’s Spaces we managed to put in a bucket.' },
+];
+
+/* ── State ────────────────────────────────────────────────────────────── */
+
+const state = {
+  tab: 'overview',
+  sub: { build: 'usecase', tech: 'family' },
+  view: 'bars',        // bars | trend
+  table: false,        // the numbers behind whichever view is on screen
+  win: 26,             // weeks shown in any trend
+  cumulative: false,
+  track: 'spaces_total',
+  matrixUseCase: null, // which use case the family-by-use-case trend follows
+  week: null,
+  /** Series switched off from a legend, keyed by chart id. Colour follows the
+      entity, so a series that comes back keeps the hue it left with. */
+  off: {},
+  /** Which of those the reader chose, as opposed to the chart's own default. */
+  offTouched: new Set(),
+};
+
+/**
+ * The reading actually on screen.
+ *
+ * Trends is only ever a trend, but it says so without touching the control
+ * the other tabs share: a reader who looks at Trends and comes back to "What
+ * they build" should find it as they left it.
+ */
+const viewNow = () => (state.tab === 'trends' ? 'trend' : state.view);
+
+let weeksAvailable = [];
+let printing = false;
+let seriesFailed = false;
+let weekFailed = false;   // the first week ever asked for did not answer
+let weekLoadSeq = 0;
+let current = { byCut: {}, coverage: null, week: null };
+let seriesRaw = null;    // /api/series payload, all cuts, up to 52 weeks
+let matrixSeries = null; // /api/series?cut=family_share_by_use_case, lazily
+let matrixPending = null; // the in-flight request for it, shared by every render
+let totalsCache = null;
+let ranCache = null;
+
+/* ── Small helpers ────────────────────────────────────────────────────── */
+
 /** Delta with a glyph and a word — hue is never the only carrier. */
 function delta(d) {
   if (d == null) return '<span class="delta flat" title="No comparable earlier window yet">&mdash;</span>';
@@ -379,139 +831,6 @@ function delta(d) {
   if (r === 0) return '<span class="delta flat">▬ flat</span>';
   const up = r > 0;
   return `<span class="delta ${up ? 'up' : 'down'}">${up ? '▲' : '▼'} ${Math.abs(r)}%</span>`;
-}
-
-/**
- * Horizontal bars. One series → one colour for every bar: colouring by
- * magnitude would double-encode the length and burn the only free channel.
- */
-function bars(rows, { unit = '', shareOf = null } = {}) {
-  if (!rows.length) return '<p class="empty">No data for this week.</p>';
-  // Scaled to the largest real category. 13,922 unresolved models against
-  // Qwen's 3,849 would otherwise squash every genuine family into a sliver,
-  // making the chart about our resolution rate rather than about the data.
-  const real = rows.filter(r => !RESIDUAL.has(r.dimension));
-  const max = Math.max(...(real.length ? real : rows).map(r => r.value), 0) || 1;
-
-  if (tableView) {
-    return `<table><thead><tr><th>Category</th><th>Value</th><th>Base</th><th>1W</th></tr></thead><tbody>${
-      rows.map(r => `<tr>
-        <td>${esc(titleCase(r.dimension))}</td>
-        <td>${num(r.value)}${unit}</td>
-        <td>${num(r.denominator)}</td>
-        <td>${delta(r.delta_1w)}</td>
-      </tr>`).join('')}</tbody></table>`;
-  }
-
-  return `<div class="bars">${rows.map(r => {
-    const pct = shareOf && shareOf > 0 ? ` <span class="pct">${Math.round(r.value / shareOf * 100)}%</span>` : '';
-    const sup = r.suppressed ? ' suppressed' : '';
-    const residual = RESIDUAL.has(r.dimension) ? ' residual' : '';
-    const tip = `${titleCase(r.dimension)}: ${num(r.value)}${unit} of ${num(r.denominator)}`
-      + (r.suppressed ? ' — base too small to report a trend' : '')
-      + (r.delta_1w != null ? ` · 1W ${r.delta_1w > 0 ? '+' : ''}${Math.round(r.delta_1w)}%` : '');
-    return `<div class="bar-row${residual}" title="${esc(tip)}">
-      <span class="bar-label">${esc(titleCase(r.dimension))}</span>
-      <span class="bar-track"><span class="bar-fill" style="width:${Math.min(100, r.value / max * 100).toFixed(1)}%"></span></span>
-      <span class="bar-value${sup}">${num(r.value)}${unit}${pct}</span>
-    </div>`;
-  }).join('')}</div>`;
-}
-
-function renderTiles() {
-  const uc = current.byCut[CUTS.usecase] || [];
-  const fam = current.byCut[CUTS.family] || [];
-  const cov = current.coverage || {};
-  const classified = cov.classifiedSpaces ?? uc.reduce((s, r) => s + r.value, 0);
-  const totalSpaces = cov.totalSpaces ?? uc[0]?.denominator ?? classified;
-  const totalModels = fam.reduce((s, r) => s + r.value, 0);
-  const lead = [...uc].sort((a, b) => b.value - a.value)[0];
-
-  document.getElementById('tiles').innerHTML = `
-    <div class="tile">
-      <div class="label">New Spaces</div>
-      <div class="value">${num(totalSpaces)}</div>
-      <div class="sub">${num(classified)} classified</div>
-    </div>
-    <div class="tile">
-      <div class="label">New Models</div>
-      <div class="value">${num(totalModels)}</div>
-      <div class="sub">${fam.length} families</div>
-    </div>
-    <div class="tile">
-      <div class="label">Leading use case</div>
-      <div class="value" style="font-size:20px;line-height:1.5;margin-top:11px">${lead ? esc(titleCase(lead.dimension)) : '—'}</div>
-      <div class="sub">${lead ? delta(lead.delta_1w) + ' week over week' : ''}</div>
-    </div>
-    <div class="tile">
-      <div class="label">Coverage</div>
-      <div class="value">${cov.coveragePercent == null ? '—' : Math.round(cov.coveragePercent) + '%'}</div>
-      <div class="sub">${num(cov.bySource?.rule ?? 0)} by rule &middot; ${num(cov.bySource?.model ?? 0)} by LLM</div>
-    </div>`;
-}
-
-function renderMatrix() {
-  const rows = current.byCut[CUTS.matrix] || [];
-  const el = document.getElementById('c-matrix');
-  if (!rows.length) { el.innerHTML = '<p class="empty">No data for this week.</p>'; return; }
-
-  const fams = [...new Set(rows.map(r => r.sub_dimension))].sort();
-  const ucs  = [...new Set(rows.map(r => r.dimension))].sort();
-  const max  = Math.max(...rows.map(r => r.value), 0) || 1;
-
-  el.innerHTML = `<table>
-    <thead><tr><th>Use case</th>${fams.map(f => `<th>${esc(titleCase(f))}</th>`).join('')}</tr></thead>
-    <tbody>${ucs.map(uc => `<tr><td>${esc(titleCase(uc))}</td>${fams.map(f => {
-      const m = rows.find(r => r.dimension === uc && r.sub_dimension === f);
-      if (!m) return '<td><span class="cell" style="color:var(--ink-muted)">—</span></td>';
-      // Sequential: one hue, light→dark, opacity carrying magnitude.
-      const a = 0.10 + (m.value / max) * 0.62;
-      const label = m.suppressed ? `${Math.round(m.value)}%*` : `${Math.round(m.value)}%`;
-      return `<td><span class="cell" style="background:color-mix(in srgb, var(--series) ${(a*100).toFixed(0)}%, transparent)"
-        title="${esc(titleCase(uc))} · ${esc(titleCase(f))}: ${m.value.toFixed(1)}% of ${m.denominator}${m.suppressed ? ' — base too small' : ''}">${label}</span></td>`;
-    }).join('')}</tr>`).join('')}</tbody></table>
-    <p class="hint" style="margin-top:12px">* base below the reporting threshold &mdash; shown for completeness, not as a trend.</p>`;
-}
-
-function renderEngagement() {
-  const rows = current.byCut[CUTS.engage] || [];
-  const el = document.getElementById('c-engagement');
-  if (!rows.length) { el.innerHTML = '<p class="empty">No data for this week.</p>'; return; }
-  el.innerHTML = `<table><thead><tr><th>Metric</th><th>Value</th><th>1W</th></tr></thead><tbody>${
-    rows.map(r => `<tr>
-      <td>${esc(titleCase(r.dimension))}</td>
-      <td>${num(r.value)}</td>
-      <td>${delta(r.delta_1w)}</td>
-    </tr>`).join('')}</tbody></table>`;
-}
-
-function renderAll() {
-  const g = c => [...(current.byCut[c] || [])].sort(byValueOtherLast);
-  const uc = g(CUTS.usecase);
-  const classified = uc.reduce((s, r) => s + r.value, 0);
-
-  renderTiles();
-  document.getElementById('c-usecase').innerHTML  = bars(uc, { shareOf: classified });
-  document.getElementById('c-vertical').innerHTML = bars(g(CUTS.vertical), { unit: '%' });
-  document.getElementById('c-tech').innerHTML     = bars(g(CUTS.tech), { unit: '%' });
-  document.getElementById('c-family').innerHTML   = bars(g(CUTS.family));
-  document.getElementById('c-sdk').innerHTML      = bars(g(CUTS.sdk));
-  renderMatrix();
-  renderEngagement();
-
-  const cov = current.coverage || {};
-  const byRule = cov.bySource?.rule ?? 0;
-  const byLlm  = cov.bySource?.model ?? 0;
-  document.getElementById('provenance').innerHTML = current.week
-    ? `<span>Week of <b>${esc(current.week)}</b></span>
-       <span>Classified <b>${num(cov.classifiedSpaces)}</b> of <b>${num(cov.totalSpaces)}</b> Spaces</span>
-       <span>Method <b>${num(byRule)}</b> by rule &middot; <b>${num(byLlm)}</b> by LLM${
-         byLlm && cov.llmModel ? ` (${esc(prettyModel(cov.llmModel))})` : ''}</span>
-       <span>Flagged for review <b>${num(cov.lowConfidence ?? 0)}</b></span>
-       ${inProgress(current.week)
-         ? '<span class="wip">Week still open &mdash; counts are partial and rise until it closes</span>'
-         : ''}`
-    : '';
 }
 
 /**
@@ -530,63 +849,2125 @@ function prettyModel(id) {
   return m ? m[0] : String(id);
 }
 
+const MONTHS = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+
+/** "2026-08-17" -> "17 Aug". Short enough for an axis, unambiguous anywhere. */
+function shortWeek(iso) {
+  const d = new Date(iso + 'T00:00:00Z');
+  return Number.isFinite(d.getTime()) ? `${d.getUTCDate()} ${MONTHS[d.getUTCMonth()]}` : iso;
+}
+function longWeek(iso) {
+  const d = new Date(iso + 'T00:00:00Z');
+  return Number.isFinite(d.getTime())
+    ? `Week of ${d.getUTCDate()} ${MONTHS[d.getUTCMonth()]} ${d.getUTCFullYear()}`
+    : `Week of ${iso}`;
+}
+
+/** Clean axis steps — 0 / 500 / 1,000, never 0 / 337 / 674. */
+function axisTicks(max, count = 4) {
+  if (!(max > 0)) return [0, 1];
+  const mag = 10 ** Math.floor(Math.log10(max / count));
+  const norm = max / count / mag;
+  const step = (norm <= 1 ? 1 : norm <= 2 ? 2 : norm <= 5 ? 5 : 10) * mag;
+  const out = [];
+  for (let v = 0; v <= max + step * 1e-9; v += step) out.push(Number(v.toFixed(10)));
+  if (out[out.length - 1] < max) out.push(Number((out[out.length - 1] + step).toFixed(10)));
+  return out;
+}
+
+/* ── Series access ────────────────────────────────────────────────────── */
+
+/**
+ * The weeks the pipeline actually wrote something for, by date.
+ *
+ * A single cut cannot answer this about itself: a week with no new models at
+ * all leaves `models_by_family` with no rows, which looks identical to a week
+ * that cut was never computed for. The rest of the payload settles it.
+ *
+ * The test is a base, not a value. aggregate.ts writes its three engagement
+ * rows unconditionally — a bare SUM() always returns a row — so a week that
+ * was aggregated but never ingested still lands with three zeros in the
+ * table. Reading those as "the week ran" would paint a backfill that never
+ * reached that far as a run of solid zeros: nobody published anything, rather
+ * than nobody looked. An empty week's denominators are all zero; a real one
+ * always has a positive denominator somewhere.
+ */
+function weeksThatRan() {
+  if (ranCache) return ranCache;
+  ranCache = new Set();
+  (seriesRaw?.weeks || []).forEach((w, i) => {
+    if ((seriesRaw.series || []).some(x => x.denominators?.[i] > 0)) ranCache.add(w);
+  });
+  return ranCache;
+}
+
+/** Every series of one cut, aligned to the payload's own `weeks` array. */
+function seriesOf(cut, payload = seriesRaw) {
+  return (payload?.series || []).filter(s => s.cut === cut);
+}
+
+/**
+ * Per-week totals the tiles and the headline line need.
+ *
+ * `sdk_distribution` groups every new Space of the week with no classification
+ * join, so its column sums to the week's Space count even in a week nothing
+ * could be classified. `spaces_by_use_case` carries the same figure in its
+ * denominator, and is the fallback for a week where the SDK cut is missing.
+ */
+function weeklyTotals() {
+  if (totalsCache) return totalsCache;
+  const weeks = seriesRaw?.weeks || [];
+  const sumOf = (cut) => weeks.map((_, i) => {
+    let acc = null;
+    for (const s of seriesOf(cut)) if (s.values[i] != null) acc = (acc ?? 0) + s.values[i];
+    return acc;
+  });
+  const denomOf = (cut) => weeks.map((_, i) => {
+    let best = null;
+    for (const s of seriesOf(cut)) {
+      const d = s.denominators[i];
+      if (d != null && (best == null || d > best)) best = d;
+    }
+    return best;
+  });
+
+  // A week something was actually counted in is a week that ran — see
+  // weeksThatRan for why the test is a base rather than a value. A count with
+  // no rows in such a week is a zero, not an unknown; the this-week tile has
+  // always said 0, and the line beside it should not disagree by breaking.
+  const ran = weeks.map((_, i) => (seriesRaw?.series || []).some(s => s.denominators?.[i] > 0));
+  const orZero = (arr) => weeks.map((_, i) => arr[i] ?? (ran[i] ? 0 : null));
+
+  const classified = orZero(sumOf(CUTS.usecase));
+  const bySdk = sumOf(CUTS.sdk);
+  const byDenom = denomOf(CUTS.usecase);
+  const spaces = weeks.map((_, i) => bySdk[i] ?? byDenom[i] ?? (ran[i] ? 0 : null));
+  const models = orZero(sumOf(CUTS.family));
+  const coverage = weeks.map((_, i) =>
+    spaces[i] ? ((classified[i] ?? 0) / spaces[i]) * 100 : null);
+
+  // Suppression follows the base a total was built on, so a derived line
+  // cannot present a week the pipeline marked as too small to report as
+  // though the client's own arithmetic had made it solid.
+  const supOf = (...cuts) => weeks.map((_, i) =>
+    cuts.some(c => seriesOf(c).some(x => x.suppressed?.[i])) ? 1 : 0);
+  const supSpaces = supOf(CUTS.usecase, CUTS.sdk);
+  const supModels = supOf(CUTS.family);
+
+  totalsCache = { weeks, spaces, classified, models, coverage, supSpaces, supModels };
+  return totalsCache;
+}
+
+/**
+ * The window the trend views draw.
+ *
+ * The payload holds up to 52 weeks; the toolbar picks how many of them are on
+ * screen. Slicing client-side keeps the control instant and costs one request
+ * for the whole session rather than one per change.
+ */
+const WEEK_MS = 7 * 86_400_000;
+
+/**
+ * Where a window of `state.win` calendar weeks starts.
+ *
+ * The payload holds only the weeks that were aggregated, so counting rows back
+ * from the end is not the same as counting weeks: with one week missing,
+ * "12" would keep twelve rows and then densify to thirteen dates on the axis,
+ * quietly shifting a running total's start a week earlier than asked for.
+ */
+function windowFrom(weeks) {
+  if (!weeks.length) return 0;
+  const last = Date.parse(weeks[weeks.length - 1] + 'T00:00:00Z');
+  if (!Number.isFinite(last)) return Math.max(0, weeks.length - state.win);
+  const cutoff = last - (state.win - 1) * WEEK_MS;
+  const i = weeks.findIndex(w => Date.parse(w + 'T00:00:00Z') >= cutoff);
+  return i < 0 ? 0 : i;
+}
+
+/**
+ * Where the week picker stops a line.
+ *
+ * The picker is an "as of" for the whole page, not a control only the
+ * this-week views obey. A trend running three weeks past the figures beside
+ * it — under a header still naming the earlier week — is two answers to one
+ * question.
+ */
+function uptoSelected(weeks) {
+  if (!state.week) return weeks.length;
+  const i = weeks.indexOf(state.week);
+  return i < 0 ? weeks.length : i + 1;
+}
+
+function windowed(weeks, arrays) {
+  const end = uptoSelected(weeks);
+  const kept = weeks.slice(0, end);
+  const from = windowFrom(kept);
+  return { weeks: kept.slice(from), arrays: arrays.map(a => a.slice(0, end).slice(from)) };
+}
+
+/**
+ * The same slice applied to whole series rows.
+ *
+ * Values, denominators and suppression flags are three arrays indexed by the
+ * same week. Slicing one and not the others silently pairs a week's figure
+ * with another week's base, which a pooled average would then quietly build
+ * on — so they are only ever sliced together.
+ */
+function windowRows(weeks, rows) {
+  const end = uptoSelected(weeks);
+  const kept = weeks.slice(0, end);
+  const from = windowFrom(kept);
+  const trim = (a) => (a || []).slice(0, end).slice(from);
+  return {
+    weeks: kept.slice(from),
+    rows: rows.map(r => ({
+      ...r,
+      values: trim(r.values),
+      denominators: trim(r.denominators),
+      suppressed: trim(r.suppressed),
+    })),
+  };
+}
+
+/**
+ * Every Monday between the first week in view and the last.
+ *
+ * The series arrays only carry weeks that were actually aggregated. Plotting
+ * those by position would redraw a three-week outage as one tidy step, which
+ * is the one distortion a trend line must not make: the gap has to be visible
+ * as a gap. Bailing out above three times the real length keeps a stray old
+ * week from stretching the axis into thousands of empty points.
+ */
+function denseWeeks(weeks) {
+  if (weeks.length < 2) return weeks.slice();
+  const first = Date.parse(weeks[0] + 'T00:00:00Z');
+  const last = Date.parse(weeks[weeks.length - 1] + 'T00:00:00Z');
+  if (!Number.isFinite(first) || !Number.isFinite(last)) return weeks.slice();
+  const span = Math.round((last - first) / WEEK_MS) + 1;
+  if (span <= weeks.length || span > weeks.length * 3 + 12) return weeks.slice();
+  const out = [];
+  for (let t = first; t <= last; t += WEEK_MS) out.push(new Date(t).toISOString().slice(0, 10));
+  return out;
+}
+
+/**
+ * Puts a cut's series on the calendar axis and decides what a hole means.
+ *
+ * Two holes look identical in the payload and mean opposite things. If any
+ * other category of the same cut has a figure that week, the week was measured
+ * and this category genuinely scored zero — so it is drawn as zero. If nothing
+ * in the cut has a figure, that week was never aggregated, nothing is known,
+ * and the line breaks. Guessing either way round is the difference between
+ * "nobody built one" and "we didn't look".
+ */
+function prepareSeries(weeks, rows, { zeroFill = false, isCount = false } = {}) {
+  const dense = denseWeeks(weeks);
+  const at = new Map(weeks.map((w, i) => [w, i]));
+  // Measured by this cut, or — for a COUNT being zero-filled — by anything at
+  // all that week. Judging a count on its own rows alone turns "nobody
+  // published a model" into "we have no idea", the invented-unknown twin of
+  // the invented zero the null rule exists to prevent.
+  //
+  // A percentage gets no such help. "0%" is only a claim if there is a base to
+  // be nought out of, and a week where this cut wrote nothing has no base
+  // either — so there the question is genuinely unanswered and the line
+  // breaks, which is what it did before the global mask arrived.
+  const ran = zeroFill && isCount ? weeksThatRan() : null;
+  const measured = dense.map(w => {
+    const i = at.get(w);
+    if (i !== undefined && rows.some(r => r.values[i] != null)) return true;
+    return !!ran && ran.has(w);
+  });
+
+  // Within one cut every category shares a week's base — the classified count,
+  // the Space count, the model count — so a week that ran has one, even for a
+  // category with no row in it. Filling a zero without its base would make the
+  // pooled average skip that week: a category that vanished from a huge week
+  // would hold its old percentage instead of falling towards nothing.
+  const base = dense.map(w => {
+    const i = at.get(w);
+    if (i === undefined) return null;
+    let best = null;
+    for (const r of rows) {
+      const d = r.denominators?.[i];
+      if (d != null && (best == null || d > best)) best = d;
+    }
+    return best;
+  });
+
+  // Suppression is a property of the week's base, not of one category, so a
+  // filled zero in a week too small to report inherits the flag. Without it
+  // that point draws solid and reads as a confident zero.
+  const baseSuppressed = dense.map(w => {
+    const i = at.get(w);
+    if (i === undefined) return 0;
+    return rows.some(r => r.suppressed?.[i]) ? 1 : 0;
+  });
+
+  const mapped = rows.map(r => {
+    const values = [], denominators = [], suppressed = [];
+    dense.forEach((w, k) => {
+      const i = at.get(w);
+      const v = i === undefined ? null : r.values[i];
+      const filled = v == null && zeroFill && measured[k];
+      values.push(v != null ? v : (filled ? 0 : null));
+      // Order matters, and the obvious `?? ` does not work here: /api/series
+      // pads an absent category's suppression slot with a real 0, so a nullish
+      // fallback never reaches the week's own flag. A filled point takes the
+      // week's base and the week's flag; only a point that has its own row
+      // keeps its own.
+      denominators.push(i === undefined ? null
+        : filled ? base[k] : (r.denominators?.[i] ?? null));
+      suppressed.push(i === undefined ? 0
+        : filled ? baseSuppressed[k] : (r.suppressed?.[i] ?? 0));
+    });
+    return { ...r, values, denominators, suppressed };
+  });
+
+  return { weeks: dense, rows: mapped, hasGaps: measured.some(m => !m) };
+}
+
+/* ── Bars, tables, matrix (this-week views) ───────────────────────────── */
+
+/**
+ * Horizontal bars. One series → one colour for every bar: colouring by
+ * magnitude would double-encode the length and burn the only free channel.
+ */
+function bars(rows, { unit = '', shareOf = null } = {}) {
+  if (!rows.length) return '<p class="empty">No data for this week.</p>';
+  // Scaled to the largest real category. 13,922 unresolved models against
+  // Qwen's 3,849 would otherwise squash every genuine family into a sliver,
+  // making the chart about our resolution rate rather than about the data.
+  const real = rows.filter(r => !RESIDUAL.has(r.dimension));
+  const max = Math.max(...(real.length ? real : rows).map(r => r.value), 0) || 1;
+
+  return `<div class="bars">${rows.map(r => {
+    const pct = shareOf && shareOf > 0 ? ` <span class="pct">${Math.round(r.value / shareOf * 100)}%</span>` : '';
+    const sup = r.suppressed ? ' suppressed' : '';
+    const residual = RESIDUAL.has(r.dimension) ? ' residual' : '';
+    const tip = `${titleCase(r.dimension)}: ${num(r.value)}${unit} of ${num(r.denominator)}`
+      + (r.suppressed ? ' — base too small to report a trend' : '')
+      + (r.delta_1w != null ? ` · 1W ${r.delta_1w > 0 ? '+' : ''}${Math.round(r.delta_1w)}%` : '');
+    return `<div class="bar-row${residual}" title="${esc(tip)}">
+      <span class="bar-label">${esc(titleCase(r.dimension))}</span>
+      <span class="bar-track"><span class="bar-fill" style="width:${Math.min(100, r.value / max * 100).toFixed(1)}%"></span></span>
+      <span class="bar-value${sup}">${num(r.value)}${unit}${pct}</span>
+      <span class="bar-delta">${r.suppressed ? '<span class="delta flat">too few</span>' : delta(r.delta_1w)}</span>
+    </div>`;
+  }).join('')}</div>`;
+}
+
+/** The table twin. Every figure a chart shows is reachable here without hovering. */
+function table(rows, { unit = '' } = {}) {
+  if (!rows.length) return '<p class="empty">No data for this week.</p>';
+  // Marked, not merely greyed. A reader who cannot pick the shade out — on a
+  // dim screen, in print, with any colour-vision deficiency — would otherwise
+  // read a low-base figure as an ordinary one, and its blank growth columns as
+  // "no earlier week" rather than "too few to say".
+  const anySuppressed = rows.some(r => r.suppressed);
+  return `<div class="table-scroll"><table>
+    <thead><tr><th>Category</th><th>Value</th><th>Base</th><th>1 week</th><th>4 weeks</th><th>12 weeks</th></tr></thead>
+    <tbody>${rows.map(r => `<tr>
+      <td>${esc(titleCase(r.dimension))}</td>
+      <td${r.suppressed ? ' class="suppressed"' : ''}>${num(r.value)}${unit}${r.suppressed ? '*' : ''}</td>
+      <td>${num(r.denominator)}</td>
+      <td>${r.suppressed ? '<span class="delta flat">too few</span>' : delta(r.delta_1w)}</td>
+      <td>${r.suppressed ? '<span class="delta flat">too few</span>' : delta(r.delta_4w)}</td>
+      <td>${r.suppressed ? '<span class="delta flat">too few</span>' : delta(r.delta_12w)}</td>
+    </tr>`).join('')}</tbody></table></div>${anySuppressed
+      ? '<p class="hint" style="margin-top:10px">* too few behind this figure to call it a trend &mdash; shown for completeness.</p>'
+      : ''}`;
+}
+
+function renderMatrix() {
+  const rows = current.byCut[CUTS.matrix] || [];
+  const el = document.getElementById('c-matrix');
+  if (!rows.length) { setHTML(el, '<p class="empty">No data for this week.</p>'); return; }
+
+  const fams = [...new Set(rows.map(r => r.sub_dimension))].sort();
+  const ucs  = [...new Set(rows.map(r => r.dimension))].sort();
+  const max  = Math.max(...rows.map(r => r.value), 0) || 1;
+
+  setHTML(el, `<table>
+    <thead><tr><th>Use case</th>${fams.map(f => `<th>${esc(titleCase(f))}</th>`).join('')}</tr></thead>
+    <tbody>${ucs.map(uc => `<tr><td>${esc(titleCase(uc))}</td>${fams.map(f => {
+      const m = rows.find(r => r.dimension === uc && r.sub_dimension === f);
+      if (!m) return '<td><span class="cell" style="color:var(--ink-muted)">—</span></td>';
+      // Sequential: one hue, light→dark, opacity carrying magnitude.
+      const a = 0.10 + (m.value / max) * 0.62;
+      const label = m.suppressed ? `${Math.round(m.value)}%*` : `${Math.round(m.value)}%`;
+      return `<td><span class="cell" style="background:color-mix(in srgb, var(--series) ${(a*100).toFixed(0)}%, transparent)"
+        title="${esc(titleCase(uc))} · ${esc(titleCase(f))}: ${m.value.toFixed(1)}% of ${m.denominator}${m.suppressed ? ' — base too small' : ''}">${label}</span></td>`;
+    }).join('')}</tr>`).join('')}</tbody></table>
+    <p class="hint" style="margin-top:12px">* too few Spaces behind this figure to call it a trend &mdash; shown for completeness.</p>`);
+}
+
+function engagementTable() {
+  const rows = current.byCut[CUTS.engage] || [];
+  if (!rows.length) return '<p class="empty">No data for this week.</p>';
+  return `<div class="table-scroll"><table>
+    <thead><tr><th>Metric</th><th>Value</th><th>1 week</th><th>4 weeks</th><th>12 weeks</th></tr></thead>
+    <tbody>${rows.map(r => `<tr>
+      <td>${esc(titleCase(r.dimension))}</td>
+      <td>${num(r.value)}</td>
+      <td>${delta(r.delta_1w)}</td>
+      <td>${delta(r.delta_4w)}</td>
+      <td>${delta(r.delta_12w)}</td>
+    </tr>`).join('')}</tbody></table></div>`;
+}
+
+/* ── Sparkline ────────────────────────────────────────────────────────── */
+
+/**
+ * Twelve-ish points of context beside a tile figure. Recessive stroke, the
+ * newest point in the accent — enough to say "rising" without pretending to
+ * be a chart you can read values off.
+ */
+function sparkline(values, { w = 132, h = 30, provisional = false } = {}) {
+  const pts = values.filter(v => v != null);
+  if (pts.length < 2) return '';
+  const lo = Math.min(...pts), hi = Math.max(...pts);
+  const span = hi - lo || 1;
+  // Inset by the accent dot's outer radius. Mapped edge to edge, the newest
+  // week's dot sits exactly on the viewBox boundary and prints as a half-moon.
+  const pad = 5;
+  const step = values.length > 1 ? (w - pad * 2) / (values.length - 1) : 0;
+  const y = v => h - 5 - ((v - lo) / span) * (h - 10);
+
+  let d = '', pen = false, lastX = 0, lastY = 0;
+  values.forEach((v, i) => {
+    if (v == null) { pen = false; return; }
+    const x = pad + i * step, yy = y(v);
+    d += (pen ? 'L' : 'M') + x.toFixed(1) + ' ' + yy.toFixed(1) + ' ';
+    pen = true; lastX = x; lastY = yy;
+  });
+
+  // These four are the first graphics on the page and set the impression
+  // before a word is read. Ending an open week on a solid dot makes three of
+  // four tiles look like a collapse, while the full-size chart below marks the
+  // very same week hollow and explains why.
+  return `<svg class="spark" width="${w}" height="${h}" viewBox="0 0 ${w} ${h}" aria-hidden="true">
+    <path d="${d.trim()}" fill="none" stroke="var(--axis)" stroke-width="2"
+      stroke-linecap="round" stroke-linejoin="round"/>
+    <circle cx="${lastX.toFixed(1)}" cy="${lastY.toFixed(1)}" r="3"
+      fill="${provisional ? 'var(--surface)' : 'var(--series)'}"
+      stroke="var(--series)" stroke-width="2"/>
+  </svg>`;
+}
+
+/* ── Trend chart ──────────────────────────────────────────────────────── */
+
+const SLOTS = ['var(--s1)','var(--s2)','var(--s3)','var(--s4)','var(--s5)','var(--s6)','var(--s7)','var(--s8)'];
+
+/** Which hue each category holds, per chart, remembered between renders. */
+const slotMemory = {};
+
+/**
+ * Hands each category a hue and lets it keep it.
+ *
+ * Rank decides which series are worth drawing; it must not decide their
+ * colour. A reader who has learnt that Qwen is the blue line should still see
+ * Qwen in blue after changing the use case filter, even though Llama now
+ * ranks above it — a filter that repaints the survivors makes every earlier
+ * reading wrong. Newcomers take the lowest hue nothing else is holding, and a
+ * category that drops out of the selection releases its hue for the next one.
+ */
+function assignSlots(chartId, dims) {
+  const previous = slotMemory[chartId] || new Map();
+  const next = new Map();
+  const taken = new Set();
+
+  for (const d of dims) {
+    if (!previous.has(d)) continue;
+    const slot = previous.get(d);
+    if (taken.has(slot)) continue;
+    next.set(d, slot);
+    taken.add(slot);
+  }
+  for (const d of dims) {
+    if (next.has(d)) continue;
+    let i = 0;
+    while (taken.has(i) && i < SLOTS.length) i++;
+    next.set(d, Math.min(i, SLOTS.length - 1));
+    taken.add(i);
+  }
+
+  slotMemory[chartId] = next;
+  return next;
+}
+
+/**
+ * Every category in the cut, ranked, with the biggest eight switched on.
+ *
+ * Ranking decides what is on screen to begin with; it must not decide what is
+ * *available*. An earlier version drew only the top eight and summed the rest
+ * into one grey line, which meant the categories the Overview names as the
+ * week's biggest movers — the small, fast-growing ones — were the exact
+ * categories a reader could not put on a chart. Every category now has a chip.
+ *
+ * Colour is assigned later, in paintChart, and only to the lines actually
+ * drawn: hues follow the entity through a filter change (see assignSlots), and
+ * a category nobody is looking at should not be holding one.
+ */
+function pickLines(rows, weeks, { chartId = '', read = null } = {}) {
+  // Ranked on the figures the reader will see. In a running total the biggest
+  // line at the end is not always the one with the biggest last week, and
+  // "showing the 8 biggest" has to be true of the chart that is drawn.
+  const score = (s) => {
+    const v = read ? read(s).values : s.values;
+    for (let i = v.length - 1; i >= 0; i--) if (v[i] != null) return v[i];
+    return 0;
+  };
+  const byScore = (a, b) => score(b) - score(a);
+  const real = rows.filter(s => !RESIDUAL.has(s.dimension)).sort(byScore);
+  const rest = rows.filter(s => RESIDUAL.has(s.dimension)).sort(byScore);
+
+  return {
+    lines: [...real, ...rest].map((s) => ({
+      key: s.dimension,
+      label: titleCase(s.dimension),
+      values: s.values,
+      denominators: s.denominators,
+      suppressed: s.suppressed,
+      // A residual is not a category, so it never takes a categorical hue and
+      // never starts switched on — the same treatment the bars give it.
+      residual: RESIDUAL.has(s.dimension),
+      defaultOff: RESIDUAL.has(s.dimension) || real.indexOf(s) >= MAX_LINES,
+    })),
+    hidden: Math.max(0, real.length - MAX_LINES) + rest.length,
+  };
+}
+
+/** The most lines that stay tellable apart at once — one per categorical hue. */
+const MAX_LINES = SLOTS.length;
+
+/**
+ * Says on the page why a legend click did nothing.
+ *
+ * A title attribute cannot: the click has already dismissed the native
+ * tooltip, so the chip would appear to refuse without explaining itself.
+ */
+function legendMessage(strip, text) {
+  const msg = strip.querySelector('.legend-msg');
+  if (msg) msg.textContent = text;
+}
+
+/** Running total. Nulls add nothing but do not break the line — a week with no
+    row did not reset the total, it simply added nothing to it. */
+function accumulate(values) {
+  let acc = null;
+  return values.map(v => {
+    if (v == null) return acc;
+    acc = (acc ?? 0) + v;
+    return acc;
+  });
+}
+
+/**
+ * The same "story so far" reading for a percentage.
+ *
+ * Percentages cannot be added up, but they can be pooled: the average to date,
+ * each week weighted by how many Spaces it had. That is exactly how the
+ * pipeline pools its own 4-week and 12-week windows, so the line and the
+ * growth figures on the same screen cannot contradict each other. A plain mean
+ * would let a 12-Space week count as loudly as a 4,000-Space one.
+ */
+function poolAverage(values, denominators) {
+  let num = 0, den = 0, seen = false;
+  return values.map((v, i) => {
+    const d = denominators?.[i];
+    if (v != null && d != null && d > 0) { num += v * d; den += d; seen = true; }
+    return seen && den > 0 ? num / den : null;
+  });
+}
+
+/** Whichever of the two readings applies, or the plain weekly values. */
+function applyReading(values, denominators, isCount) {
+  if (!state.cumulative) return values;
+  return isCount ? accumulate(values) : poolAverage(values, denominators);
+}
+
+/**
+ * Which points are carried rather than measured.
+ *
+ * Both readings hold their last figure across a week that was never measured,
+ * so the line stays continuous where the weekly view would break. That point
+ * is a floor, not a reading — we do not know what the unmeasured week would
+ * have added — so it is drawn hollow and says so on hover, the same way a
+ * below-threshold point does.
+ */
+function carriedMask(raw, read) {
+  return raw.map((v, i) => (v == null && read[i] != null ? 1 : 0));
+}
+
+/**
+ * Draws one line chart into `host` and keeps it redrawable.
+ *
+ * The spec is stored on the element so a resize repaints from the same data:
+ * SVG text scaled by a viewBox goes blurry and mis-spaces, so the chart is
+ * drawn at the container's real pixel width instead.
+ */
+/** Writes plain markup into a chart container, and retires any live chart in
+    it — the resize observer outlives the chart and would otherwise repaint a
+    stale line over the table that replaced it. */
+function setHTML(el, html) {
+  if (!el) return;
+  el._spec = null;
+  el.innerHTML = html;
+}
+
+function trendChart(host, spec) {
+  host.classList.add('plot-host');
+  host._spec = spec;
+  paintChart(host);
+  if (!host._observed) {
+    host._observed = true;
+    new ResizeObserver(() => {
+      clearTimeout(host._t);
+      host._t = setTimeout(() => {
+        // A hidden panel reports zero width; repainting there would draw the
+        // chart at the minimum size and it would stay that size when shown.
+        if (!host._spec || host.clientWidth <= 0) return;
+        // Only a WIDTH change needs a repaint. The height changes whenever the
+        // legend re-wraps — which happens on every toggle — and repainting for
+        // that threw away the chip the reader had just used, taking their
+        // keyboard focus with it.
+        if (host.clientWidth === host._paintedAt) return;
+        paintChart(host);
+      }, 90);
+    }).observe(host);
+  }
+}
+
+function paintChart(host) {
+  const { weeks, lines, unit = '', chartId, provisionalLast, note } = host._spec;
+
+  const active = document.activeElement;
+  const focusedChip = active && host.contains(active) && active.classList.contains('legend-chip')
+    ? active.dataset.key
+    : null;
+
+  if (!weeks.length || !lines.length) {
+    host._spec = null;
+    host.innerHTML = noSeriesNote();
+    return;
+  }
+
+  // The first paint of a chart seeds which lines start hidden; after that the
+  // reader owns the set, so a repaint never overrules a chip they clicked.
+  if (state.off[chartId] === undefined) {
+    state.off[chartId] = new Set(lines.filter(l => l.defaultOff).map(l => l.key));
+  }
+  const off = state.off[chartId];
+  // The set outlives the lines it was made for. Switch the use case behind the
+  // cross-tab and the families change underneath it, so a set that hid the
+  // right ones before can hide every one of the new ones — a blank chart under
+  // a full legend. The top line comes back on rather than showing nothing.
+  if (lines.length && lines.every(l => off.has(l.key))) off.delete(lines[0].key);
+
+  // A set carried over from a different cut can also leave more lines on than
+  // there are hues to tell them apart with.
+  let visible = lines.filter(l => !off.has(l.key));
+  if (visible.length > MAX_LINES) {
+    visible.slice(MAX_LINES).forEach(l => off.add(l.key));
+    visible = visible.slice(0, MAX_LINES);
+  }
+
+  // Hues go only to the lines actually drawn, in the order they rank, and each
+  // keeps the one it held last time (assignSlots) so a filter never repaints a
+  // survivor. A residual is drawn recessive and takes no hue at all.
+  const slots = assignSlots(chartId, visible.filter(l => !l.residual).map(l => l.key));
+  const paint = l => ({ ...l, color: l.residual ? 'var(--ink-muted)' : SLOTS[slots.get(l.key) ?? 0] });
+  const shown = visible.map(paint);
+
+  const width = Math.max(280, Math.round(host.clientWidth || 640));
+  const mobile = width < 520;
+  const height = host._spec.height || (mobile ? 220 : 300);
+
+  const padL = mobile ? 40 : 52, padT = 12, padB = 30;
+  const plotH = height - padT - padB;
+
+  const values = shown.flatMap(l => l.values.filter(v => v != null));
+  const max = values.length ? Math.max(...values) : 0;
+  const ticks = axisTicks(max);
+  const top = ticks[ticks.length - 1] || 1;
+
+  // The vertical scale does not depend on the right-hand gutter, so it can be
+  // settled first — which is what makes it possible to ask whether the end
+  // labels would collide before deciding to reserve room for them.
+  const y = v => padT + plotH - (v / top) * plotH;
+
+  // Direct end labels earn their space only when few enough lines separate at
+  // the right edge. One line needs none — the card title already names it —
+  // and labels that would sit on top of each other are worse than none at all:
+  // nudging them apart detaches them from their lines. When they collide the
+  // legend and the tooltip carry identity, and the 118px goes back to the plot.
+  const ends = shown
+    .map(l => { const i = l.values.reduce((a, v, k) => (v == null ? a : k), -1); return i < 0 ? null : y(l.values[i]); })
+    .filter(v => v != null)
+    .sort((a, b) => a - b);
+  const tightest = ends.slice(1).reduce((m, v, i) => Math.min(m, v - ends[i]), Infinity);
+  const canLabel = shown.length >= 2 && shown.length <= 4 && !mobile && tightest >= 14;
+
+  const padR = canLabel ? 118 : 16;
+  const plotW = Math.max(10, width - padL - padR);
+  const x = i => padL + (weeks.length === 1 ? plotW / 2 : (i * plotW) / (weeks.length - 1));
+
+  const gridEls = ticks.map(t => `
+    <line x1="${padL}" y1="${y(t).toFixed(1)}" x2="${(padL + plotW).toFixed(1)}" y2="${y(t).toFixed(1)}"
+      stroke="var(--grid)" stroke-width="1"/>
+    <text x="${padL - 8}" y="${(y(t) + 4).toFixed(1)}" text-anchor="end"
+      font-size="11" fill="var(--ink-muted)">${esc(compact(t))}${esc(unit)}</text>`).join('');
+
+  // Roughly six x labels, walked back from the newest week so the last one is
+  // always drawn and never crowds the label before it. The first and last are
+  // anchored inward, because a centred label at either end hangs off the plot.
+  const every = Math.max(1, Math.ceil(weeks.length / (mobile ? 4 : 6)));
+  const marks = [];
+  for (let i = weeks.length - 1; i >= 0; i -= every) marks.unshift(i);
+  const xEls = marks.map(i => {
+    const anchor = i === 0 ? 'start' : i === weeks.length - 1 ? 'end' : 'middle';
+    return `<text x="${x(i).toFixed(1)}" y="${height - 10}" text-anchor="${anchor}"
+      font-size="11" fill="var(--ink-muted)">${esc(shortWeek(weeks[i]))}</text>`;
+  }).join('');
+
+  const lineEls = shown.map(l => {
+    const lastAt = l.values.reduce((acc, v, i) => (v == null ? acc : i), -1);
+    // The newest week is usually still filling up. Drawing its segment at full
+    // weight makes a half-finished week look like a collapse, so the last leg
+    // is drawn faint and its marker hollow — the same "provisional" reading the
+    // ○ in the provenance line gives the counts above.
+    // Only when this line actually reaches the open week. A series that stops
+    // three weeks back has a perfectly finished last point, and drawing it
+    // faint would claim a closed week is still filling up.
+    const atOpenWeek = provisionalLast && lastAt === l.values.length - 1;
+    const tailFrom = atOpenWeek && lastAt > 0 && l.values[lastAt - 1] != null ? lastAt - 1 : -1;
+
+    let d = '', pen = false;
+    const dots = [];
+    l.values.forEach((v, i) => {
+      if (v == null) { pen = false; return; }
+      if (tailFrom >= 0 && i > tailFrom) return;
+      const px = x(i), py = y(v);
+      d += (pen ? 'L' : 'M') + px.toFixed(1) + ' ' + py.toFixed(1) + ' ';
+      // A lone value with gaps either side would otherwise draw nothing at all.
+      const alone = (i === 0 || l.values[i - 1] == null) && (i === l.values.length - 1 || l.values[i + 1] == null);
+      const unmeasured = !!(l.suppressed?.[i] || l.carried?.[i]);
+      if (alone || unmeasured) dots.push({ px, py, hollow: unmeasured });
+      pen = true;
+    });
+
+    const tail = tailFrom >= 0
+      ? `<path d="M${x(tailFrom).toFixed(1)} ${y(l.values[tailFrom]).toFixed(1)} L${x(lastAt).toFixed(1)} ${y(l.values[lastAt]).toFixed(1)}"
+           fill="none" stroke="${l.color}" stroke-width="2" stroke-linecap="round" opacity="0.45"/>`
+      : '';
+    const endHollow = atOpenWeek || l.suppressed?.[lastAt] || l.carried?.[lastAt];
+    const endDot = lastAt >= 0
+      ? `<circle cx="${x(lastAt).toFixed(1)}" cy="${y(l.values[lastAt]).toFixed(1)}" r="4"
+           fill="${endHollow ? 'var(--surface)' : l.color}" stroke="${endHollow ? l.color : 'var(--surface)'}" stroke-width="2"/>`
+      : '';
+    const endLabel = canLabel && lastAt >= 0
+      ? `<text x="${(x(lastAt) + 10).toFixed(1)}" y="${(y(l.values[lastAt]) + 4).toFixed(1)}"
+           font-size="11.5" fill="var(--ink-2)">${esc(l.label)}</text>`
+      : '';
+
+    return `<g data-key="${esc(l.key)}">
+      <path d="${d.trim()}" fill="none" stroke="${l.color}" stroke-width="2"
+        stroke-linecap="round" stroke-linejoin="round"${l.residual ? ' opacity="0.75"' : ''}/>
+      ${tail}
+      ${dots.map(p => `<circle cx="${p.px.toFixed(1)}" cy="${p.py.toFixed(1)}" r="4"
+        fill="${p.hollow ? 'var(--surface)' : l.color}"
+        stroke="${p.hollow ? l.color : 'var(--surface)'}" stroke-width="2"/>`).join('')}
+      ${endDot}${endLabel}
+    </g>`;
+  }).join('');
+
+  const summary = shown.length
+    ? `${shown.map(l => l.label).join(', ')} from ${longWeek(weeks[0])} to ${longWeek(weeks[weeks.length - 1])}`
+    : 'No series selected';
+
+  host.innerHTML = `
+    ${lines.length > 1 ? legendHTML(lines, shown, off, chartId) : ''}
+    <div class="plot">
+      <svg viewBox="0 0 ${width} ${height}" width="${width}" height="${height}"
+           role="img" tabindex="0" aria-label="${esc(summary)}">
+        ${gridEls}
+        <line x1="${padL}" y1="${(padT + plotH).toFixed(1)}" x2="${(padL + plotW).toFixed(1)}" y2="${(padT + plotH).toFixed(1)}"
+          stroke="var(--axis)" stroke-width="1"/>
+        ${xEls}
+        ${lineEls}
+        <line class="crosshair" x1="0" y1="${padT}" x2="0" y2="${(padT + plotH).toFixed(1)}"
+          stroke="var(--axis)" stroke-width="1" opacity="0"/>
+        <rect class="hit" x="${padL}" y="${padT}" width="${plotW}" height="${plotH}" fill="transparent"/>
+      </svg>
+      <div class="tip hidden" role="status" aria-live="polite"></div>
+    </div>
+    ${note ? `<p class="chart-note">${esc(note)}</p>` : ''}
+    ${provisionalLast ? `<p class="chart-note">○ The last point is a week that is still open, so it will keep ${
+      unit === '%' ? 'changing' : 'rising'}.</p>` : ''}`;
+
+  wireChart(host, { weeks, shown, unit, x, padL, plotW, padT, plotH });
+  host._paintedAt = width;
+
+  // A repaint replaces the legend, so a chip that had the keyboard lands in
+  // the bin with it. Whatever the reason for the repaint, focus comes back.
+  if (focusedChip) {
+    [...host.querySelectorAll('.legend-chip')]
+      .find(c => c.dataset.key === focusedChip)?.focus();
+  }
+}
+
+function legendHTML(lines, shown, off, chartId) {
+  const colour = new Map(shown.map(l => [l.key, l.color]));
+  // The status region is part of the markup rather than created on demand: a
+  // live region inserted and filled in the same task is not announced.
+  return `<div class="chart-legend"><span class="legend-msg" role="status"></span>${lines.map(l => {
+    const on = !off.has(l.key);
+    return `<button class="legend-chip" data-key="${esc(l.key)}" data-chart="${esc(chartId)}"
+      aria-pressed="${on ? 'true' : 'false'}"
+      title="${on ? 'Hide this line' : 'Show this line'}">
+      <span class="key-line" style="background:${colour.get(l.key) || 'var(--ink-muted)'}"></span><span class="label">${esc(l.label)}</span>
+    </button>`;
+  }).join('')}</div>`;
+}
+
+/**
+ * The hover layer.
+ *
+ * A crosshair snaps to the nearest week and one tooltip reports every visible
+ * line at that week, so the pointer never has to land on a 2px stroke. Arrow
+ * keys move the same cursor, and the tooltip is a live region, so the chart
+ * is readable without a mouse.
+ */
+function wireChart(host, ctx) {
+  const svg = host.querySelector('svg');
+  const tip = host.querySelector('.tip');
+  const cross = host.querySelector('.crosshair');
+  const hit = host.querySelector('.hit');
+  if (!svg || !tip || !hit) return;
+
+  let at = -1;
+
+  const show = (i) => {
+    if (i < 0 || i >= ctx.weeks.length) return;
+    at = i;
+    const px = ctx.x(i);
+    cross.setAttribute('x1', px.toFixed(1));
+    cross.setAttribute('x2', px.toFixed(1));
+    cross.setAttribute('opacity', '1');
+
+    // Shown before it is filled, not after: a display:none subtree is not in
+    // the accessibility tree, so a live region populated while hidden and
+    // revealed afterwards announces nothing at all — a keyboard reader would
+    // hear the chart's summary and then silence as they moved along it.
+    tip.classList.remove('hidden');
+
+    // Built as nodes, never as concatenated HTML: category names come from the
+    // API, and a tooltip is the last place that should be executing markup.
+    tip.textContent = '';
+    const head = document.createElement('div');
+    head.className = 'tip-week';
+    head.textContent = longWeek(ctx.weeks[i]);
+    tip.appendChild(head);
+
+    const rows = ctx.shown
+      .map(l => ({ l, v: l.values[i] }))
+      .sort((a, b) => (b.v ?? -Infinity) - (a.v ?? -Infinity));
+
+    for (const { l, v } of rows) {
+      const row = document.createElement('div');
+      row.className = 'tip-row';
+      const name = document.createElement('span');
+      name.className = 'tip-name';
+      const key = document.createElement('span');
+      key.className = 'key-line';
+      key.style.background = l.color;
+      name.appendChild(key);
+      name.appendChild(document.createTextNode(l.label));
+      const val = document.createElement('span');
+      val.className = 'tip-val';
+      val.textContent = v == null ? 'no data' : exact(v, ctx.unit)
+        + (l.suppressed?.[i] ? ' (too few)' : l.carried?.[i] ? ' (carried — that week was not measured)' : '');
+      row.appendChild(name);
+      row.appendChild(val);
+      tip.appendChild(row);
+    }
+
+    const box = svg.getBoundingClientRect();
+    const scale = box.width / (svg.viewBox.baseVal.width || box.width) || 1;
+    const w = tip.offsetWidth || 160;
+    const left = Math.min(Math.max(px * scale + 14, 4), Math.max(4, box.width - w - 4));
+    tip.style.left = left + 'px';
+    tip.style.top = '8px';
+  };
+
+  const hide = () => {
+    at = -1;
+    cross.setAttribute('opacity', '0');
+    tip.classList.add('hidden');
+  };
+
+  const nearest = (clientX) => {
+    const box = svg.getBoundingClientRect();
+    const scale = box.width / svg.viewBox.baseVal.width || 1;
+    const local = (clientX - box.left) / scale;
+    const step = ctx.weeks.length === 1 ? 1 : ctx.plotW / (ctx.weeks.length - 1);
+    return Math.max(0, Math.min(ctx.weeks.length - 1, Math.round((local - ctx.padL) / step)));
+  };
+
+  hit.addEventListener('pointermove', e => show(nearest(e.clientX)));
+  hit.addEventListener('pointerdown', e => show(nearest(e.clientX)));
+  svg.addEventListener('pointerleave', hide);
+  svg.addEventListener('blur', hide);
+  svg.addEventListener('focus', () => show(at < 0 ? ctx.weeks.length - 1 : at));
+  svg.addEventListener('keydown', e => {
+    if (e.key === 'ArrowRight') { show(Math.min(ctx.weeks.length - 1, (at < 0 ? ctx.weeks.length - 1 : at) + 1)); e.preventDefault(); }
+    else if (e.key === 'ArrowLeft') { show(Math.max(0, (at < 0 ? ctx.weeks.length - 1 : at) - 1)); e.preventDefault(); }
+    else if (e.key === 'Home') { show(0); e.preventDefault(); }
+    else if (e.key === 'End') { show(ctx.weeks.length - 1); e.preventDefault(); }
+    else if (e.key === 'Escape') hide();
+  });
+}
+
+/** The table twin of a trend: weeks down, series across. */
+function trendTable(weeks, lines, unit = '') {
+  if (!weeks.length || !lines.length) return noSeriesNote();
+  // Newest week first, the same way the week picker lists them — a reader
+  // opening the numbers is looking for the latest one, not for February.
+  const order = weeks.map((_, i) => i).reverse();
+  // Grey alone would leave the low-base warning on colour, which every other
+  // surface avoids: the chart draws a hollow marker and the tooltip says
+  // "too few". Here it is an asterisk against a footnote.
+  const anySuppressed = lines.some(l => (l.suppressed || []).some(Boolean));
+  // A carried figure is marked here as well as on the chart. The numbers are
+  // the view a reader turns to when they want the exact figure, which is
+  // exactly where a total that was never measured must not pass for one.
+  const anyCarried = lines.some(l => (l.carried || []).some(Boolean));
+  return `<div class="table-scroll"><table>
+    <thead><tr><th>Week</th>${lines.map(l => `<th>${esc(l.label)}</th>`).join('')}</tr></thead>
+    <tbody>${order.map(i => `<tr>
+      <td>${esc(shortWeek(weeks[i]))}</td>
+      ${lines.map(l => `<td${l.suppressed?.[i] || l.carried?.[i] ? ' class="suppressed"' : ''}>${
+        esc(exact(l.values[i], unit))}${l.suppressed?.[i] ? '*' : ''}${l.carried?.[i] ? '†' : ''}</td>`).join('')}
+    </tr>`).join('')}</tbody></table></div>${anySuppressed
+      ? '<p class="hint" style="margin-top:10px">* too few behind this figure to call it a trend &mdash; shown for completeness.</p>'
+      : ''}${anyCarried
+      ? '<p class="hint" style="margin-top:10px">&dagger; carried forward &mdash; that week was never measured, so nothing was added.</p>'
+      : ''}`;
+}
+
+/**
+ * One cut, drawn over time — the shared path behind every "Over time" view.
+ *
+ * The reading follows the measure: counts add up into a running total, and
+ * percentages pool into an average so far. Adding percentages up is the one
+ * thing this control must never do, so it is not offered as a disabled box —
+ * it is a different, working answer to the same question.
+ */
+function renderTrendInto(el, { rows, weeks, cut, unit = '', chartId, extraNote = '' }) {
+  if (!weeks.length) { setHTML(el, noSeriesNote()); return; }
+
+  const isCount = COUNT_CUTS.has(cut);
+  const prepared = prepareSeries(weeks, rows, { zeroFill: true, isCount });
+  const w = prepared.weeks;
+
+  // Rows can exist and still hold nothing across the weeks on screen — a
+  // category that only ever appeared outside the window, or a cut that has
+  // not run lately. That is not "no weeks have been processed"; it is this
+  // window having nothing in it, and saying which is the difference between
+  // "look further back" and "wait for the pipeline".
+  if (!prepared.rows.some(r => r.values.some(v => v != null))) {
+    setHTML(el, `<p class="empty">Nothing in the last ${w.length} week${w.length === 1 ? '' : 's'} — try a longer window.</p>`);
+    return;
+  }
+  const read = (l) => {
+    const values = applyReading(l.values, l.denominators, isCount);
+    return { ...l, values, carried: carriedMask(l.values, values) };
+  };
+
+  const picked = pickLines(prepared.rows, w, { chartId, read });
+  const lines = picked.lines.map(read);
+
+  const notes = [];
+  if (onlyOneWeekEver()) notes.push('Only one week has been processed so far — the line starts once there are two.');
+  if (state.cumulative && isCount) notes.push(`Each point is the running total of every week shown, starting from ${shortWeek(w[0])}.`);
+  if (state.cumulative && !isCount) notes.push('Each point is the average of every week up to it, counting busier weeks more heavily.');
+  if (prepared.hasGaps) notes.push(gapNote(isCount));
+  if (picked.hidden && !state.offTouched.has(chartId)) {
+    notes.push(`Showing the ${MAX_LINES} biggest. The other ${picked.hidden} are in the legend — switch one on to follow it, or open the Table for all of them.`);
+  }
+  if (endsEarly()) notes.push('The line ends at the week you picked above.');
+  if (atHistoryCap(w)) notes.push(HISTORY_CAP_NOTE);
+  if (extraNote) notes.push(extraNote);
+
+  if (state.table) {
+    // The table lists every category, not only the ones the chart can draw:
+    // the eight-line cap protects the chart's legibility, never access to a
+    // number.
+    const all = [...prepared.rows]
+      .sort((a, b) => byValueOtherLast(
+        { dimension: a.dimension, value: lastValue(a.values) },
+        { dimension: b.dimension, value: lastValue(b.values) }))
+      .map(r => read({ label: titleCase(r.dimension), values: r.values,
+                       denominators: r.denominators, suppressed: r.suppressed }));
+    setHTML(el, trendTable(w, all, unit) +
+      (notes.length ? `<p class="chart-note">${esc(notes.join(' '))}</p>` : ''));
+    return;
+  }
+
+  trendChart(el, {
+    weeks: w, lines, unit, chartId,
+    provisionalLast: inProgress(w[w.length - 1]),
+    note: notes.join(' '),
+  });
+}
+
+/**
+ * "All" means every week this page can reach, which is a year.
+ *
+ * Both /api/weeks and /api/series stop at 52, so once the pipeline has run for
+ * longer than that, "All" is showing the most recent year and not the whole
+ * history. Saying so is cheaper than a control that quietly means something
+ * else the moment the project turns one.
+ */
+const HISTORY_CAP = 52;
+const HISTORY_CAP_NOTE = 'This is the most recent year — the page keeps 52 weeks of history.';
+const atHistoryCap = weeks => state.win >= HISTORY_CAP && weeks.length >= HISTORY_CAP;
+
+/**
+ * What an unmeasured week looks like, in the reading currently on screen.
+ *
+ * Week by week the line breaks. In a running total it cannot: a total does
+ * not un-happen because a week went unmeasured, so the line runs flat across
+ * it. Saying "leaves a gap" under a line that visibly has none is the kind of
+ * small contradiction that costs a reader their trust in the rest of it.
+ */
+const gapNote = (isCount = true) => {
+  if (!state.cumulative) {
+    return 'A week that was never measured leaves a gap in the line rather than a straight line through it.';
+  }
+  return isCount
+    ? 'A week that was never measured adds nothing, so the running total runs flat across it.'
+    : 'A week that was never measured changes nothing, so the average so far runs flat across it.';
+};
+
+/**
+ * Whether the database really does hold a single week.
+ *
+ * Not the same question as "is the window one week long": the picker can hold
+ * a line to its first week, and saying "only one week has been processed" next
+ * to a picker offering four of them is simply false.
+ */
+const onlyOneWeekEver = () => (seriesRaw?.weeks || []).length === 1;
+
+/** Whether the week picker is holding every line short of the newest week. */
+function endsEarly() {
+  const weeks = seriesRaw?.weeks || [];
+  const i = state.week ? weeks.indexOf(state.week) : -1;
+  return i >= 0 && i < weeks.length - 1;
+}
+
+/** The most recent figure a series actually has. */
+function lastValue(values) {
+  for (let i = values.length - 1; i >= 0; i--) if (values[i] != null) return values[i];
+  return 0;
+}
+
+/** A cut's rows for the current week, sorted with residuals last. */
+const weekRows = c => [...(current.byCut[c] || [])].sort(byValueOtherLast);
+
+/**
+ * One panel = one cut, in whichever of the three views is selected.
+ * Every view answers from the same numbers, so they can never disagree.
+ */
+function renderCutPanel(elId, cut, { unit = '', shareOf = null, chartId } = {}) {
+  const el = document.getElementById(elId);
+  if (!el) return;
+
+  if (viewNow() === 'trend') {
+    const w = windowRows(seriesRaw?.weeks || [], seriesOf(cut));
+    renderTrendInto(el, { rows: w.rows, weeks: w.weeks, cut, unit, chartId });
+    return;
+  }
+
+  const rows = weekRows(cut);
+  setHTML(el, state.table ? table(rows, { unit }) : bars(rows, { unit, shareOf }));
+}
+
+/* ── Panels ───────────────────────────────────────────────────────────── */
+
+function renderTiles() {
+  const uc = current.byCut[CUTS.usecase] || [];
+  const fam = current.byCut[CUTS.family] || [];
+  const cov = current.coverage || {};
+  const classified = cov.classifiedSpaces ?? uc.reduce((s, r) => s + r.value, 0);
+  const totalSpaces = cov.totalSpaces ?? uc[0]?.denominator ?? classified;
+  const totalModels = fam.reduce((s, r) => s + r.value, 0);
+  // "Other" is a leftovers bucket, not a use case, so it is never announced as
+  // the thing developers are building — not even in a week where it is the
+  // only row there is. Sorting it last is not enough: last of one is first.
+  const lead = [...uc]
+    .filter(r => !RESIDUAL.has(r.dimension))
+    .sort((a, b) => b.value - a.value)[0];
+
+  // Sparklines follow the twelve weeks up to and including the one on screen,
+  // so a tile read for an older week shows that week's history, not today's.
+  const t = weeklyTotals();
+  const end = current.week ? t.weeks.indexOf(current.week) : t.weeks.length - 1;
+  const from = Math.max(0, (end < 0 ? t.weeks.length : end + 1) - 12);
+  const to = end < 0 ? t.weeks.length : end + 1;
+  // Densified like the charts are: a week nobody measured has to leave a hole
+  // in the sparkline too, or twelve points can quietly span fourteen weeks and
+  // the tile disagrees with the chart under it.
+  const trailWeeks = t.weeks.slice(from, to);
+  const trail = (a) => {
+    const p = prepareSeries(trailWeeks, [{ dimension: 'x', values: a.slice(from, to) }]);
+    return p.rows[0].values;
+  };
+  const openWeek = current.week ? inProgress(current.week) : false;
+  const spark = (a) => sparkline(trail(a), { provisional: openWeek });
+  const leadValues = lead
+    ? (seriesOf(CUTS.usecase).find(s => s.dimension === lead.dimension)?.values) || []
+    : [];
+  const leadTrail = leadValues.length ? trail(leadValues) : [];
+
+  document.getElementById('tiles').innerHTML = `
+    <div class="tile">
+      <div class="label">New Spaces</div>
+      <div class="value">${num(totalSpaces)}</div>
+      <div class="sub">${num(classified)} classified</div>
+      ${spark(t.spaces)}
+    </div>
+    <div class="tile">
+      <div class="label">New Models</div>
+      <div class="value">${num(totalModels)}</div>
+      <div class="sub">${fam.length} families</div>
+      ${spark(t.models)}
+    </div>
+    <div class="tile">
+      <div class="label">Leading use case</div>
+      <div class="value word">${lead ? esc(titleCase(lead.dimension)) : '—'}</div>
+      <div class="sub">${lead ? delta(lead.delta_1w) + ' week over week' : ''}</div>
+      ${sparkline(leadTrail, { provisional: openWeek })}
+    </div>
+    <div class="tile">
+      <div class="label">Coverage</div>
+      <div class="value">${cov.coveragePercent == null ? '—' : Math.round(cov.coveragePercent) + '%'}</div>
+      <div class="sub">${num(cov.bySource?.rule ?? 0)} by rule &middot; ${num(cov.bySource?.model ?? 0)} by LLM</div>
+      ${spark(t.coverage)}
+    </div>`;
+}
+
+/** The headline line: one series, so no legend box — the card title names it. */
+function renderHeadline() {
+  const el = document.getElementById('c-headline');
+  const t = weeklyTotals();
+  if (!t.weeks.length) { setHTML(el, noSeriesNote()); return; }
+
+  // windowed() already stops at the week the reader picked — for this chart
+  // and for every other trend on the page.
+  const at = current.week ? t.weeks.indexOf(current.week) : -1;
+  const w = windowed(t.weeks, [t.spaces, t.classified, t.supSpaces]);
+  // Zero-filled: a week with Spaces but nothing classified is a real zero on
+  // the classified line, and the Spaces line beside it is the proof the week
+  // was measured. Spaces itself can only be null when both cuts are missing,
+  // in which case nothing fills either row.
+  const sup = w.arrays[2];
+  const prepared = prepareSeries(w.weeks, [
+    { dimension: 'spaces', values: w.arrays[0], denominators: w.arrays[0], suppressed: sup },
+    { dimension: 'classified', values: w.arrays[1], denominators: w.arrays[0], suppressed: sup },
+  ], { zeroFill: true, isCount: true });
+  const weeks = prepared.weeks;
+  const lines = [
+    { key: 'spaces', label: 'All new Spaces', color: 'var(--s1)' },
+    { key: 'classified', label: 'Of those, classified', color: 'var(--s3)' },
+  ].map((l, i) => {
+    const raw = prepared.rows[i].values;
+    const values = applyReading(raw, prepared.rows[i].denominators, true);
+    return { ...l, values, suppressed: prepared.rows[i].suppressed, carried: carriedMask(raw, values) };
+  });
+
+  if (state.table) {
+    setHTML(el, trendTable(weeks, lines));
+    return;
+  }
+  const notes = [];
+  if (onlyOneWeekEver()) notes.push('Only one week has been processed so far — the line starts once there are two.');
+  if (state.cumulative) notes.push(`Each point is the running total of every week shown, starting from ${shortWeek(weeks[0])}.`);
+  if (prepared.hasGaps) notes.push(gapNote());
+  if (at >= 0 && at < t.weeks.length - 1) notes.push('The line ends at the week you picked above.');
+  if (atHistoryCap(weeks)) notes.push(HISTORY_CAP_NOTE);
+  trendChart(el, {
+    weeks, lines, chartId: 'headline',
+    provisionalLast: inProgress(weeks[weeks.length - 1]),
+    note: notes.join(' '),
+  });
+}
+
+/** The three or four use cases that moved most against last week. */
+function renderMovers() {
+  const el = document.getElementById('c-movers');
+  const card = document.getElementById('movers-card');
+  const rows = (current.byCut[CUTS.usecase] || [])
+    .filter(r => r.delta_1w != null && !r.suppressed && !RESIDUAL.has(r.dimension));
+
+  if (rows.length < 2) { card.hidden = true; return; }
+  card.hidden = false;
+
+  const sorted = [...rows].sort((a, b) => b.delta_1w - a.delta_1w);
+  const up = sorted.filter(r => r.delta_1w > 0).slice(0, 4);
+  const down = sorted.filter(r => r.delta_1w < 0).slice(-4).reverse();
+  const list = (items, none) => items.length
+    ? items.map(r => `<div class="mover-row">
+        <span class="name">${esc(titleCase(r.dimension))}</span>
+        <span>${delta(r.delta_1w)} <span class="suppressed" style="font-size:12px"
+          title="New Spaces this week">${num(r.value)} Spaces</span></span>
+      </div>`).join('')
+    : `<p class="empty" style="padding:10px 0">${none}</p>`;
+
+  // Everything else on the page marks a half-counted week; this card was the
+  // one place that ranked growth off one without saying so, and it is the
+  // first thing a reader looks at. Two days into a week, a use case "shrank
+  // 57%" mostly means five days have not happened yet.
+  const open = inProgress(current.week);
+  el.innerHTML = `<div class="movers">
+    <div><h3>Grew</h3>${list(up, 'Nothing grew this week.')}</div>
+    <div><h3>Shrank</h3>${list(down, 'Nothing shrank this week.')}</div>
+  </div>${open
+    ? '<p class="chart-note">○ This week is still open, so these are partly just days that have not happened yet. They settle when the week closes.</p>'
+    : ''}`;
+}
+
+function renderTrendsTab() {
+  const track = TRACKS.find(t => t.id === state.track) || TRACKS[0];
+  document.getElementById('trend-title').textContent = track.title;
+  document.getElementById('trend-hint').textContent = track.hint;
+  const el = document.getElementById('c-trend');
+
+  if (!seriesRaw || !seriesRaw.weeks.length) {
+    setHTML(el, noSeriesNote());
+    return;
+  }
+
+  if (track.kind === 'total') {
+    const t = weeklyTotals();
+    // Coverage is a percentage, so its "story so far" is an average weighted by
+    // how many Spaces each week carried, not a sum.
+    const w = windowed(t.weeks, [t[track.source], t.spaces,
+      track.source === 'models' ? t.supModels : t.supSpaces]);
+    const isCount = track.unit !== '%';
+    // A derived total is only as reportable as the rows it was summed from: a
+    // week whose base fell below the threshold is suppressed here too, not
+    // quietly promoted to a confident figure because the sum was taken on the
+    // client.
+    const prepared = prepareSeries(w.weeks, [{
+      dimension: track.id, values: w.arrays[0], denominators: w.arrays[1],
+      suppressed: w.arrays[2],
+    }], { zeroFill: true, isCount });
+    const weeks = prepared.weeks;
+    const raw = prepared.rows[0].values;
+    const readValues = applyReading(raw, prepared.rows[0].denominators, isCount);
+    const lines = [{
+      key: track.id, label: track.label, color: 'var(--s1)',
+      values: readValues,
+      suppressed: prepared.rows[0].suppressed,
+      carried: carriedMask(raw, readValues),
+    }];
+    const notes = [];
+    if (state.cumulative && isCount) notes.push(`Each point is the running total of every week shown, starting from ${shortWeek(weeks[0])}.`);
+    if (state.cumulative && !isCount) notes.push('Each point is the average of every week up to it, counting busier weeks more heavily.');
+    if (prepared.hasGaps) notes.push(gapNote(isCount));
+    if (atHistoryCap(weeks)) notes.push(HISTORY_CAP_NOTE);
+
+    if (state.table) {
+      // The notes go with the numbers. Without them a column of running
+      // totals reads as a column of weekly readings — and in print the
+      // toolbar that would have explained it is not on the page at all.
+      setHTML(el, trendTable(weeks, lines, track.unit || '') +
+        (notes.length ? `<p class="chart-note">${esc(notes.join(' '))}</p>` : ''));
+      return;
+    }
+    trendChart(el, {
+      weeks, lines, unit: track.unit || '', chartId: 'trend-' + track.id,
+      provisionalLast: inProgress(weeks[weeks.length - 1]),
+      note: notes.join(' '),
+    });
+    return;
+  }
+
+  if (track.kind === 'multiples') {
+    renderEngagementTrend(el);
+    return;
+  }
+
+  const w = windowRows(seriesRaw.weeks, seriesOf(track.cut));
+  renderTrendInto(el, {
+    rows: w.rows, weeks: w.weeks, cut: track.cut,
+    unit: track.unit || '', chartId: 'trend-' + track.id,
+  });
+}
+
+/**
+ * Engagement over time, as small multiples.
+ *
+ * Downloads run in the millions and likes in the tens of thousands. On one
+ * axis the likes flatten into the baseline; on two axes the chart invents a
+ * correlation out of where the scales happen to line up. One small chart each
+ * is the honest form.
+ */
+function renderEngagementTrend(el) {
+  const weeksAll = seriesRaw?.weeks || [];
+  const rows = seriesOf(CUTS.engage);
+  if (!weeksAll.length || !rows.length) {
+    setHTML(el, noSeriesNote());
+    return;
+  }
+
+  const w = windowRows(weeksAll, rows);
+  // Densified for the table as well as for the charts: a week nobody measured
+  // has to be a row saying so, not a row quietly missing, or the numbers read
+  // as three consecutive weeks when they are not.
+  const dense = prepareSeries(w.weeks, w.rows);
+
+  // The reading is fixed here whatever the box says elsewhere: a rolling
+  // 30-day download figure summed across weeks counts the same downloads over
+  // and over. syncToolbar() disables the control on this tab and says so.
+  if (state.table) {
+    setHTML(el, trendTable(dense.weeks, dense.rows.map(r => ({
+      label: titleCase(r.dimension),
+      values: r.values,
+      suppressed: r.suppressed,
+    }))));
+    return;
+  }
+
+  // Addressed by position inside this container, not by a global id: this
+  // function renders into the Trends card AND the Engagement card, and ids
+  // minted per index collide between the two — getElementById would then hand
+  // the second render the first panel's hidden container, and the visible card
+  // would stay empty.
+  const open = inProgress(w.weeks[w.weeks.length - 1]);
+  setHTML(el, dense.rows.map(r =>
+    `<div class="multiple">
+       <h3>${esc(titleCase(r.dimension))}</h3>
+       <div class="engage-plot"></div>
+     </div>`).join('') +
+    (open ? '<p class="chart-note">○ The last point is a week that is still open, so it will keep rising.</p>' : ''));
+
+  const hosts = el.querySelectorAll('.engage-plot');
+  dense.rows.forEach((r, i) => {
+    const host = hosts[i];
+    if (!host) return;
+    // The row's own suppression flags travel with it: a week whose base fell
+    // below the reporting threshold has to keep its hollow marker and its
+    // "too few" note here as much as anywhere else.
+    trendChart(host, {
+      weeks: dense.weeks, chartId: 'engage-' + r.dimension, height: 170,
+      provisionalLast: open,
+      lines: [{ key: r.dimension, label: titleCase(r.dimension), color: 'var(--s1)',
+                values: r.values, suppressed: r.suppressed }],
+    });
+  });
+}
+
+/**
+ * Family-by-use-case over time.
+ *
+ * The cross-tab is left out of the shared series payload because it is larger
+ * than the other seven cuts combined, so it is fetched the first time someone
+ * actually asks to see it move, and only for the use case they picked.
+ */
+async function renderMatrixTrend() {
+  const el = document.getElementById('c-matrix');
+  // Both containers are the same element, and the fetch below outlives a
+  // click: a reader who switches back to This week while it is in flight must
+  // not have the week's matrix painted over by a chart they have left.
+  const stillHere = () => printing ||
+    (state.tab === 'tech' && state.sub.tech === 'matrix' && viewNow() === 'trend');
+
+  if (!matrixSeries) {
+    setHTML(el, '<p class="empty">Loading the history for this view…</p>');
+    try {
+      // The promise is the lock. Every control on the toolbar re-renders, and
+      // while this payload — the largest the page ever asks for — is in
+      // flight, matrixSeries is still null: without this each of those renders
+      // would start its own copy of the same 52-week download.
+      matrixPending ||= getJSON(`/api/series?cut=${encodeURIComponent(CUTS.matrix)}&weeks=52`);
+      matrixSeries = await matrixPending;
+    } catch {
+      matrixPending = null;
+      if (stillHere()) setHTML(el, '<p class="empty">Could not load the history for this view.</p>');
+      return;
+    }
+    if (!stillHere()) { renderAll(); return; }
+    fillUseCasePicker();
+  }
+
+  // A hash that dropped `uc=` leaves this null, and a hand-edited one can name
+  // a use case that is not there. Both resolve back to the documented default
+  // rather than rendering "No history" beside a picker showing something else.
+  // Filled when the value is unusable — and when the control itself is still
+  // empty. A reader who opens this view, leaves before the history lands and
+  // comes back gets here with matrixSeries cached (assigned before the
+  // stale-render guard returns) and a perfectly valid use case from the hash,
+  // so both of those tests pass and the dropdown beside the chart would stay
+  // blank for good.
+  const known = new Set((matrixSeries?.series || []).map(s => s.dimension));
+  const picker = document.getElementById('usecase-select');
+  if (!state.matrixUseCase || !known.has(state.matrixUseCase) || !picker.options.length) {
+    fillUseCasePicker();
+  }
+
+  const weeksAll = matrixSeries.weeks || [];
+  const uc = state.matrixUseCase;
+  const rows = (matrixSeries.series || [])
+    .filter(s => s.dimension === uc)
+    .map(s => ({ ...s, dimension: s.subDimension }));
+
+  if (!rows.length) {
+    setHTML(el, '<p class="empty">No history for this use case yet.</p>');
+    return;
+  }
+
+  const w = windowRows(weeksAll, rows);
+  renderTrendInto(el, {
+    rows: w.rows, weeks: w.weeks, cut: CUTS.matrix, unit: '%',
+    chartId: 'matrix',
+    extraNote: `Each line is the share of ${titleCase(uc)} Spaces built on that family.`,
+  });
+}
+
+function fillUseCasePicker() {
+  const sel = document.getElementById('usecase-select');
+  const ucs = [...new Set((matrixSeries?.series || []).map(s => s.dimension))].sort();
+  if (!ucs.length) return;
+  if (!state.matrixUseCase || !ucs.includes(state.matrixUseCase)) {
+    state.matrixUseCase = ucs[0];
+    writeHash();   // the URL should not keep naming a use case that is not there
+  }
+  sel.innerHTML = ucs.map(u =>
+    `<option value="${esc(u)}"${u === state.matrixUseCase ? ' selected' : ''}>${esc(titleCase(u))}</option>`).join('');
+}
+
+/* ── Render orchestration ─────────────────────────────────────────────── */
+
+function renderProvenance() {
+  const cov = current.coverage || {};
+  const byRule = cov.bySource?.rule ?? 0;
+  const byLlm  = cov.bySource?.model ?? 0;
+  document.getElementById('provenance').innerHTML = current.week
+    ? `<span>Week of <b>${esc(current.week)}</b></span>
+       <span>Classified <b>${num(cov.classifiedSpaces)}</b> of <b>${num(cov.totalSpaces)}</b> Spaces</span>
+       <span>Method <b>${num(byRule)}</b> by rule &middot; <b>${num(byLlm)}</b> by LLM${
+         byLlm && cov.llmModel ? ` (${esc(prettyModel(cov.llmModel))})` : ''}</span>
+       <span>Flagged for review <b>${num(cov.lowConfidence ?? 0)}</b></span>
+       ${inProgress(current.week)
+         ? '<span class="wip">Week still open &mdash; counts are partial and rise until it closes</span>'
+         : ''}`
+    : '';
+}
+
+function renderAll() {
+  renderProvenance();
+  syncToolbar();
+
+  // The week never answered and no earlier week is on screen, so there is
+  // nothing to draw from. Every later render — the history landing behind
+  // it, a tab click — comes back through here, which is what keeps the
+  // message on screen instead of being repainted over.
+  if (weekFailed && !current.week) {
+    const failed = '<p class="empty">These figures could not be loaded. Reload the page to try again.</p>';
+    document.getElementById('tiles').innerHTML =
+      `<div class="tile" style="grid-column:1/-1">${failed}</div>`;
+    setHTML(document.getElementById('c-headline'), failed);
+    document.getElementById('movers-card').hidden = true;
+    document.getElementById('narrative-card').hidden = true;
+    return;
+  }
+
+  // Nothing has answered yet. Rendering here would fill the tiles with zeros
+  // derived from an empty object, and a reader cannot tell a measured zero
+  // from an unanswered one — the same trap the empty-state path guards
+  // against. The cards stay blank under the .stale hold until data lands.
+  if (!current.week && weeksAvailable.length) {
+    setHTML(document.getElementById('tiles'), '');
+    return;
+  }
+
+  if (printing) { renderEveryPanel(); return; }
+
+  if (state.tab === 'overview') {
+    renderTiles();
+    renderHeadline();
+    renderMovers();
+    return;
+  }
+  if (state.tab === 'trends') { renderTrendsTab(); return; }
+
+  if (state.tab === 'build') {
+    if (state.sub.build === 'usecase') {
+      const uc = weekRows(CUTS.usecase);
+      renderCutPanel('c-usecase', CUTS.usecase, {
+        shareOf: uc.reduce((s, r) => s + r.value, 0), chartId: 'usecase',
+      });
+    } else {
+      renderCutPanel('c-vertical', CUTS.vertical, { unit: '%', chartId: 'vertical' });
+    }
+    return;
+  }
+
+  if (state.tab === 'tech') {
+    const sub = state.sub.tech;
+    if (sub === 'family') renderCutPanel('c-family', CUTS.family, { chartId: 'family' });
+    else if (sub === 'tech') renderCutPanel('c-tech', CUTS.tech, { unit: '%', chartId: 'tech' });
+    else if (sub === 'sdk') renderCutPanel('c-sdk', CUTS.sdk, { chartId: 'sdk' });
+    else if (viewNow() === 'trend') renderMatrixTrend();
+    else renderMatrix();   // the cross-tab is a table already, in either view
+    return;
+  }
+
+  if (state.tab === 'engagement') {
+    const el = document.getElementById('c-engagement');
+    if (viewNow() === 'trend') renderEngagementTrend(el);
+    else setHTML(el, engagementTable());
+  }
+}
+
+/**
+ * Everything, for paper.
+ *
+ * The print stylesheet opens every panel, because on paper there are no tabs
+ * to click — but renderAll() only ever fills the panel you are looking at, so
+ * without this the other four print as headings over empty space. Charts
+ * measure zero width in a hidden panel and fall back to their default width,
+ * which the print layout scales to the page.
+ */
+function renderEveryPanel() {
+  renderTiles();
+  renderHeadline();
+  renderMovers();
+  renderTrendsTab();
+
+  const uc = weekRows(CUTS.usecase);
+  renderCutPanel('c-usecase', CUTS.usecase, {
+    shareOf: uc.reduce((s, r) => s + r.value, 0), chartId: 'usecase',
+  });
+  renderCutPanel('c-vertical', CUTS.vertical, { unit: '%', chartId: 'vertical' });
+  renderCutPanel('c-family', CUTS.family, { chartId: 'family' });
+  renderCutPanel('c-tech', CUTS.tech, { unit: '%', chartId: 'tech' });
+  renderCutPanel('c-sdk', CUTS.sdk, { chartId: 'sdk' });
+  // The cross-tab's history is fetched on demand, and beforeprint cannot wait
+  // for it: printing before it has ever been opened would capture the loading
+  // line. The week's matrix is always to hand and is a complete answer.
+  if (viewNow() === 'trend' && matrixSeries) renderMatrixTrend(); else renderMatrix();
+  const eng = document.getElementById('c-engagement');
+  if (viewNow() === 'trend') renderEngagementTrend(eng);
+  else setHTML(eng, engagementTable());
+}
+
+/* ── Tabs, toolbar and routing ────────────────────────────────────────── */
+
+const PANELS = {
+  overview: 'panel-overview', trends: 'panel-trends', build: 'panel-build',
+  tech: 'panel-tech', engagement: 'panel-engagement',
+};
+
+/** The sub-tabs each panel actually has, so a hash cannot name one that isn't there. */
+const SUBS = {
+  build: ['usecase', 'vertical'],
+  tech: ['family', 'tech', 'sdk', 'matrix'],
+};
+
+function showTab(tab, { push = false, land = false } = {}) {
+  state.tab = PANELS[tab] ? tab : 'overview';
+  for (const [name, id] of Object.entries(PANELS)) {
+    const on = name === state.tab;
+    document.getElementById(id).hidden = !on;
+    const btn = document.getElementById('tab-' + name);
+    btn.setAttribute('aria-selected', String(on));
+    btn.tabIndex = on ? 0 : -1;
+    // A keyboard reader who opens a tab should land inside it, not be left at
+    // the top of the page to arrow all the way back down.
+    if (on && land) document.getElementById(id).focus({ preventScroll: true });
+  }
+  applySubTabs();
+  renderAll();
+  writeHash(push);
+}
+
+function applySubTabs() {
+  document.querySelectorAll('.subtabs').forEach(strip => {
+    const panel = strip.closest('[role="tabpanel"]');
+    const tab = Object.entries(PANELS).find(([, id]) => id === panel.id)?.[0];
+    const chosen = state.sub[tab];
+    strip.querySelectorAll('button').forEach(btn => {
+      const on = btn.dataset.sub === chosen;
+      btn.setAttribute('aria-selected', String(on));
+      btn.tabIndex = on ? 0 : -1;
+      const target = document.getElementById(btn.getAttribute('aria-controls'));
+      if (target) target.hidden = !on;
+    });
+  });
+}
+
+/**
+ * Only the controls that do something here are on screen.
+ *
+ * A greyed-out row of controls that never apply is noise; a control that
+ * silently does nothing is worse. Each tab shows exactly its own.
+ */
+function syncToolbar() {
+  const trendish = state.tab === 'overview' || viewNow() === 'trend';
+  const show = (id, on) => { document.getElementById(id).style.display = on ? '' : 'none'; };
+
+  // The cross-tab is a table in both views, so a Table button there toggles
+  // nothing. Everywhere else it has something to show — including Overview,
+  // whose headline chart has a table twin like every other chart.
+  // The cross-tab is a table in its this-week view, so a Table button there
+  // toggles nothing — but its over-time view is a line chart like any other and
+  // keeps its table twin. The week picker only moves a this-week view; on an
+  // over-time view it would sit there costing two API calls per change and
+  // moving nothing.
+  const alreadyATable =
+    (state.tab === 'tech' && state.sub.tech === 'matrix' && viewNow() !== 'trend') ||
+    (state.tab === 'engagement' && viewNow() !== 'trend');
+  show('tool-week', true);
+  show('tool-view', state.tab !== 'overview' && state.tab !== 'trends');
+  show('tool-table', !alreadyATable);
+  show('tool-track', state.tab === 'trends');
+  show('tool-window', trendish);
+  show('tool-cumulative', trendish);
+  show('tool-usecase', state.tab === 'tech' && state.sub.tech === 'matrix' && viewNow() === 'trend');
+
+  document.querySelectorAll('.btn-view').forEach(b => {
+    b.setAttribute('aria-pressed', String(b.dataset.view === state.view));
+  });
+  document.getElementById('table-toggle').setAttribute('aria-pressed', String(state.table));
+  document.querySelectorAll('.btn-win').forEach(b =>
+    b.setAttribute('aria-pressed', String(Number(b.dataset.win) === state.win)));
+
+  const box = document.getElementById('cumulative');
+  const wrap = document.getElementById('tool-cumulative');
+  const label = document.getElementById('cumulative-label');
+  const ctxRead = readingContext();
+  box.checked = state.cumulative && !ctxRead.blocked;
+  box.disabled = !!ctxRead.blocked;
+  wrap.classList.toggle('off', !!ctxRead.blocked);
+  label.textContent = ctxRead.blocked ? 'Add up over time'
+    : ctxRead.percent ? 'Show the average so far' : 'Add up over time';
+  wrap.title = ctxRead.blocked || (ctxRead.percent
+    ? 'Percentages cannot be added up, so this shows the average so far, counting busier weeks more heavily.'
+    : 'Show the running total instead of one week at a time.');
+  const why = document.getElementById('cumulative-why');
+  if (why) why.textContent = ctxRead.blocked || '';
+}
+
+/**
+ * What "the story so far" means for whatever is on screen.
+ *
+ * Counts add up. Percentages average. Engagement does neither: downloads are
+ * already a rolling 30-day figure, so adding weeks together would count the
+ * same downloads over and over, and likes are a running total the Hub keeps
+ * for us. That one is a dead end, and says so in words rather than as a grey
+ * box with no explanation.
+ */
+function readingContext() {
+  const pct = { percent: true, blocked: null };
+  const count = { percent: false, blocked: null };
+  const engagement = {
+    percent: false,
+    blocked: 'Downloads already count a rolling 30 days, so adding the weeks together would count the same downloads many times.',
+  };
+
+  if (state.tab === 'trends') {
+    const t = TRACKS.find(t => t.id === state.track);
+    if (t?.kind === 'multiples') return engagement;
+    return t?.unit === '%' ? pct : count;
+  }
+  if (state.tab === 'engagement') return engagement;
+  if (state.tab === 'build') return state.sub.build === 'vertical' ? pct : count;
+  if (state.tab === 'tech') return (state.sub.tech === 'tech' || state.sub.tech === 'matrix') ? pct : count;
+  return count;
+}
+
+/**
+ * Deep links: a tab, a sub-tab and a view are shareable, and survive a reload.
+ *
+ * Moving between tabs pushes a history entry, because that is the navigation a
+ * reader expects Back to undo. Toggling a control replaces it instead — a
+ * dashboard that needs eleven Back presses to escape because someone tried
+ * three window lengths and a legend chip is a worse dashboard.
+ */
+function activeChartId() {
+  if (state.tab === 'overview') return 'headline';
+  if (state.tab === 'trends') {
+    const t = TRACKS.find(t => t.id === state.track);
+    return t && t.kind !== 'multiples' ? 'trend-' + t.id : null;
+  }
+  if (viewNow() !== 'trend') return null;
+  if (state.tab === 'build') return state.sub.build === 'vertical' ? 'vertical' : 'usecase';
+  if (state.tab === 'tech') {
+    return { family: 'family', tech: 'tech', sdk: 'sdk', matrix: 'matrix' }[state.sub.tech] || null;
+  }
+  return null;
+}
+
+function writeHash(push = false) {
+  const p = new URLSearchParams();
+  p.set('tab', state.tab);
+  if (state.tab === 'build' || state.tab === 'tech') p.set('sub', state.sub[state.tab]);
+  // Trends is a trend whatever the shared control says, so it neither reads
+  // nor writes it.
+  if (state.tab !== 'overview' && state.tab !== 'trends') p.set('view', state.view);
+  if (state.table) p.set('table', '1');
+  if (state.tab === 'trends') p.set('track', state.track);
+  if (state.tab === 'tech' && state.sub.tech === 'matrix' && viewNow() === 'trend' && state.matrixUseCase) {
+    p.set('uc', state.matrixUseCase);
+  }
+  if (state.week) p.set('week', state.week);
+  if (state.win !== 26) p.set('weeks', String(state.win));
+  if (state.cumulative) p.set('total', '1');
+
+  // Only once the reader has actually touched the legend: an untouched chart
+  // writes nothing, so its defaults keep following the data as it grows
+  // instead of being frozen into every link ever shared.
+  const chart = activeChartId();
+  if (chart && state.offTouched.has(chart)) {
+    p.set('off', [...(state.off[chart] || [])].join(','));
+  }
+  const next = '#' + p.toString();
+  if (location.hash === next) return;
+  if (push) history.pushState(null, '', next);
+  else history.replaceState(null, '', next);
+}
+
+/**
+ * Rebuilds the whole view from the hash, defaults included.
+ *
+ * Every field is assigned on every read, never only when its parameter is
+ * present. writeHash leaves a control out of the URL when it sits at its
+ * default, so "assign only if present" made Back a one-way door: stepping
+ * back to a link written before the box was ticked left the box ticked.
+ *
+ * Every value is checked against what actually exists. A shared link with a
+ * typo in it falls back to the default rather than opening a panel with no
+ * card in it.
+ */
+function readHash() {
+  const p = new URLSearchParams(location.hash.replace(/^#/, ''));
+
+  const tab = p.get('tab');
+  state.tab = tab && PANELS[tab] ? tab : 'overview';
+
+  const sub = p.get('sub');
+  if (state.tab === 'build') state.sub.build = SUBS.build.includes(sub) ? sub : 'usecase';
+  if (state.tab === 'tech') state.sub.tech = SUBS.tech.includes(sub) ? sub : 'family';
+
+  const view = p.get('view');
+  state.view = view === 'trend' ? 'trend' : 'bars';
+  state.table = p.get('table') === '1';
+
+  const track = p.get('track');
+  state.track = TRACKS.some(t => t.id === track) ? track : 'spaces_total';
+
+  // Omitted means the default, like every other omitted parameter. Checked
+  // against the cross-tab's own use cases once that payload arrives;
+  // fillUseCasePicker falls back to the first if this names one that is gone.
+  state.matrixUseCase = p.get('uc') || null;
+
+  const weeks = Number(p.get('weeks'));
+  state.win = [12, 26, 52].includes(weeks) ? weeks : 26;
+
+  state.cumulative = p.get('total') === '1';
+
+  const chart = activeChartId();
+  const off = p.get('off');
+  if (chart && off !== null) {
+    state.off[chart] = new Set(off ? off.split(',') : []);
+    state.offTouched.add(chart);
+  } else if (chart) {
+    // Absent means "however the chart likes it" — the default set is seeded
+    // again on the next paint.
+    delete state.off[chart];
+    state.offTouched.delete(chart);
+  }
+
+  // Omitted means the newest week, the same way every other omitted parameter
+  // means its default. Callers resolve null against the weeks that actually
+  // exist, which is the only place that list is known.
+  state.week = p.get('week') || null;
+}
+
+/**
+ * Arrow keys move focus along the strip; Enter or Space opens the tab.
+ *
+ * Deliberate rather than automatic activation: arrowing past a tab should not
+ * fire the work that opening it does — the cross-tab history behind "Family by
+ * use case" is fetched on activation, and nobody asked for it on the way to
+ * the tab after it.
+ */
+function wireTabStrip(strip, onPick) {
+  const buttons = [...strip.querySelectorAll('button')];
+  strip.addEventListener('keydown', e => {
+    const i = buttons.indexOf(document.activeElement);
+    if (i < 0) return;
+
+    if (e.key === 'Enter' || e.key === ' ' || e.key === 'Spacebar') {
+      e.preventDefault();
+      if (!buttons[i].disabled) onPick(buttons[i]);
+      return;
+    }
+
+    const step = e.key === 'ArrowRight' ? 1 : e.key === 'ArrowLeft' ? -1
+      : e.key === 'Home' ? -buttons.length : e.key === 'End' ? buttons.length : 0;
+    if (!step) return;
+    e.preventDefault();
+
+    let next = e.key === 'Home' ? 0 : e.key === 'End' ? buttons.length - 1
+      : (i + step + buttons.length) % buttons.length;
+    let guard = buttons.length;
+    while (buttons[next].disabled && guard-- > 0) {
+      next = (next + (step > 0 ? 1 : -1) + buttons.length) % buttons.length;
+    }
+    buttons[next].focus();
+    buttons[next].scrollIntoView({ block: 'nearest', inline: 'nearest' });
+  });
+}
+
+/* ── Loading ──────────────────────────────────────────────────────────── */
+
 async function loadWeek(week) {
+  // Two clicks on the picker start two loads, and the network decides which
+  // lands last. Without a generation the older answer can overwrite the newer
+  // one, putting the week the reader has already left back on screen — under
+  // a picker that says otherwise.
+  const seq = ++weekLoadSeq;
   const main = document.querySelector('.wrap');
+  const notice = document.getElementById('load-error');
   main.classList.add('stale');           // hold the previous render, never flash
+
   try {
     const [m, c] = await Promise.all([
       getJSON(`/api/metrics?week=${encodeURIComponent(week)}`),
       getJSON(`/api/coverage?week=${encodeURIComponent(week)}`),
     ]);
+    if (seq !== weekLoadSeq) return;     // a later pick already won
+
     current = { byCut: {}, coverage: c, week };
+    state.week = week;
+    weekFailed = false;
     for (const row of (m.metrics || [])) {
       (current.byCut[row.metric_cut] ||= []).push(row);
     }
     document.getElementById('m-taxonomy').textContent = `Taxonomy version ${m.taxonomyVersion}.`;
+    notice.hidden = true;
     renderAll();
-    loadNarrative(week);
+    writeHash();
+    // Held at reduced opacity until its own request lands: it arrives after
+    // the figures do, and last week's summary sitting at full strength under
+    // this week's numbers reads as this week's summary.
+    document.getElementById('narrative-card').classList.add('stale');
+    loadNarrative(week, seq);
+  } catch {
+    if (seq !== weekLoadSeq) return;
+    // The figures on screen belong to the week before this one. Leaving the
+    // picker pointing at the week that failed would label them as its, which
+    // is the one thing worse than showing nothing.
+    const sel = document.getElementById('week-select');
+    notice.textContent = current.week
+      ? `Week of ${week} could not be loaded. Still showing week of ${current.week}.`
+      : `Week of ${week} could not be loaded. Reload the page to try again.`;
+    notice.hidden = false;
+    if (current.week) {
+      sel.value = current.week;
+      state.week = current.week;
+      writeHash();
+    } else {
+      // Nothing has ever loaded, so there is no previous render to hold. The
+      // drawing is left to renderAll() rather than done here, because the
+      // history lands behind the week and renders again: a message written
+      // only here would be painted over, and the cards would stand at full
+      // opacity as a heading, a hint and an empty space, which reads as "we
+      // measured nothing" rather than "the request failed".
+      weekFailed = true;
+      renderAll();
+    }
   } finally {
-    main.classList.remove('stale');
+    if (seq === weekLoadSeq) main.classList.remove('stale');
   }
 }
 
-async function loadNarrative(week) {
+async function loadNarrative(week, seq) {
   const card = document.getElementById('narrative-card');
   try {
     const d = await getJSON(`/api/narrative?week=${encodeURIComponent(week)}`);
+    // Same race, its own request: a slow narrative for last week's pick must
+    // not print itself under this week's figures.
+    if (seq !== undefined && seq !== weekLoadSeq) return;
     if (!d.narrative) { card.hidden = true; return; }
     document.getElementById('narrative-body').innerHTML =
       d.narrative.split(/\n\n+/).map(p => `<p>${esc(p)}</p>`).join('');
     card.hidden = false;
-  } catch { card.hidden = true; }
+  } catch {
+    if (seq === undefined || seq === weekLoadSeq) card.hidden = true;
+  } finally {
+    if (seq === undefined || seq === weekLoadSeq) card.classList.remove('stale');
+  }
 }
+
+/**
+ * One request buys every trend on the page.
+ *
+ * A failure here is not fatal: the week views come from /api/metrics and stay
+ * up, and the trend views say what is missing rather than showing an empty
+ * chart that looks like a week of zeros.
+ */
+async function loadSeries() {
+  try {
+    seriesRaw = await getJSON('/api/series?weeks=52');
+    seriesFailed = false;
+  } catch {
+    // Kept apart from an empty answer. "No weeks have been processed yet" is a
+    // statement about the database; an unreachable endpoint is a statement
+    // about right now, and a reader who cannot tell them apart will wait for a
+    // pipeline that already ran.
+    seriesRaw = { weeks: [], series: [] };
+    seriesFailed = true;
+  }
+  totalsCache = null;
+  ranCache = null;
+}
+
+/** What a trend has to say when there is nothing to draw. */
+const noSeriesNote = () => {
+  if (seriesFailed) {
+    return '<p class="empty">The week-by-week history could not be loaded just now. The figures for the week you picked are unaffected.</p>';
+  }
+  // Still in flight. The week's own figures arrive first by design, so this
+  // must not read as "there is nothing here" while the history is on its way.
+  if (!seriesRaw) return '<p class="empty">Loading the week-by-week history…</p>';
+  return '<p class="empty">No weeks have been processed yet.</p>';
+};
 
 async function init() {
   const sel = document.getElementById('week-select');
-  const { weeks } = await getJSON('/api/weeks');
+  const trackSel = document.getElementById('track-select');
+  // Grouped by what the numbers ARE — "How many" against "Out of every 100" —
+  // because that is the difference that decides whether they can be added up,
+  // and it says so without using the word percentage.
+  trackSel.innerHTML = TRACK_GROUPS.map(g => {
+    const items = TRACKS.filter(t => (t.unit === '%' ? TRACK_GROUPS[1] : TRACK_GROUPS[0]) === g);
+    return `<optgroup label="${esc(g)}">${items.map(t =>
+      `<option value="${esc(t.id)}">${esc(t.label)}</option>`).join('')}</optgroup>`;
+  }).join('');
 
-  if (!weeks?.length) {
+  readHash();
+  trackSel.value = state.track;
+
+  let weeksFailed = false;
+  const { weeks } = await getJSON('/api/weeks').catch(() => {
+    weeksFailed = true;
+    return { weeks: [] };
+  });
+  weeksAvailable = weeks || [];
+
+  if (!weeksAvailable.length) {
     // Render first, THEN write the message — renderAll() repaints the tiles
     // and would otherwise replace it with a row of zeros, which reads as
     // "we measured zero" rather than "nothing has been measured yet".
-    renderAll();
+    showTab('overview');
     document.getElementById('tiles').innerHTML =
-      '<div class="tile" style="grid-column:1/-1"><p class="empty">No week has finished processing yet. Figures appear here as soon as the first run completes.</p></div>';
+      `<div class="tile" style="grid-column:1/-1"><p class="empty">${weeksFailed
+        ? 'The list of weeks could not be loaded just now. Reload the page to try again — this is not the same as there being nothing to show.'
+        : 'No week has finished processing yet. Figures appear here as soon as the first run completes.'}</p></div>`;
+    ['tab-trends', 'tab-build', 'tab-tech', 'tab-engagement'].forEach(id => {
+      document.getElementById(id).disabled = true;
+    });
     sel.innerHTML = '<option>—</option>';
+    sel.disabled = true;
+    document.querySelectorAll('.btn-win, #cumulative, #table-toggle, .btn-view')
+      .forEach(c => { c.disabled = true; });
+    document.getElementById('tool-cumulative').classList.add('off');
     return;
   }
 
-  sel.innerHTML = weeks.map(w => `<option value="${esc(w)}">Week of ${esc(w)}</option>`).join('');
+  sel.innerHTML = weeksAvailable.map(w =>
+    `<option value="${esc(w)}">Week of ${esc(w)}</option>`).join('');
+  const wanted = state.week && weeksAvailable.includes(state.week) ? state.week : weeksAvailable[0];
+  sel.value = wanted;
   sel.addEventListener('change', () => loadWeek(sel.value));
 
-  document.getElementById('view-toggle').addEventListener('click', e => {
-    tableView = !tableView;
-    e.currentTarget.setAttribute('aria-pressed', String(tableView));
-    e.currentTarget.textContent = tableView ? 'Charts' : 'Table';
+  document.querySelector('.tabs').addEventListener('click', e => {
+    const btn = e.target.closest('button[data-tab]');
+    if (btn && !btn.disabled) showTab(btn.dataset.tab, { push: true });
+  });
+  wireTabStrip(document.querySelector('.tabs'), btn => showTab(btn.dataset.tab, { push: true, land: true }));
+
+  document.querySelectorAll('.subtabs').forEach(strip => {
+    const panel = strip.closest('[role="tabpanel"]');
+    const tab = Object.entries(PANELS).find(([, id]) => id === panel.id)?.[0];
+    const pick = btn => {
+      state.sub[tab] = btn.dataset.sub;
+      applySubTabs();
+      renderAll();
+      writeHash(true);
+    };
+    strip.addEventListener('click', e => {
+      const btn = e.target.closest('button[data-sub]');
+      if (btn) pick(btn);
+    });
+    wireTabStrip(strip, pick);
+  });
+
+  document.querySelectorAll('.btn-view').forEach(b => b.addEventListener('click', () => {
+    state.view = b.dataset.view;
+    renderAll();
+    writeHash();
+  }));
+
+  document.getElementById('table-toggle').addEventListener('click', () => {
+    state.table = !state.table;
+    renderAll();
+    writeHash();
+  });
+
+  // Back and forward move between views the same way they move between pages:
+  // every control writes to the hash, so the history entry is the whole view.
+  const snapshot = () => {
+    const chart = activeChartId();
+    return JSON.stringify([state.tab, state.sub, state.view, state.table,
+      state.win, state.cumulative, state.track, state.week, state.matrixUseCase,
+      chart ? [...(state.off[chart] || [])].sort() : null]);
+  };
+
+  window.addEventListener('hashchange', () => {
+    const before = snapshot();
+    readHash();
+    if (snapshot() === before) return;
+
+    // Both, in order, and never one instead of the other: an entry that moved
+    // the tab AND the week used to reload the week and return, leaving the
+    // reader on the tab they had just navigated away from.
+    trackSel.value = state.track;
+    const ucSel = document.getElementById('usecase-select');
+    if (state.matrixUseCase && [...ucSel.options].some(o => o.value === state.matrixUseCase)) {
+      ucSel.value = state.matrixUseCase;
+    }
+    const target = state.week && weeksAvailable.includes(state.week)
+      ? state.week
+      : weeksAvailable[0];
+    showTab(state.tab);
+    if (target && target !== current.week) {
+      sel.value = target;
+      loadWeek(target);
+    }
+  });
+
+  document.querySelectorAll('.btn-win').forEach(b => b.addEventListener('click', () => {
+    state.win = Number(b.dataset.win);
+    renderAll();
+    writeHash();
+  }));
+
+  document.getElementById('cumulative').addEventListener('change', e => {
+    state.cumulative = e.currentTarget.checked;
+    renderAll();
+    writeHash();
+  });
+
+  trackSel.addEventListener('change', () => {
+    state.track = trackSel.value;
+    renderAll();
+    writeHash();
+  });
+
+  document.getElementById('usecase-select').addEventListener('change', e => {
+    state.matrixUseCase = e.currentTarget.value;
+    renderAll();
+    writeHash();
+  });
+
+  // Paper gets the whole dashboard, not just the open tab — including the two
+  // collapsed <details>, which a print stylesheet cannot open on its own: a
+  // closed details hides its children whatever `display` says.
+  let reopened = [];
+  window.addEventListener('beforeprint', () => {
+    printing = true;
+    // Only on the way in. A second beforeprint without an afterprint between
+    // them would otherwise record an empty list and leave both sections
+    // expanded for good.
+    if (!reopened.length) {
+      reopened = [...document.querySelectorAll('details:not([open])')];
+      reopened.forEach(d => { d.open = true; });
+    }
+    renderAll();
+  });
+  window.addEventListener('afterprint', () => {
+    printing = false;
+    reopened.forEach(d => { d.open = false; });
+    reopened = [];
     renderAll();
   });
 
-  loadWeek(weeks[0]);
+  // Legend clicks are delegated: charts are repainted wholesale on resize and
+  // on every control change, so per-chip listeners would not survive.
+  document.addEventListener('click', e => {
+    const chip = e.target.closest('.legend-chip');
+    if (!chip) return;
+    const id = chip.dataset.chart, key = chip.dataset.key;
+    const off = (state.off[id] ||= new Set());
+    if (off.has(key)) {
+      // Switching one ON, which the cap may refuse.
+      const strip = chip.closest('.chart-legend');
+      const on = [...strip.querySelectorAll('.legend-chip')]
+        .filter(c => c.getAttribute('aria-pressed') === 'true');
+      if (on.length >= MAX_LINES) {
+        legendMessage(strip, `${MAX_LINES} lines is as many as stay tellable apart — switch one off to make room.`);
+        return;
+      }
+      off.delete(key);
+    } else {
+      // An empty chart is not a view anyone asked for: the last line standing
+      // stays on, and says so on the page.
+      const strip = chip.closest('.chart-legend');
+      const on = [...strip.querySelectorAll('.legend-chip')]
+        .filter(c => c.getAttribute('aria-pressed') === 'true');
+      if (on.length <= 1) {
+        legendMessage(strip, 'This is the only line left — switch another one on first.');
+        return;
+      }
+      off.add(key);
+    }
+
+    // The repaint throws away the button that was just pressed, so focus has
+    // to be handed to its replacement or a keyboard reader is dropped back to
+    // the top of the document mid-task.
+    state.offTouched.add(id);
+    renderAll();
+    writeHash();
+
+    // Matched by reading the attributes, not by building a selector out of
+    // them: CSS.escape produces an escaped *identifier*, and a key that starts
+    // with a digit — "3d-gaming" — comes back as "\\33 d-gaming", which
+    // matches nothing inside a quoted attribute value. The focus was landing
+    // on <body>.
+    [...document.querySelectorAll('.legend-chip')]
+      .find(c => c.dataset.chart === id && c.dataset.key === key)?.focus();
+  });
+
+  // The history is the biggest request the page makes and nothing on the
+  // Overview's tiles needs it. Started here but awaited after the week, so a
+  // slow 52-week scan delays the trend lines rather than the whole dashboard.
+  const history = loadSeries();
+
+  showTab(state.tab);
+  // Read back rather than reused: the picker has been live throughout, and a
+  // reader who changed the week must not have their choice undone by the load
+  // that finishes initialisation.
+  await loadWeek(sel.value || wanted);
+
+  await history;
+  renderAll();   // the trends and the tile sparklines fill in behind the week
 }
 
 init();
