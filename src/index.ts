@@ -74,6 +74,10 @@ export default {
       return handleWeeksList(request, env);
     }
 
+    if (url.pathname === "/api/series") {
+      return handleSeries(request, env, url);
+    }
+
     if (url.pathname === "/api" || url.pathname.startsWith("/api/")) {
       return Response.json({ error: "not_found", path: url.pathname }, { status: 404 });
     }
@@ -331,6 +335,16 @@ const CORS_HEADERS = {
   "Access-Control-Allow-Origin": "*",
   "Cache-Control": "public, max-age=60, must-revalidate",
 };
+
+/**
+ * Upper bound on a series request.
+ *
+ * `/api/weeks` already caps its listing at 52, and a year of weekly points is
+ * more than any line on this page can usefully draw. The cap is here so a
+ * hand-typed `weeks=100000` cannot turn one page load into a scan of every
+ * metric row the pipeline has ever written.
+ */
+const MAX_SERIES_WEEKS = 52;
 
 const VALID_CUTS = new Set([
   "spaces_by_use_case",
@@ -717,4 +731,138 @@ async function handleWeeksList(request: Request, env: Env): Promise<Response> {
     { weeks: (rows.results ?? []).map((r) => r.week_start) },
     { headers: CORS_HEADERS },
   );
+}
+
+/**
+ * Multi-week series for the dashboard's trend lines.
+ *
+ * `/api/metrics` answers for one week, which is the right shape for a page
+ * that shows one week — and the wrong shape for a line that has to keep
+ * growing as weeks land. Drawing 26 weeks from it means 26 round trips, and a
+ * dashboard that gets slower every week it survives.
+ *
+ * The response is column-oriented: one entry per (cut, dimension) with its
+ * values aligned to a shared `weeks` array. A row per week per dimension
+ * repeats the week string and the cut name thousands of times; aligned arrays
+ * carry the same information in roughly a third of the bytes, and the client
+ * plots them without regrouping.
+ *
+ * `family_share_by_use_case` is excluded unless asked for by name. It is a
+ * cross-tab — every use case times every family — so it alone is more rows
+ * than the other seven cuts together, and no line on this page plots it.
+ */
+async function handleSeries(request: Request, env: Env, url: URL): Promise<Response> {
+  if (request.method !== "GET") {
+    return Response.json({ error: "method_not_allowed" }, { status: 405, headers: { allow: "GET" } });
+  }
+
+  const cut = url.searchParams.get("cut");
+  if (cut && !VALID_CUTS.has(cut)) {
+    return Response.json(
+      { error: "invalid_params", detail: `unknown cut: ${cut}. Valid: ${[...VALID_CUTS].join(", ")}` },
+      { status: 400 },
+    );
+  }
+
+  const weeksParam = url.searchParams.get("weeks");
+  let weeksWanted = MAX_SERIES_WEEKS;
+  if (weeksParam !== null) {
+    const n = Number(weeksParam);
+    if (!Number.isInteger(n) || n < 1 || n > MAX_SERIES_WEEKS) {
+      return Response.json(
+        { error: "invalid_params", detail: `weeks must be an integer between 1 and ${MAX_SERIES_WEEKS}` },
+        { status: 400 },
+      );
+    }
+    weeksWanted = n;
+  }
+
+  // Two queries rather than one window function: D1 is SQLite, and picking the
+  // newest N weeks first bounds the second query by a plain indexed range
+  // instead of asking it to sort every metric row ever written.
+  const weekRows = await env.DB
+    .prepare(
+      `SELECT DISTINCT week_start FROM hf_weekly_metrics
+       WHERE taxonomy_version = ?1
+       ORDER BY week_start DESC
+       LIMIT ?2`,
+    )
+    .bind(TAXONOMY_VERSION, weeksWanted)
+    .all<{ week_start: string }>();
+
+  // Ascending, because a line is drawn left to right and the client should not
+  // have to reverse it before it can plot anything.
+  const weeks = (weekRows.results ?? []).map((r) => r.week_start).reverse();
+  if (weeks.length === 0) {
+    return Response.json(
+      { taxonomyVersion: TAXONOMY_VERSION, weeks: [], series: [] },
+      { headers: CORS_HEADERS },
+    );
+  }
+
+  const rows = await env.DB
+    .prepare(
+      `SELECT week_start, metric_cut, dimension, sub_dimension, value, denominator, suppressed
+       FROM hf_weekly_metrics
+       WHERE taxonomy_version = ?1
+         AND week_start >= ?2
+         AND ((?3 IS NULL AND metric_cut <> 'family_share_by_use_case') OR metric_cut = ?3)
+       ORDER BY week_start ASC`,
+    )
+    .bind(TAXONOMY_VERSION, weeks[0], cut)
+    .all<SeriesRow>();
+
+  const index = new Map(weeks.map((w, i) => [w, i]));
+  const series = new Map<string, SeriesEntry>();
+
+  for (const r of rows.results ?? []) {
+    const at = index.get(r.week_start);
+    if (at === undefined) continue;
+
+    const sub = r.sub_dimension ?? "";
+    const key = `${r.metric_cut} ${r.dimension} ${sub}`;
+    let entry = series.get(key);
+    if (!entry) {
+      // Gaps stay null rather than 0. A category that did not appear in a week
+      // is not a category that scored zero that week, and a line drawn down
+      // through an invented zero reads as a collapse that never happened.
+      entry = {
+        cut: r.metric_cut,
+        dimension: r.dimension,
+        subDimension: sub,
+        values: new Array<number | null>(weeks.length).fill(null),
+        denominators: new Array<number | null>(weeks.length).fill(null),
+        suppressed: new Array<number>(weeks.length).fill(0),
+      };
+      series.set(key, entry);
+    }
+
+    entry.values[at] = r.value;
+    entry.denominators[at] = r.denominator;
+    entry.suppressed[at] = r.suppressed ? 1 : 0;
+  }
+
+  return Response.json(
+    { taxonomyVersion: TAXONOMY_VERSION, weeks, series: [...series.values()] },
+    { headers: CORS_HEADERS },
+  );
+}
+
+interface SeriesRow {
+  week_start: string;
+  metric_cut: string;
+  dimension: string;
+  sub_dimension: string | null;
+  value: number;
+  denominator: number;
+  suppressed: number;
+}
+
+interface SeriesEntry {
+  cut: string;
+  dimension: string;
+  subDimension: string;
+  values: (number | null)[];
+  denominators: (number | null)[];
+  suppressed: number[];
 }
