@@ -49,11 +49,23 @@
   },
 
   // ---------------------------------------------------------------------
-  // Cloudflare cron is UTC only. Monday 06:00 IST (UTC+05:30) == 00:30 UTC.
+  // No "triggers" block, deliberately.
+  //
+  // The weekly schedule lives in .github/workflows/weekly-pipeline.yml. This
+  // file used to declare the identical cron as well, which was harmless only
+  // by accident: all five Free-plan cron slots are in use, so the deploy
+  // silently dropped the schedule — and marked every Workers Build failed for
+  // it, even though the code went live.
+  //
+  // The accident stops protecting us the moment the account moves to Workers
+  // Paid: the slot cap lifts, the next deploy registers 30 0 * * 1 for real,
+  // and it fires alongside the GitHub Actions cron. The two use different
+  // instance ids (weekly-<week> vs a random uuid), so they would not collide
+  // and dedupe — they would both run the same week and double the D1 writes.
+  //
+  // The scheduled() handler in src/index.ts is kept and is simply dormant, so
+  // re-adding a trigger here is all it would take to move the schedule back.
   // ---------------------------------------------------------------------
-  "triggers": {
-    "crons": ["30 0 * * 1"]
-  },
 
   // Declared so a missing value fails loudly at deploy rather than at 03:00
   // on a Monday. Set each with `wrangler secret put <NAME>`.

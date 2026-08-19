@@ -405,16 +405,23 @@ async function handleNarrative(request: Request, env: Env, url: URL): Promise<Re
   const label = isoWeekLabel(new Date(`${weekStart}T00:00:00.000Z`));
   const path = `data/weeks/${label}.json`;
   try {
-    const res = await fetch(
-      `https://api.github.com/repos/${env.GITHUB_REPO}/contents/${path}`,
-      {
-        headers: {
-          Authorization: `Bearer ${env.GITHUB_TOKEN}`,
-          Accept: "application/vnd.github.v3+json",
-          "User-Agent": "hf-activity-worker",
-        },
-      },
-    );
+    // Authenticated first, for the higher rate limit — then unauthenticated on
+    // a credential rejection. GITHUB_REPO is public, so the token buys quota,
+    // not access: without the retry an expired PAT would take the dashboard's
+    // narrative down for a file anyone on the internet can read. A
+    // fine-grained PAT expires on a fixed date, so this is a matter of when.
+    const url = `https://api.github.com/repos/${env.GITHUB_REPO}/contents/${path}`;
+    const headers: Record<string, string> = {
+      Accept: "application/vnd.github.v3+json",
+      "User-Agent": "hf-activity-worker",
+    };
+
+    let res = await fetch(url, {
+      headers: { ...headers, Authorization: `Bearer ${env.GITHUB_TOKEN}` },
+    });
+    if (res.status === 401 || res.status === 403) {
+      res = await fetch(url, { headers });
+    }
 
     if (!res.ok) {
       return Response.json({ error: "not_found", weekStart }, { status: 404 });

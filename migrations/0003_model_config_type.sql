@@ -18,6 +18,11 @@
 -- day's 100,000-row free-plan budget. Run it on a day with no pipeline run, or
 -- after moving to Workers Paid.
 --
+-- TO ROLL BACK, before dropping hf_models_pre_0003:
+--     DROP TABLE hf_models;
+--     ALTER TABLE hf_models_pre_0003 RENAME TO hf_models;
+-- then recreate the three indexes below.
+--
 -- No PRAGMA foreign_keys guard: the only foreign key in the schema is
 -- hf_classifications.space_id -> hf_spaces, so dropping and renaming
 -- hf_models cannot trip one. D1 accepts only a subset of PRAGMAs, and an
@@ -58,7 +63,25 @@ INSERT INTO hf_models_new
          NULL, family, derivative_type, resolution_source, first_seen_at, updated_at
   FROM hf_models;
 
-DROP TABLE hf_models;
+-- Renamed, not dropped. D1's Time Travel point-in-time restore is a paid
+-- feature, so on the Free plan a DROP here has no recovery point: if the copy
+-- above silently lost rows — a CHECK the old data violates, a write budget
+-- exhausted mid-statement — there would be nothing to go back to. The rename
+-- is metadata-only and writes no rows, so the rollback costs nothing.
+--
+-- After verifying (SELECT COUNT(*) should match on both), reclaim the space:
+--     DROP TABLE hf_models_pre_0003;
+ALTER TABLE hf_models RENAME TO hf_models_pre_0003;
+
+-- Index names are global in SQLite, and RENAME carries the old table's indexes
+-- with it rather than dropping them — so recreating them below collides with
+-- "index idx_models_created already exists". A DROP TABLE took them out
+-- implicitly; a rename does not. The backup keeps its data, just not its
+-- indexes, which it does not need.
+DROP INDEX idx_models_created;
+DROP INDEX idx_models_family;
+DROP INDEX idx_models_base;
+
 ALTER TABLE hf_models_new RENAME TO hf_models;
 
 CREATE INDEX idx_models_created ON hf_models (created_at);
