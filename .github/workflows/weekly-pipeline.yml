@@ -1,0 +1,129 @@
+# Weekly pipeline trigger.
+#
+# Cloudflare caps the Workers Free plan at 5 cron triggers per account and all
+# five are in use, so the schedule lives here instead. This calls the same
+# admin endpoint the Cloudflare cron would have, on the same schedule, and
+# costs nothing.
+name: Weekly pipeline
+
+on:
+  schedule:
+    # 00:30 UTC Monday = 06:00 IST Monday. GitHub may delay scheduled runs
+    # under load; the week is computed from the calendar rather than from the
+    # firing time, so a late run still processes the right week.
+    - cron: "30 0 * * 1"
+  workflow_dispatch:
+    inputs:
+      weekStart:
+        description: "Monday to process (YYYY-MM-DD). Blank = last complete week."
+        required: false
+      backfillWeeks:
+        description: "Weeks to process (1-26). Keep at 1 unless backfilling."
+        required: false
+        default: "1"
+      dryRun:
+        description: "Skip the GitHub snapshot commit"
+        type: boolean
+        required: false
+        default: false
+
+concurrency:
+  # Two runs writing the same weeks would double the D1 write cost and can
+  # interleave badly. Never run two at once, and never cancel one mid-flight.
+  group: weekly-pipeline
+  cancel-in-progress: false
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - name: Work out which week to process
+        id: week
+        run: |
+          set -euo pipefail
+          if [ -n "${{ github.event.inputs.weekStart }}" ]; then
+            WEEK="${{ github.event.inputs.weekStart }}"
+          else
+            # Monday of the current week, then step back one week. Derived from
+            # the calendar rather than "7 days ago" so a delayed run still
+            # lands on a Monday.
+            DOW=$(date -u +%u)                                   # 1=Mon .. 7=Sun
+            THIS_MON=$(date -u -d "-$((DOW - 1)) days" +%Y-%m-%d)
+            WEEK=$(date -u -d "$THIS_MON -7 days" +%Y-%m-%d)
+          fi
+          echo "week=$WEEK" >> "$GITHUB_OUTPUT"
+          echo "Processing week of $WEEK"
+
+      - name: Start the run
+        id: start
+        env:
+          BASE: ${{ secrets.WORKER_URL }}
+          TOKEN: ${{ secrets.ADMIN_TOKEN }}
+        run: |
+          set -euo pipefail
+          [ -n "$TOKEN" ] || { echo "::error::ADMIN_TOKEN secret is not set"; exit 1; }
+          BASE="${BASE:-https://huggingface.tech-441.workers.dev}"
+          echo "base=$BASE" >> "$GITHUB_OUTPUT"
+
+          BODY=$(printf '{"weekStart":"%s","backfillWeeks":%s,"dryRun":%s}' \
+            "${{ steps.week.outputs.week }}" \
+            "${{ github.event.inputs.backfillWeeks || 1 }}" \
+            "${{ github.event.inputs.dryRun || false }}")
+
+          for attempt in 1 2 3; do
+            RESP=$(curl -sS --max-time 60 -X POST "$BASE/api/admin/run" \
+              -H "Authorization: Bearer $TOKEN" \
+              -H 'content-type: application/json' \
+              -d "$BODY") && break
+            echo "attempt $attempt failed; retrying"; sleep $((attempt * 10))
+          done
+
+          echo "$RESP"
+          ID=$(echo "$RESP" | jq -r '.id // empty')
+          [ -n "$ID" ] || { echo "::error::could not start run: $RESP"; exit 1; }
+          echo "id=$ID" >> "$GITHUB_OUTPUT"
+
+      - name: Wait for it to finish
+        env:
+          BASE: ${{ steps.start.outputs.base }}
+          TOKEN: ${{ secrets.ADMIN_TOKEN }}
+          ID: ${{ steps.start.outputs.id }}
+        run: |
+          set -uo pipefail
+          for i in $(seq 1 320); do   # 320 x 30s = up to 160 minutes
+            STATUS=$(curl -sS --max-time 30 "$BASE/api/admin/run/$ID" \
+              -H "Authorization: Bearer $TOKEN" | jq -r '.status.status // "unknown"')
+            case "$STATUS" in
+              complete)
+                echo "Run complete."; exit 0 ;;
+              errored|terminated)
+                echo "::error::Run $STATUS"
+                curl -sS --max-time 30 "$BASE/api/admin/run/$ID" \
+                  -H "Authorization: Bearer $TOKEN" | jq '.status.error'
+                exit 1 ;;
+            esac
+            # Progress every 5 minutes, so a stalled stage is visible in the log
+            # rather than looking identical to a slow one.
+            if [ $((i % 10)) -eq 0 ]; then
+              echo "[$((i / 2)) min] $STATUS — $(curl -sS --max-time 30 "$BASE/api/admin/stats" \
+                -H "Authorization: Bearer $TOKEN" | jq -r '.stage')"
+            fi
+            sleep 30
+          done
+          echo "::error::Timed out after 160 minutes; run $ID may still be going"
+          exit 1
+
+      - name: Report
+        if: always()
+        env:
+          BASE: ${{ steps.start.outputs.base }}
+          TOKEN: ${{ secrets.ADMIN_TOKEN }}
+        run: |
+          set -uo pipefail
+          {
+            echo "### Week of ${{ steps.week.outputs.week }}"
+            echo '```json'
+            curl -sS --max-time 30 "$BASE/api/admin/stats" -H "Authorization: Bearer $TOKEN" | jq '.'
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
