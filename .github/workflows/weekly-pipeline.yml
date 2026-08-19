@@ -104,6 +104,31 @@ jobs:
             exit 1
           fi
 
+      - name: Check the deployed Worker is not older than this commit
+        env:
+          BASE: ${{ secrets.WORKER_URL }}
+        run: |
+          set -euo pipefail
+          # A push and its Cloudflare deploy are minutes apart. A run started
+          # inside that gap executes the PREVIOUS version, and its failure gets
+          # blamed on code that was already fixed — which happened today, twice,
+          # and cost hours of misdirected debugging. Refuse to draw a
+          # conclusion from a run against stale code.
+          BASE="${BASE:-https://huggingface.tech-441.workers.dev}"
+          DEPLOYED=$(curl -sS --max-time 30 "$BASE/health" | jq -r '.deployedAt // empty')
+          COMMIT="${{ github.event.head_commit.timestamp || '' }}"
+
+          if [ -z "$DEPLOYED" ]; then
+            echo "Worker does not report a deploy time yet; skipping the freshness check."
+          elif [ -n "$COMMIT" ] && [ "$(date -u -d "$DEPLOYED" +%s)" -lt "$(date -u -d "$COMMIT" +%s)" ]; then
+            echo "::error::The live Worker was deployed at $DEPLOYED, before this commit \
+          ($COMMIT). The run would execute the previous version. Wait for the Cloudflare \
+          build to finish and dispatch again."
+            exit 1
+          else
+            echo "Live Worker deployed at $DEPLOYED — not older than this commit."
+          fi
+
       - name: Start the run
         id: start
         env:

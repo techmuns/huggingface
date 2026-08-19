@@ -5,7 +5,18 @@ describe("worker", () => {
   it("serves /health", async () => {
     const res = await SELF.fetch("https://example.com/health");
     expect(res.status).toBe(200);
-    await expect(res.json()).resolves.toEqual({ status: "ok" });
+    await expect(res.json()).resolves.toMatchObject({ status: "ok" });
+  });
+
+  it("reports which version is deployed", async () => {
+    // The point of these two fields: a push and its deploy are minutes apart,
+    // and a run started in that gap executes the previous version. Twice today
+    // a failure was attributed to code that had already been fixed but was not
+    // yet live. Both keys must always be present — a missing key reads as "no
+    // information" and sends you back to inferring it from behaviour.
+    const res = await SELF.fetch("https://example.com/health");
+    const body = (await res.json()) as Record<string, unknown>;
+    expect(Object.keys(body).sort()).toEqual(["deployedAt", "status", "version"]);
   });
 
   it("serves the dashboard page from the assets binding", async () => {

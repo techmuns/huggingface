@@ -24,7 +24,17 @@ export default {
     const url = new URL(request.url);
 
     if (url.pathname === "/health") {
-      return Response.json({ status: "ok" });
+      // `deployedAt` is what makes a run attributable. A push and its deploy
+      // are minutes apart, and a run started inside that gap executes the
+      // previous version — which today produced a failure blamed on code that
+      // had already been fixed. Compare this against the commit timestamp
+      // before concluding anything from a run's outcome.
+      const version = env.CF_VERSION_METADATA;
+      return Response.json({
+        status: "ok",
+        version: version?.id ?? null,
+        deployedAt: version?.timestamp ?? null,
+      });
     }
 
     if (url.pathname === "/api/admin/run") {
