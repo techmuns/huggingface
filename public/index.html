@@ -291,6 +291,7 @@ tbody tr:last-child td { border-bottom: 0; }
 .legend-chip:hover { border-color: var(--axis); }
 .legend-chip[aria-pressed="false"] { opacity: .45; }
 .legend-chip[aria-pressed="false"] .key-line { background: var(--ink-muted) !important; }
+.legend-msg { font-size: 12px; color: var(--ink-muted); align-self: center; }
 
 .plot { position: relative; }
 .plot svg { display: block; width: 100%; height: auto; touch-action: pan-y; }
@@ -510,12 +511,12 @@ details.method li { margin-bottom: 7px; max-width: 82ch; }
     <!-- ── What they build ──────────────────────────────────────────── -->
     <section role="tabpanel" id="panel-build" aria-labelledby="tab-build" tabindex="-1" hidden>
       <div class="subtabs" role="tablist" aria-label="What they build">
-        <button role="tab" data-sub="usecase"  aria-selected="true"  aria-controls="sub-usecase">Use case</button>
-        <button role="tab" data-sub="vertical" aria-selected="false" aria-controls="sub-vertical" tabindex="-1">Industry</button>
+        <button role="tab" id="subtab-usecase" data-sub="usecase"  aria-selected="true"  aria-controls="sub-usecase">Use case</button>
+        <button role="tab" id="subtab-vertical" data-sub="vertical" aria-selected="false" aria-controls="sub-vertical" tabindex="-1">Industry</button>
       </div>
       <p class="panel-intro">What people are making, and who it is for.</p>
 
-      <section class="card" role="tabpanel" id="sub-usecase">
+      <section class="card" role="tabpanel" id="sub-usecase" aria-labelledby="subtab-usecase" tabindex="-1">
         <header>
           <h2>What developers are building</h2>
           <p class="hint">The main job each new Space does. Every Space counts once, so these add up to 100%.</p>
@@ -523,7 +524,7 @@ details.method li { margin-bottom: 7px; max-width: 82ch; }
         <div id="c-usecase"></div>
       </section>
 
-      <section class="card" role="tabpanel" id="sub-vertical" hidden>
+      <section class="card" role="tabpanel" id="sub-vertical" aria-labelledby="subtab-vertical" tabindex="-1" hidden>
         <header>
           <h2>Where they're building it</h2>
           <p class="hint">The industries a Space serves. One Space can serve several, so these do not add up to 100%.</p>
@@ -535,14 +536,14 @@ details.method li { margin-bottom: 7px; max-width: 82ch; }
     <!-- ── How they build ───────────────────────────────────────────── -->
     <section role="tabpanel" id="panel-tech" aria-labelledby="tab-tech" tabindex="-1" hidden>
       <div class="subtabs" role="tablist" aria-label="How they build">
-        <button role="tab" data-sub="family" aria-selected="true"  aria-controls="sub-family">Model family</button>
-        <button role="tab" data-sub="tech"   aria-selected="false" aria-controls="sub-tech"   tabindex="-1">Technique</button>
-        <button role="tab" data-sub="sdk"    aria-selected="false" aria-controls="sub-sdk"    tabindex="-1">SDK</button>
-        <button role="tab" data-sub="matrix" aria-selected="false" aria-controls="sub-matrix" tabindex="-1">Family by use case</button>
+        <button role="tab" id="subtab-family" data-sub="family" aria-selected="true"  aria-controls="sub-family">Model family</button>
+        <button role="tab" id="subtab-tech" data-sub="tech"   aria-selected="false" aria-controls="sub-tech"   tabindex="-1">Technique</button>
+        <button role="tab" id="subtab-sdk" data-sub="sdk"    aria-selected="false" aria-controls="sub-sdk"    tabindex="-1">SDK</button>
+        <button role="tab" id="subtab-matrix" data-sub="matrix" aria-selected="false" aria-controls="sub-matrix" tabindex="-1">Family by use case</button>
       </div>
       <p class="panel-intro">The models, the methods and the tools behind the Spaces.</p>
 
-      <section class="card" role="tabpanel" id="sub-family">
+      <section class="card" role="tabpanel" id="sub-family" aria-labelledby="subtab-family" tabindex="-1">
         <header>
           <h2>What they're building on</h2>
           <p class="hint">The model family behind each new model, read from the model it says it came from.</p>
@@ -550,7 +551,7 @@ details.method li { margin-bottom: 7px; max-width: 82ch; }
         <div id="c-family"></div>
       </section>
 
-      <section class="card" role="tabpanel" id="sub-tech" hidden>
+      <section class="card" role="tabpanel" id="sub-tech" aria-labelledby="subtab-tech" tabindex="-1" hidden>
         <header>
           <h2>How they're building it</h2>
           <p class="hint">Methods used inside a Space. One Space can use several, so these do not add up to 100%.
@@ -559,7 +560,7 @@ details.method li { margin-bottom: 7px; max-width: 82ch; }
         <div id="c-tech"></div>
       </section>
 
-      <section class="card" role="tabpanel" id="sub-sdk" hidden>
+      <section class="card" role="tabpanel" id="sub-sdk" aria-labelledby="subtab-sdk" tabindex="-1" hidden>
         <header>
           <h2>New Spaces by SDK</h2>
           <p class="hint">The toolkit each new Space is shipped with.</p>
@@ -567,7 +568,7 @@ details.method li { margin-bottom: 7px; max-width: 82ch; }
         <div id="c-sdk"></div>
       </section>
 
-      <section class="card" role="tabpanel" id="sub-matrix" hidden>
+      <section class="card" role="tabpanel" id="sub-matrix" aria-labelledby="subtab-matrix" tabindex="-1" hidden>
         <header>
           <h2>Model family by use case</h2>
           <p class="hint">Within each use case, the share of Spaces built on a given model family.</p>
@@ -755,6 +756,7 @@ const state = {
 };
 
 let weeksAvailable = [];
+let printing = false;
 let current = { byCut: {}, coverage: null, week: null };
 let seriesRaw = null;    // /api/series payload, all cuts, up to 52 weeks
 let matrixSeries = null; // /api/series?cut=family_share_by_use_case, lazily
@@ -947,6 +949,15 @@ function prepareSeries(weeks, rows, { zeroFill = false } = {}) {
     return best;
   });
 
+  // Suppression is a property of the week's base, not of one category, so a
+  // filled zero in a week too small to report inherits the flag. Without it
+  // that point draws solid and reads as a confident zero.
+  const baseSuppressed = dense.map(w => {
+    const i = at.get(w);
+    if (i === undefined) return 0;
+    return rows.some(r => r.suppressed?.[i]) ? 1 : 0;
+  });
+
   const mapped = rows.map(r => {
     const values = [], denominators = [], suppressed = [];
     dense.forEach((w, k) => {
@@ -955,7 +966,7 @@ function prepareSeries(weeks, rows, { zeroFill = false } = {}) {
       const filled = v == null && zeroFill && measured[k];
       values.push(v != null ? v : (filled ? 0 : null));
       denominators.push(i === undefined ? null : (r.denominators?.[i] ?? (filled ? base[k] : null)));
-      suppressed.push(i === undefined ? 0 : r.suppressed?.[i] ?? 0);
+      suppressed.push(i === undefined ? 0 : (r.suppressed?.[i] ?? (filled ? baseSuppressed[k] : 0)));
     });
     return { ...r, values, denominators, suppressed };
   });
@@ -1089,7 +1100,7 @@ const SLOTS = ['var(--s1)','var(--s2)','var(--s3)','var(--s4)','var(--s5)','var(
  * "Unresolved") never take a categorical slot — they are drawn recessive, the
  * same treatment the bars give them, and they sit last however large they get.
  */
-function pickLines(rows, weeks) {
+function pickLines(rows, weeks, { sum = true } = {}) {
   const score = (s) => {
     for (let i = weeks.length - 1; i >= 0; i--) if (s.values[i] != null) return s.values[i];
     return 0;
@@ -1097,7 +1108,7 @@ function pickLines(rows, weeks) {
   const real = rows.filter(s => !RESIDUAL.has(s.dimension)).sort((a, b) => score(b) - score(a));
   const rest = rows.filter(s => RESIDUAL.has(s.dimension));
 
-  const lines = real.slice(0, 7).map((s, i) => ({
+  const lines = real.slice(0, SLOTS.length).map((s, i) => ({
     key: s.dimension,
     label: titleCase(s.dimension),
     color: SLOTS[i],
@@ -1107,8 +1118,13 @@ function pickLines(rows, weeks) {
   }));
 
   // Everything past the eighth line folds into one recessive line rather than
-  // inventing a ninth hue nobody could tell from the first eight.
-  const folded = real.slice(7).concat(rest);
+  // inventing a ninth hue nobody could tell from the first eight — but only
+  // where the numbers are counts. These cuts are multi-label: a Space can be
+  // both agentic and multimodal, so five penetration rates added together can
+  // pass 100% and describe nothing. There the tail is left off the chart and
+  // named in a note, with every one of its categories in the table twin.
+  const folded = real.slice(SLOTS.length).concat(rest);
+  if (folded.length && !sum) return { lines, dropped: folded.length };
   if (folded.length) {
     const summed = weeks.map((_, i) => {
       let acc = null;
@@ -1123,7 +1139,8 @@ function pickLines(rows, weeks) {
       // Within one cut every category shares a week's denominator, so the
       // folded line pools against the same base as the lines it stands beside.
       denominators: folded[0].denominators,
-      suppressed: weeks.map(() => 0),
+      // A sum is no more reportable than the weakest week that went into it.
+      suppressed: weeks.map((_, i) => (folded.some(s => s.suppressed?.[i]) ? 1 : 0)),
       residual: true,
       // Off until asked for: the sum of every small category is routinely the
       // tallest line on the chart, and it would otherwise be the first thing
@@ -1132,7 +1149,7 @@ function pickLines(rows, weeks) {
       defaultOff: true,
     });
   }
-  return lines;
+  return { lines, dropped: 0 };
 }
 
 /** Running total. Nulls add nothing but do not break the line — a week with no
@@ -1334,7 +1351,7 @@ function paintChart(host) {
       </svg>
       <div class="tip hidden" role="status" aria-live="polite"></div>
     </div>
-    ${note ? `<p class="chart-note">${note}</p>` : ''}
+    ${note ? `<p class="chart-note">${esc(note)}</p>` : ''}
     ${provisionalLast ? '<p class="chart-note">○ The last point is a week that is still open, so it will keep rising.</p>' : ''}`;
 
   wireChart(host, { weeks, shown, unit, x, padL, plotW, padT, plotH });
@@ -1374,6 +1391,12 @@ function wireChart(host, ctx) {
     cross.setAttribute('x2', px.toFixed(1));
     cross.setAttribute('opacity', '1');
 
+    // Shown before it is filled, not after: a display:none subtree is not in
+    // the accessibility tree, so a live region populated while hidden and
+    // revealed afterwards announces nothing at all — a keyboard reader would
+    // hear the chart's summary and then silence as they moved along it.
+    tip.classList.remove('hidden');
+
     // Built as nodes, never as concatenated HTML: category names come from the
     // API, and a tooltip is the last place that should be executing markup.
     tip.textContent = '';
@@ -1405,7 +1428,6 @@ function wireChart(host, ctx) {
       tip.appendChild(row);
     }
 
-    tip.classList.remove('hidden');
     const box = svg.getBoundingClientRect();
     const scale = box.width / (svg.viewBox.baseVal.width || box.width) || 1;
     const w = tip.offsetWidth || 160;
@@ -1473,13 +1495,15 @@ function renderTrendInto(el, { rows, weeks, cut, unit = '', chartId, extraNote =
   const isCount = COUNT_CUTS.has(cut);
   const read = l => ({ ...l, values: applyReading(l.values, l.denominators, isCount) });
 
-  const lines = pickLines(prepared.rows, w).map(read);
+  const picked = pickLines(prepared.rows, w, { sum: isCount });
+  const lines = picked.lines.map(read);
 
   const notes = [];
   if (w.length === 1) notes.push('Only one week has been processed so far — the line starts once there are two.');
   if (state.cumulative && isCount) notes.push(`Each point is the running total of every week shown, starting from ${shortWeek(w[0])}.`);
   if (state.cumulative && !isCount) notes.push('Each point is the average of every week up to it, counting busier weeks more heavily.');
   if (prepared.hasGaps) notes.push('A week that was never measured leaves a gap in the line rather than a straight line through it.');
+  if (picked.dropped) notes.push(`The ${picked.dropped} smallest are left off the chart — these are shares, and adding them together would not mean anything. They are all in the table.`);
   if (atHistoryCap(w)) notes.push(HISTORY_CAP_NOTE);
   if (extraNote) notes.push(extraNote);
 
@@ -1501,7 +1525,7 @@ function renderTrendInto(el, { rows, weeks, cut, unit = '', chartId, extraNote =
   trendChart(el, {
     weeks: w, lines, unit, chartId,
     provisionalLast: inProgress(w[w.length - 1]),
-    note: notes.length ? esc(notes.join(' ')) : '',
+    note: notes.join(' '),
   });
 }
 
@@ -1628,7 +1652,7 @@ function renderHeadline() {
   trendChart(el, {
     weeks, lines, chartId: 'headline',
     provisionalLast: inProgress(weeks[weeks.length - 1]),
-    note: notes.length ? esc(notes.join(' ')) : '',
+    note: notes.join(' '),
   });
 }
 
@@ -1698,7 +1722,7 @@ function renderTrendsTab() {
     trendChart(el, {
       weeks, lines, unit: track.unit || '', chartId: 'trend-' + track.id,
       provisionalLast: inProgress(weeks[weeks.length - 1]),
-      note: notes.length ? esc(notes.join(' ')) : '',
+      note: notes.join(' '),
     });
     return;
   }
@@ -1732,11 +1756,16 @@ function renderEngagementTrend(el) {
   }
 
   const w = windowRows(weeksAll, rows);
+  // Densified for the table as well as for the charts: a week nobody measured
+  // has to be a row saying so, not a row quietly missing, or the numbers read
+  // as three consecutive weeks when they are not.
+  const dense = prepareSeries(w.weeks, w.rows);
+
   // The reading is fixed here whatever the box says elsewhere: a rolling
   // 30-day download figure summed across weeks counts the same downloads over
   // and over. syncToolbar() disables the control on this tab and says so.
   if (state.table) {
-    setHTML(el, trendTable(w.weeks, w.rows.map(r => ({
+    setHTML(el, trendTable(dense.weeks, dense.rows.map(r => ({
       label: titleCase(r.dimension),
       values: r.values,
       suppressed: r.suppressed,
@@ -1750,7 +1779,7 @@ function renderEngagementTrend(el) {
   // the second render the first panel's hidden container, and the visible card
   // would stay empty.
   const open = inProgress(w.weeks[w.weeks.length - 1]);
-  setHTML(el, w.rows.map(r =>
+  setHTML(el, dense.rows.map(r =>
     `<div class="multiple">
        <h3>${esc(titleCase(r.dimension))}</h3>
        <div class="engage-plot"></div>
@@ -1758,18 +1787,17 @@ function renderEngagementTrend(el) {
     (open ? '<p class="chart-note">○ The last point is a week that is still open, so it will keep rising.</p>' : ''));
 
   const hosts = el.querySelectorAll('.engage-plot');
-  w.rows.forEach((r, i) => {
+  dense.rows.forEach((r, i) => {
     const host = hosts[i];
     if (!host) return;
     // The row's own suppression flags travel with it: a week whose base fell
     // below the reporting threshold has to keep its hollow marker and its
     // "too few" note here as much as anywhere else.
-    const prepared = prepareSeries(w.weeks, [r]);
     trendChart(host, {
-      weeks: prepared.weeks, chartId: 'engage-' + r.dimension, height: 170,
+      weeks: dense.weeks, chartId: 'engage-' + r.dimension, height: 170,
       provisionalLast: open,
       lines: [{ key: r.dimension, label: titleCase(r.dimension), color: 'var(--s1)',
-                values: prepared.rows[0].values, suppressed: prepared.rows[0].suppressed }],
+                values: r.values, suppressed: r.suppressed }],
     });
   });
 }
@@ -1783,14 +1811,21 @@ function renderEngagementTrend(el) {
  */
 async function renderMatrixTrend() {
   const el = document.getElementById('c-matrix');
+  // Both containers are the same element, and the fetch below outlives a
+  // click: a reader who switches back to This week while it is in flight must
+  // not have the week's matrix painted over by a chart they have left.
+  const stillHere = () => printing ||
+    (state.tab === 'tech' && state.sub.tech === 'matrix' && state.view === 'trend');
+
   if (!matrixSeries) {
     setHTML(el, '<p class="empty">Loading the history for this view…</p>');
     try {
       matrixSeries = await getJSON(`/api/series?cut=${encodeURIComponent(CUTS.matrix)}&weeks=52`);
     } catch {
-      setHTML(el, '<p class="empty">Could not load the history for this view.</p>');
+      if (stillHere()) setHTML(el, '<p class="empty">Could not load the history for this view.</p>');
       return;
     }
+    if (!stillHere()) { renderAll(); return; }
     fillUseCasePicker();
   }
 
@@ -1844,6 +1879,17 @@ function renderAll() {
   renderProvenance();
   syncToolbar();
 
+  // Nothing has answered yet. Rendering here would fill the tiles with zeros
+  // derived from an empty object, and a reader cannot tell a measured zero
+  // from an unanswered one — the same trap the empty-state path guards
+  // against. The cards stay blank under the .stale hold until data lands.
+  if (!current.week && weeksAvailable.length) {
+    setHTML(document.getElementById('tiles'), '');
+    return;
+  }
+
+  if (printing) { renderEveryPanel(); return; }
+
   if (state.tab === 'overview') {
     renderTiles();
     renderHeadline();
@@ -1879,6 +1925,35 @@ function renderAll() {
     if (state.view === 'trend') renderEngagementTrend(el);
     else setHTML(el, engagementTable());
   }
+}
+
+/**
+ * Everything, for paper.
+ *
+ * The print stylesheet opens every panel, because on paper there are no tabs
+ * to click — but renderAll() only ever fills the panel you are looking at, so
+ * without this the other four print as headings over empty space. Charts
+ * measure zero width in a hidden panel and fall back to their default width,
+ * which the print layout scales to the page.
+ */
+function renderEveryPanel() {
+  renderTiles();
+  renderHeadline();
+  renderMovers();
+  renderTrendsTab();
+
+  const uc = weekRows(CUTS.usecase);
+  renderCutPanel('c-usecase', CUTS.usecase, {
+    shareOf: uc.reduce((s, r) => s + r.value, 0), chartId: 'usecase',
+  });
+  renderCutPanel('c-vertical', CUTS.vertical, { unit: '%', chartId: 'vertical' });
+  renderCutPanel('c-family', CUTS.family, { chartId: 'family' });
+  renderCutPanel('c-tech', CUTS.tech, { unit: '%', chartId: 'tech' });
+  renderCutPanel('c-sdk', CUTS.sdk, { chartId: 'sdk' });
+  if (state.view === 'trend') renderMatrixTrend(); else renderMatrix();
+  const eng = document.getElementById('c-engagement');
+  if (state.view === 'trend') renderEngagementTrend(eng);
+  else setHTML(eng, engagementTable());
 }
 
 /* ── Tabs, toolbar and routing ────────────────────────────────────────── */
@@ -1948,10 +2023,12 @@ function syncToolbar() {
   // over-time view it would sit there costing two API calls per change and
   // moving nothing.
   const weekView = state.view !== 'trend' && state.tab !== 'trends' && state.tab !== 'overview';
-  const crossTabTable = state.tab === 'tech' && state.sub.tech === 'matrix' && state.view !== 'trend';
+  const alreadyATable =
+    (state.tab === 'tech' && state.sub.tech === 'matrix' && state.view !== 'trend') ||
+    (state.tab === 'engagement' && state.view !== 'trend');
   show('tool-week', state.tab === 'overview' || weekView);
   show('tool-view', state.tab !== 'overview');
-  show('tool-table', !crossTabTable);
+  show('tool-table', !alreadyATable);
   show('tool-track', state.tab === 'trends');
   show('tool-window', trendish);
   show('tool-cumulative', trendish);
@@ -2025,6 +2102,9 @@ function writeHash(push = false) {
   if (state.tab !== 'overview') p.set('view', state.view);
   if (state.table) p.set('table', '1');
   if (state.tab === 'trends') p.set('track', state.track);
+  if (state.tab === 'tech' && state.sub.tech === 'matrix' && state.view === 'trend' && state.matrixUseCase) {
+    p.set('uc', state.matrixUseCase);
+  }
   if (state.week) p.set('week', state.week);
   if (state.win !== 26) p.set('weeks', String(state.win));
   if (state.cumulative) p.set('total', '1');
@@ -2062,6 +2142,10 @@ function readHash() {
 
   const track = p.get('track');
   state.track = TRACKS.some(t => t.id === track) ? track : 'spaces_total';
+
+  // Checked against the cross-tab's own use cases once that payload arrives;
+  // fillUseCasePicker falls back to the first if this names one that is gone.
+  state.matrixUseCase = p.get('uc') || state.matrixUseCase;
 
   const weeks = Number(p.get('weeks'));
   state.win = [12, 26, 52].includes(weeks) ? weeks : 26;
@@ -2283,6 +2367,10 @@ async function init() {
     writeHash();
   });
 
+  // Paper gets the whole dashboard, not just the open tab.
+  window.addEventListener('beforeprint', () => { printing = true; renderAll(); });
+  window.addEventListener('afterprint', () => { printing = false; renderAll(); });
+
   // Legend clicks are delegated: charts are repainted wholesale on resize and
   // on every control change, so per-chip listeners would not survive.
   document.addEventListener('click', e => {
@@ -2294,17 +2382,31 @@ async function init() {
       off.delete(key);
     } else {
       // An empty chart is not a view anyone asked for: the last line standing
-      // stays on, and says why rather than silently ignoring the click.
+      // stays on, and says so on the page. A title attribute would not do —
+      // the click has already dismissed the native tooltip, so the reader
+      // would see the chip simply refuse to move with no explanation.
       const strip = chip.closest('.chart-legend');
       const on = [...strip.querySelectorAll('.legend-chip')]
         .filter(c => c.getAttribute('aria-pressed') === 'true');
       if (on.length <= 1) {
-        chip.title = 'This is the only line left — switch another one on first.';
+        let msg = strip.querySelector('.legend-msg');
+        if (!msg) {
+          msg = document.createElement('span');
+          msg.className = 'legend-msg';
+          msg.setAttribute('role', 'status');
+          strip.appendChild(msg);
+        }
+        msg.textContent = 'This is the only line left — switch another one on first.';
         return;
       }
       off.add(key);
     }
+
+    // The repaint throws away the button that was just pressed, so focus has
+    // to be handed to its replacement or a keyboard reader is dropped back to
+    // the top of the document mid-task.
     renderAll();
+    document.querySelector(`.legend-chip[data-chart="${CSS.escape(id)}"][data-key="${CSS.escape(key)}"]`)?.focus();
   });
 
   await loadSeries();
