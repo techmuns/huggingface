@@ -646,7 +646,7 @@ details.method li { margin-bottom: 7px; max-width: 82ch; }
       <li>Growth compares each trailing window against the window of equal length immediately before it: 4W is weeks W&minus;3&ndash;W against W&minus;7&ndash;W&minus;4, never this week against a single week three months ago.</li>
       <li>A figure on a base below the reporting threshold is shown greyed and marked &ldquo;too few&rdquo; rather than printed as a confident percentage.</li>
       <li>Roughly half of new Spaces arrive with no description and no linked model. Those get a README fetch; what remains unclassifiable is counted in coverage rather than quietly dropped.</li>
-      <li>Trend lines read one point per week from the stored weekly metrics. A week a category never appeared in is a gap in the line, not a zero, and a running total adds up counts only &mdash; summing percentages would be meaningless.</li>
+      <li>Trend lines read one point per week from the stored weekly metrics. A category with no row in a week the pipeline did measure scored zero and is drawn as zero; a week nothing was measured in is a gap in the line, and a point carried across one is marked as carried. Counts add up into a running total; percentages cannot be added, so they pool into an average weighted by each week's base, the same way the 4W and 12W windows above are pooled.</li>
       <li id="m-taxonomy"></li>
     </ul>
 
@@ -767,7 +767,7 @@ const TRACKS = [
   { id: 'usecase', label: 'New Spaces by use case', kind: 'cut', cut: CUTS.usecase,
     title: 'New Spaces by use case', hint: 'How many Spaces each use case gained, week by week.' },
   { id: 'share', label: 'Share of Spaces by use case', kind: 'cut', cut: CUTS.share, unit: '%',
-    title: 'Share of Spaces by use case', hint: 'The slice of each week that went to each use case. Shares cannot be added up, so this stays weekly.' },
+    title: 'Share of Spaces by use case', hint: 'The slice of each week that went to each use case. Shares cannot be added up, so ticking the box averages them instead.' },
   { id: 'vertical', label: 'Industries served', kind: 'cut', cut: CUTS.vertical, unit: '%',
     title: 'Industries served', hint: 'The share of each week’s Spaces serving an industry. A Space can serve several.' },
   { id: 'tech', label: 'Techniques used', kind: 'cut', cut: CUTS.tech, unit: '%',
@@ -1308,9 +1308,13 @@ function assignSlots(chartId, dims) {
  * drawn: hues follow the entity through a filter change (see assignSlots), and
  * a category nobody is looking at should not be holding one.
  */
-function pickLines(rows, weeks, { chartId = '' } = {}) {
+function pickLines(rows, weeks, { chartId = '', read = null } = {}) {
+  // Ranked on the figures the reader will see. In a running total the biggest
+  // line at the end is not always the one with the biggest last week, and
+  // "showing the 8 biggest" has to be true of the chart that is drawn.
   const score = (s) => {
-    for (let i = weeks.length - 1; i >= 0; i--) if (s.values[i] != null) return s.values[i];
+    const v = read ? read(s).values : s.values;
+    for (let i = v.length - 1; i >= 0; i--) if (v[i] != null) return v[i];
     return 0;
   };
   const byScore = (a, b) => score(b) - score(a);
@@ -1532,7 +1536,11 @@ function paintChart(host) {
     // weight makes a half-finished week look like a collapse, so the last leg
     // is drawn faint and its marker hollow — the same "provisional" reading the
     // ○ in the provenance line gives the counts above.
-    const tailFrom = provisionalLast && lastAt > 0 && l.values[lastAt - 1] != null ? lastAt - 1 : -1;
+    // Only when this line actually reaches the open week. A series that stops
+    // three weeks back has a perfectly finished last point, and drawing it
+    // faint would claim a closed week is still filling up.
+    const atOpenWeek = provisionalLast && lastAt === l.values.length - 1;
+    const tailFrom = atOpenWeek && lastAt > 0 && l.values[lastAt - 1] != null ? lastAt - 1 : -1;
 
     let d = '', pen = false;
     const dots = [];
@@ -1552,7 +1560,7 @@ function paintChart(host) {
       ? `<path d="M${x(tailFrom).toFixed(1)} ${y(l.values[tailFrom]).toFixed(1)} L${x(lastAt).toFixed(1)} ${y(l.values[lastAt]).toFixed(1)}"
            fill="none" stroke="${l.color}" stroke-width="2" stroke-linecap="round" opacity="0.45"/>`
       : '';
-    const endHollow = provisionalLast || l.suppressed?.[lastAt] || l.carried?.[lastAt];
+    const endHollow = atOpenWeek || l.suppressed?.[lastAt] || l.carried?.[lastAt];
     const endDot = lastAt >= 0
       ? `<circle cx="${x(lastAt).toFixed(1)}" cy="${y(l.values[lastAt]).toFixed(1)}" r="4"
            fill="${endHollow ? 'var(--surface)' : l.color}" stroke="${endHollow ? l.color : 'var(--surface)'}" stroke-width="2"/>`
@@ -1776,14 +1784,14 @@ function renderTrendInto(el, { rows, weeks, cut, unit = '', chartId, extraNote =
     return { ...l, values, carried: carriedMask(l.values, values) };
   };
 
-  const picked = pickLines(prepared.rows, w, { chartId });
+  const picked = pickLines(prepared.rows, w, { chartId, read });
   const lines = picked.lines.map(read);
 
   const notes = [];
   if (onlyOneWeekEver()) notes.push('Only one week has been processed so far — the line starts once there are two.');
   if (state.cumulative && isCount) notes.push(`Each point is the running total of every week shown, starting from ${shortWeek(w[0])}.`);
   if (state.cumulative && !isCount) notes.push('Each point is the average of every week up to it, counting busier weeks more heavily.');
-  if (prepared.hasGaps) notes.push(gapNote());
+  if (prepared.hasGaps) notes.push(gapNote(isCount));
   if (picked.hidden && !state.offTouched.has(chartId)) {
     notes.push(`Showing the ${MAX_LINES} biggest. The other ${picked.hidden} are in the legend — switch one on to follow it, or open the Table for all of them.`);
   }
@@ -1833,9 +1841,14 @@ const atHistoryCap = weeks => state.win >= HISTORY_CAP && weeks.length >= HISTOR
  * it. Saying "leaves a gap" under a line that visibly has none is the kind of
  * small contradiction that costs a reader their trust in the rest of it.
  */
-const gapNote = () => state.cumulative
-  ? 'A week that was never measured adds nothing, so the total runs flat across it.'
-  : 'A week that was never measured leaves a gap in the line rather than a straight line through it.';
+const gapNote = (isCount = true) => {
+  if (!state.cumulative) {
+    return 'A week that was never measured leaves a gap in the line rather than a straight line through it.';
+  }
+  return isCount
+    ? 'A week that was never measured adds nothing, so the running total runs flat across it.'
+    : 'A week that was never measured changes nothing, so the average so far runs flat across it.';
+};
 
 /**
  * Whether the database really does hold a single week.
@@ -1899,12 +1912,20 @@ function renderTiles() {
   const end = current.week ? t.weeks.indexOf(current.week) : t.weeks.length - 1;
   const from = Math.max(0, (end < 0 ? t.weeks.length : end + 1) - 12);
   const to = end < 0 ? t.weeks.length : end + 1;
-  const trail = a => a.slice(from, to);
+  // Densified like the charts are: a week nobody measured has to leave a hole
+  // in the sparkline too, or twelve points can quietly span fourteen weeks and
+  // the tile disagrees with the chart under it.
+  const trailWeeks = t.weeks.slice(from, to);
+  const trail = (a) => {
+    const p = prepareSeries(trailWeeks, [{ dimension: 'x', values: a.slice(from, to) }]);
+    return p.rows[0].values;
+  };
   const openWeek = current.week ? inProgress(current.week) : false;
   const spark = (a) => sparkline(trail(a), { provisional: openWeek });
-  const leadTrail = lead
-    ? trail((seriesOf(CUTS.usecase).find(s => s.dimension === lead.dimension)?.values) || [])
+  const leadValues = lead
+    ? (seriesOf(CUTS.usecase).find(s => s.dimension === lead.dimension)?.values) || []
     : [];
+  const leadTrail = leadValues.length ? trail(leadValues) : [];
 
   document.getElementById('tiles').innerHTML = `
     <div class="tile">
@@ -2051,7 +2072,7 @@ function renderTrendsTab() {
     const notes = [];
     if (state.cumulative && isCount) notes.push(`Each point is the running total of every week shown, starting from ${shortWeek(weeks[0])}.`);
     if (state.cumulative && !isCount) notes.push('Each point is the average of every week up to it, counting busier weeks more heavily.');
-    if (prepared.hasGaps) notes.push(gapNote());
+    if (prepared.hasGaps) notes.push(gapNote(isCount));
     if (atHistoryCap(weeks)) notes.push(HISTORY_CAP_NOTE);
 
     if (state.table) {
@@ -2769,8 +2790,12 @@ async function init() {
 
   // Back and forward move between views the same way they move between pages:
   // every control writes to the hash, so the history entry is the whole view.
-  const snapshot = () => JSON.stringify([state.tab, state.sub, state.view, state.table,
-    state.win, state.cumulative, state.track, state.week, state.matrixUseCase]);
+  const snapshot = () => {
+    const chart = activeChartId();
+    return JSON.stringify([state.tab, state.sub, state.view, state.table,
+      state.win, state.cumulative, state.track, state.week, state.matrixUseCase,
+      chart ? [...(state.off[chart] || [])].sort() : null]);
+  };
 
   window.addEventListener('hashchange', () => {
     const before = snapshot();
