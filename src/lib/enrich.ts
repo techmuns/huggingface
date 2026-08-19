@@ -25,6 +25,50 @@ export interface ReadmeResult {
   status: ReadmeStatus;
 }
 
+/**
+ * Byte cap on stored README text.
+ *
+ * A README is arbitrary user content with no size limit, and it went into D1
+ * unbounded. Every consumer already truncates far below this — the rules read
+ * the first 2,000 characters, the LLM prompt the first 500 — so the only
+ * thing the untruncated tail ever did was sit in the row waiting to breach a
+ * limit.
+ *
+ * 32 KB is 16x the largest consumer, which leaves room for a future
+ * classifier to read more without another migration, and stays well inside
+ * D1's bounds.
+ *
+ * Measured in bytes rather than characters deliberately: a 32,000-character
+ * cap permits 128 KB of four-byte UTF-8, which is past D1's 100 KB statement
+ * limit. Model cards are full of CJK and emoji, so that is a real case rather
+ * than a hypothetical one.
+ */
+export const README_MAX_BYTES = 32_000;
+
+/** Truncates to a byte budget without splitting a character in half. */
+export function truncateToBytes(text: string, maxBytes: number): string {
+  const encoder = new TextEncoder();
+  if (encoder.encode(text).length <= maxBytes) return text;
+
+  // Accumulate by code point. A binary search over `slice(0, n)` is faster but
+  // wrong: n indexes UTF-16 code units, so it can land between the halves of a
+  // surrogate pair and store a lone surrogate — which is not valid text, and
+  // encodes as a 3-byte replacement character rather than the 4 bytes the
+  // search was accounting for.
+  //
+  // `for...of` iterates code points, and the early break bounds the work to
+  // the budget rather than the length of the input.
+  let used = 0;
+  let out = "";
+  for (const ch of text) {
+    const size = encoder.encode(ch).length;
+    if (used + size > maxBytes) break;
+    used += size;
+    out += ch;
+  }
+  return out;
+}
+
 export async function fetchReadme(
   spaceId: string,
   existingHash: string | null,
@@ -58,7 +102,9 @@ export async function fetchReadme(
     return { text: null, hash, status: "stub" };
   }
 
-  return { text: stripped, hash, status: "ok" };
+  // The hash stays over the FULL text so change detection still sees an edit
+  // past the cap; only what is stored is bounded.
+  return { text: truncateToBytes(stripped, README_MAX_BYTES), hash, status: "ok" };
 }
 
 export function stripFrontMatter(raw: string): string {

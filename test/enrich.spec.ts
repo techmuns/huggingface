@@ -6,7 +6,9 @@ import {
   enrichBlindSpaces,
   isBoilerplate,
   normalizeTitle,
+  README_MAX_BYTES,
   stripFrontMatter,
+  truncateToBytes,
 } from "../src/lib/enrich";
 import { insertRawRecords } from "../src/lib/raw-store";
 import { parseRawSpaces } from "../src/lib/parse";
@@ -291,5 +293,43 @@ describe("enrichBlindSpaces", () => {
       { space_id: "aaa/old", readme_status: null },
       { space_id: "zzz/new", readme_status: "missing" },
     ]);
+  });
+});
+
+// ── truncateToBytes ─────────────────────────────────────────────────────────
+
+describe("truncateToBytes", () => {
+  const len = (s: string) => new TextEncoder().encode(s).length;
+
+  it("leaves text already inside the budget untouched", () => {
+    expect(truncateToBytes("short", 100)).toBe("short");
+  });
+
+  it("bounds by bytes, not characters", () => {
+    // The reason this is not a .slice(): 40 four-byte emoji is 40 characters
+    // but 160 bytes, and a character cap would have let 4x the budget through.
+    const emoji = "😀".repeat(40);
+    expect(emoji.length).toBe(80);        // code units
+    expect(len(emoji)).toBe(160);         // bytes
+    const cut = truncateToBytes(emoji, 100);
+    expect(len(cut)).toBeLessThanOrEqual(100);
+  });
+
+  it("never splits a character in half", () => {
+    // Cutting mid-sequence would store a lone surrogate, which is not valid
+    // text and breaks anything that later reads the column.
+    const cut = truncateToBytes("😀".repeat(10), 7);
+    expect(len(cut)).toBeLessThanOrEqual(7);
+    expect([...cut].every((c) => c === "😀")).toBe(true);
+    expect(cut).toBe("😀");
+  });
+
+  it("handles a budget smaller than the first character", () => {
+    expect(truncateToBytes("😀abc", 2)).toBe("");
+  });
+
+  it("caps a very large README to the documented budget", () => {
+    const huge = "a".repeat(README_MAX_BYTES * 3);
+    expect(len(truncateToBytes(huge, README_MAX_BYTES))).toBe(README_MAX_BYTES);
   });
 });
