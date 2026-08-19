@@ -71,6 +71,15 @@ interface BatchResult {
 export interface ClassifyLlmSummary {
   /** True if the batch cap was hit before every Space was classified. */
   truncated?: boolean;
+  /**
+   * True once a call came back short, meaning the queue is empty.
+   *
+   * A step now makes several calls, so "this step returned fewer than
+   * BATCH_SIZE" no longer means the queue is drained — two full calls and one
+   * short one is a step of 45 against a batch size of 20. The signal has to be
+   * carried explicitly or the caller keeps spending steps on an empty queue.
+   */
+  drained?: boolean;
   total: number;
   classified: number;
   batches: number;

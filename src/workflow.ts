@@ -82,39 +82,96 @@ const PAGE_RETRY = {
 } as const;
 
 /**
- * Cap on rule-classification pages. 400 Spaces a page, so this covers a
- * 26-week backfill at the measured ~7k Spaces/week with room to spare.
+ * Classification steps get longer than a page fetch, because each one now
+ * makes two Bedrock calls rather than one. A measured call over 20 Spaces runs
+ * well under a minute; five is headroom, not an expectation.
  */
-const MAX_RULE_PAGES = 500;
+const LLM_RETRY = {
+  retries: { limit: 5, delay: "30 seconds", backoff: "exponential" },
+  timeout: "5 minutes",
+} as const;
 
 /**
- * Step budget.
+ * The step budget — enforced here, not described in a comment.
  *
- * Cloudflare caps a Workflow instance at 1,024 steps on the Free plan and
- * 10,000 on Paid. This account is on Paid, so 10,000 is the real ceiling and
- * the routine weekly run (backfillWeeks = 1) sits far inside it:
+ * Cloudflare caps a Workflow instance at 10,000 steps on the Paid plan, but
+ * that is not the limit that bites. Workflows replays the orchestration from
+ * the top at every step boundary, so a run's overhead grows with the NUMBER of
+ * steps; the instance is killed with WorkflowFatalError ("exceeded CPU or
+ * memory limits outside of a step") long before 10,000. Measured: a run
+ * spending roughly 800 steps died at 23 minutes. 700 is the working ceiling.
  *
- *   ingest pages          ~100
- *   enrichment batches      120  (flat cap; 150 a batch drains the queue)
- *   rule pages               18
- *   LLM batches             400  (cap; ~275 used at 5,500 unsettled Spaces)
- *   per-week + terminal      ~25
- *   -------------------------------
- *   worst case              ~663  of 10,000
+ * The previous version of this comment set that ceiling out as a table and
+ * left every loop to respect it on the honour system — and the table mixed
+ * MEASURED figures for two stages with CAPS for the others, so it added up to
+ * ~663 while the caps actually allowed 2,845:
  *
- * The 10,000 figure is NOT the operative limit. A Workflow instance also has
- * a CPU/memory budget for the orchestration itself, which Workflows replays
- * from the top at every step boundary — so cost grows with step COUNT, and a
- * run can be killed with WorkflowFatalError ("exceeded CPU or memory limits
- * outside of a step") long before 10,000. A backfillWeeks=3 run asking for
- * ~2,400 steps died that way at 23 minutes.
+ *     ingest      2 walks x 900 = 1,800   (documented as ~100)
+ *     rule pages            500           (documented as ~18)
  *
- * So treat roughly 700 steps as the working ceiling, and prefer more work per
- * step over more steps. Deep backfills are best run one week at a time rather
- * than as a single wide instance.
+ * A week that ran hot would therefore sail past the ceiling with nothing to
+ * stop it, which is what a fatal error is: the absence of a budget, not the
+ * presence of a big week.
  *
- * Every stage reports `truncated` rather than quietly covering less.
+ * So the caps below are shares of the ceiling and SUM to less than it. Every
+ * loop stops when its share is gone and reports `truncated`, which the run
+ * already carries end to end. A week that covers 90% of a surge and LANDS is
+ * worth incomparably more than a week that reaches for all of it and is
+ * killed — the first leaves a point on every chart and a note saying it is
+ * light; the second leaves a gap and a dashboard that has silently stopped.
  */
+const WORKING_STEPS = 700;
+
+const STEP_BUDGET = {
+  /** Per walk, and there are two — models and Spaces. 1,000 records a page,
+      so 150 pages is 150,000 records against a measured ~7,000 a week. */
+  ingestPerWalk: 150,
+  /** 150 READMEs a batch: 15,000 against a standing queue of ~14,300. */
+  enrich: 100,
+  /** 400 Spaces a page: 16,000 against a measured ~7,000 a week. */
+  rules: 40,
+  /** Two Bedrock calls a step at 20 Spaces each: 6,000 against ~5,500
+      unsettled a week. */
+  llm: 150,
+  /** Phases with a fixed step each, plus the per-week aggregate and narrate. */
+  terminal: 30,
+} as const;
+
+/**
+ * What a run may spend if every stage exhausts its share at once.
+ *
+ * 2 x 150 + 100 + 40 + 150 + 30 = 620, inside the 700 ceiling. Exported and
+ * asserted in the tests rather than written in a comment, because the last
+ * version of this budget WAS a comment and it was wrong by a factor of four —
+ * a number nothing checks is a number that drifts.
+ */
+export const WORST_CASE_STEPS =
+  STEP_BUDGET.ingestPerWalk * 2 + STEP_BUDGET.enrich + STEP_BUDGET.rules +
+  STEP_BUDGET.llm + STEP_BUDGET.terminal;
+
+export { WORKING_STEPS, STEP_BUDGET, stepsFor };
+
+/**
+ * How many steps a stage may spend. Deliberately NOT a function of how many
+ * weeks were asked for.
+ *
+ * Every previous version of this scaled a cap by backfillWeeks, and that is
+ * precisely what killed the runs: the ceiling is a property of the Workflow
+ * INSTANCE, so multiplying a cap by the size of the request cannot buy
+ * anything — it can only overshoot. A three-week dispatch asking for three
+ * times the steps does not get three times the budget; it gets terminated,
+ * and writes nothing at all.
+ *
+ * So the shares are fixed and sized for the routine one-week run. A deeper
+ * backfill covers what it can inside them and reports `truncated`. Repairing
+ * a long stretch of history is done one week at a time — the workflow file
+ * says so, and taking no depth parameter here is what makes that true rather
+ * than merely advised.
+ */
+function stepsFor(stage: keyof typeof STEP_BUDGET): number {
+  return STEP_BUDGET[stage];
+}
+
 const SQL_RETRY = {
   retries: { limit: 3, delay: "5 seconds", backoff: "exponential" },
   timeout: "5 minutes",
@@ -202,7 +259,8 @@ export class WeeklyPipeline extends WorkflowEntrypoint<Env, WeeklyPipelineParams
       total: 0, classified: 0, deferredToLlm: 0, nextCursor: null,
     };
     let rulesCursor = "";
-    for (let page = 0; page < MAX_RULE_PAGES; page++) {
+    const ruleCap = stepsFor("rules");
+    for (let page = 0; page < ruleCap; page++) {
       const part: ClassifyRulesSummary = await step.do(
         `classify-rules-${page}`,
         SQL_RETRY,
@@ -301,7 +359,8 @@ export class WeeklyPipeline extends WorkflowEntrypoint<Env, WeeklyPipelineParams
 
     let cursor: string | null = null;
 
-    for (let page = 0; page < MAX_PAGES_PER_WALK; page++) {
+    const pageCap = Math.min(MAX_PAGES_PER_WALK, stepsFor("ingestPerWalk"));
+    for (let page = 0; page < pageCap; page++) {
       const result = await step.do(`ingest-${kind}-page-${page}`, PAGE_RETRY, async () =>
         ingestPage({ db: this.env.DB, client, kind, runId, since, cursor, page }),
       );
@@ -364,8 +423,10 @@ export class WeeklyPipeline extends WorkflowEntrypoint<Env, WeeklyPipelineParams
     // 3-week backfill asked for 750 enrichment steps against a queue of
     // 14,312 rows that 96 steps can drain.
     //
-    // 120 x 150 = 18,000 Spaces, comfortably the whole standing queue.
-    const MAX_BATCHES = 120;
+    // 100 x 150 = 15,000 Spaces against a standing queue of ~14,300. The cap
+    // is this stage's share of the run's step ceiling, not a number chosen on
+    // its own — see STEP_BUDGET.
+    const MAX_BATCHES = stepsFor("enrich");
 
     for (let batch = 0; batch < MAX_BATCHES; batch++) {
       const result = await step.do(`enrich-batch-${batch}`, PAGE_RETRY, async () =>
@@ -421,17 +482,38 @@ export class WeeklyPipeline extends WorkflowEntrypoint<Env, WeeklyPipelineParams
     });
     const modelId = this.env.BEDROCK_CLASSIFY_MODEL_ID;
 
-    // PLAN.md estimated ~175 batched requests a week. The real figure is ~275:
-    // rules settle only ~22% of a week's Spaces, leaving ~5,500 for the LLM at
-    // 20 a batch. The old cap of 250 therefore truncated ~500 Spaces (9%) every
-    // week while 550 steps of budget sat unused. 400 covers 8,000 Spaces.
-    // Scaled by backfill depth for the same reason as enrichment.
-    const MAX_LLM_BATCHES = Math.min(400 * backfillWeeks, 3000);
+    // Rules settle only ~22% of a week's Spaces, leaving ~5,500 for the LLM at
+    // 20 a batch — ~275 Bedrock calls. One call per step would spend 275 of a
+    // 700-step ceiling on this stage alone, so a step makes CALLS_PER_STEP of
+    // them and the prompt is left exactly as it was. Fewer, longer steps is
+    // the only lever here that costs nothing: a bigger batch would mean a
+    // bigger prompt and a longer JSON reply, and 4,096 max_tokens already
+    // truncated mid-JSON at 20 once.
+    const CALLS_PER_STEP = 2;
+    const batchCap = stepsFor("llm");
 
-    for (let batch = 0; batch < MAX_LLM_BATCHES; batch++) {
-      const result = await step.do(`classify-llm-batch-${batch}`, PAGE_RETRY, async () =>
-        classifySpacesByLlm(this.env.DB, client, modelId, weekStart, weekEnd),
-      );
+    for (let batch = 0; batch < batchCap; batch++) {
+      const result = await step.do(`classify-llm-batch-${batch}`, LLM_RETRY, async () => {
+        const acc: ClassifyLlmSummary = {
+          total: 0, classified: 0, batches: 0, inputTokens: 0, outputTokens: 0,
+          cacheReadTokens: 0, cacheCreateTokens: 0, errors: 0,
+        };
+        for (let call = 0; call < CALLS_PER_STEP; call++) {
+          const one = await classifySpacesByLlm(this.env.DB, client, modelId, weekStart, weekEnd);
+          acc.total += one.total;
+          acc.classified += one.classified;
+          acc.batches += one.batches;
+          acc.inputTokens += one.inputTokens;
+          acc.outputTokens += one.outputTokens;
+          acc.cacheReadTokens += one.cacheReadTokens;
+          acc.cacheCreateTokens += one.cacheCreateTokens;
+          acc.errors += one.errors;
+          // Drained. Reported as a short step so the caller stops, exactly as
+          // it did when a step was a single call.
+          if (one.total < LLM_BATCH_SIZE) { acc.drained = true; break; }
+        }
+        return acc;
+      });
 
       totals.total += result.total;
       totals.classified += result.classified;
@@ -445,7 +527,7 @@ export class WeeklyPipeline extends WorkflowEntrypoint<Env, WeeklyPipelineParams
       // A short batch means the queue is drained. Each call classifies the
       // Spaces it pulled, so the next call's "unclassified" filter excludes
       // them and the queue advances without an offset cursor.
-      if (result.total < LLM_BATCH_SIZE) return totals;
+      if (result.drained) return totals;
     }
 
     totals.truncated = true;
