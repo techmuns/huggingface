@@ -270,10 +270,15 @@ describe("GET /api/series", () => {
   });
 
   it("rejects a weeks value outside the cap", async () => {
-    for (const weeks of ["0", "53", "3.5", "many"]) {
+    for (const weeks of ["0", "157", "3.5", "many", "-1"]) {
       const res = await SELF.fetch(`http://localhost/api/series?weeks=${weeks}`);
       expect(res.status).toBe(400);
     }
+  });
+
+  it("accepts the cap itself", async () => {
+    const res = await SELF.fetch("http://localhost/api/series?weeks=156");
+    expect(res.status).toBe(200);
   });
 
   it("answers with empty arrays before any week has been aggregated", async () => {
