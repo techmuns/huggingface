@@ -302,7 +302,8 @@ tbody tr:last-child td { border-bottom: 0; }
   box-shadow: inset 0 0 0 1px var(--ink-muted);
   height: 6px; border-radius: 2px;
 }
-.legend-msg { font-size: 12px; color: var(--ink-muted); align-self: center; }
+.legend-msg { font-size: 12px; color: var(--ink-muted); align-self: center; order: 99; }
+.legend-msg:empty { display: none; }
 
 .plot { position: relative; }
 .plot svg { display: block; width: 100%; height: auto; touch-action: pan-y; }
@@ -880,14 +881,21 @@ function axisTicks(max, count = 4) {
  *
  * A single cut cannot answer this about itself: a week with no new models at
  * all leaves `models_by_family` with no rows, which looks identical to a week
- * that cut was never computed for. The rest of the payload settles it — if
- * anything was written that week, the week ran, and no rows means zero.
+ * that cut was never computed for. The rest of the payload settles it.
+ *
+ * The test is a base, not a value. aggregate.ts writes its three engagement
+ * rows unconditionally — a bare SUM() always returns a row — so a week that
+ * was aggregated but never ingested still lands with three zeros in the
+ * table. Reading those as "the week ran" would paint a backfill that never
+ * reached that far as a run of solid zeros: nobody published anything, rather
+ * than nobody looked. An empty week's denominators are all zero; a real one
+ * always has a positive denominator somewhere.
  */
 function weeksThatRan() {
   if (ranCache) return ranCache;
   ranCache = new Set();
   (seriesRaw?.weeks || []).forEach((w, i) => {
-    if ((seriesRaw.series || []).some(x => x.values[i] != null)) ranCache.add(w);
+    if ((seriesRaw.series || []).some(x => x.denominators?.[i] > 0)) ranCache.add(w);
   });
   return ranCache;
 }
@@ -922,11 +930,11 @@ function weeklyTotals() {
     return best;
   });
 
-  // A week where anything at all was written is a week that ran. A count with
-  // no rows in such a week is a zero — no models were published — not an
-  // unknown; the this-week tile has always said 0, and the line beside it
-  // should not disagree by breaking.
-  const ran = weeks.map((_, i) => (seriesRaw?.series || []).some(s => s.values[i] != null));
+  // A week something was actually counted in is a week that ran — see
+  // weeksThatRan for why the test is a base rather than a value. A count with
+  // no rows in such a week is a zero, not an unknown; the this-week tile has
+  // always said 0, and the line beside it should not disagree by breaking.
+  const ran = weeks.map((_, i) => (seriesRaw?.series || []).some(s => s.denominators?.[i] > 0));
   const orZero = (arr) => weeks.map((_, i) => arr[i] ?? (ran[i] ? 0 : null));
 
   const classified = orZero(sumOf(CUTS.usecase));
@@ -1335,14 +1343,8 @@ const MAX_LINES = SLOTS.length;
  * tooltip, so the chip would appear to refuse without explaining itself.
  */
 function legendMessage(strip, text) {
-  let msg = strip.querySelector('.legend-msg');
-  if (!msg) {
-    msg = document.createElement('span');
-    msg.className = 'legend-msg';
-    msg.setAttribute('role', 'status');
-    strip.appendChild(msg);
-  }
-  msg.textContent = text;
+  const msg = strip.querySelector('.legend-msg');
+  if (msg) msg.textContent = text;
 }
 
 /** Running total. Nulls add nothing but do not break the line — a week with no
@@ -1417,15 +1419,28 @@ function trendChart(host, spec) {
     host._observed = true;
     new ResizeObserver(() => {
       clearTimeout(host._t);
-      // A hidden panel reports zero width; repainting there would draw the
-      // chart at the minimum size and it would stay that size when shown.
-      host._t = setTimeout(() => host._spec && host.clientWidth > 0 && paintChart(host), 90);
+      host._t = setTimeout(() => {
+        // A hidden panel reports zero width; repainting there would draw the
+        // chart at the minimum size and it would stay that size when shown.
+        if (!host._spec || host.clientWidth <= 0) return;
+        // Only a WIDTH change needs a repaint. The height changes whenever the
+        // legend re-wraps — which happens on every toggle — and repainting for
+        // that threw away the chip the reader had just used, taking their
+        // keyboard focus with it.
+        if (host.clientWidth === host._paintedAt) return;
+        paintChart(host);
+      }, 90);
     }).observe(host);
   }
 }
 
 function paintChart(host) {
   const { weeks, lines, unit = '', chartId, provisionalLast, note } = host._spec;
+
+  const active = document.activeElement;
+  const focusedChip = active && host.contains(active) && active.classList.contains('legend-chip')
+    ? active.dataset.key
+    : null;
 
   if (!weeks.length || !lines.length) {
     host._spec = null;
@@ -1583,11 +1598,21 @@ function paintChart(host) {
       unit === '%' ? 'changing' : 'rising'}.</p>` : ''}`;
 
   wireChart(host, { weeks, shown, unit, x, padL, plotW, padT, plotH });
+  host._paintedAt = width;
+
+  // A repaint replaces the legend, so a chip that had the keyboard lands in
+  // the bin with it. Whatever the reason for the repaint, focus comes back.
+  if (focusedChip) {
+    [...host.querySelectorAll('.legend-chip')]
+      .find(c => c.dataset.key === focusedChip)?.focus();
+  }
 }
 
 function legendHTML(lines, shown, off, chartId) {
   const colour = new Map(shown.map(l => [l.key, l.color]));
-  return `<div class="chart-legend">${lines.map(l => {
+  // The status region is part of the markup rather than created on demand: a
+  // live region inserted and filled in the same task is not announced.
+  return `<div class="chart-legend"><span class="legend-msg" role="status"></span>${lines.map(l => {
     const on = !off.has(l.key);
     return `<button class="legend-chip" data-key="${esc(l.key)}" data-chart="${esc(chartId)}"
       aria-pressed="${on ? 'true' : 'false'}"
@@ -1755,11 +1780,13 @@ function renderTrendInto(el, { rows, weeks, cut, unit = '', chartId, extraNote =
   const lines = picked.lines.map(read);
 
   const notes = [];
-  if (w.length === 1) notes.push('Only one week has been processed so far — the line starts once there are two.');
+  if (onlyOneWeekEver()) notes.push('Only one week has been processed so far — the line starts once there are two.');
   if (state.cumulative && isCount) notes.push(`Each point is the running total of every week shown, starting from ${shortWeek(w[0])}.`);
   if (state.cumulative && !isCount) notes.push('Each point is the average of every week up to it, counting busier weeks more heavily.');
   if (prepared.hasGaps) notes.push(gapNote());
-  if (picked.hidden) notes.push(`Showing the ${MAX_LINES} biggest. The other ${picked.hidden} are in the legend — switch one on to follow it, or open the Table for all of them.`);
+  if (picked.hidden && !state.offTouched.has(chartId)) {
+    notes.push(`Showing the ${MAX_LINES} biggest. The other ${picked.hidden} are in the legend — switch one on to follow it, or open the Table for all of them.`);
+  }
   if (endsEarly()) notes.push('The line ends at the week you picked above.');
   if (atHistoryCap(w)) notes.push(HISTORY_CAP_NOTE);
   if (extraNote) notes.push(extraNote);
@@ -1809,6 +1836,15 @@ const atHistoryCap = weeks => state.win >= HISTORY_CAP && weeks.length >= HISTOR
 const gapNote = () => state.cumulative
   ? 'A week that was never measured adds nothing, so the total runs flat across it.'
   : 'A week that was never measured leaves a gap in the line rather than a straight line through it.';
+
+/**
+ * Whether the database really does hold a single week.
+ *
+ * Not the same question as "is the window one week long": the picker can hold
+ * a line to its first week, and saying "only one week has been processed" next
+ * to a picker offering four of them is simply false.
+ */
+const onlyOneWeekEver = () => (seriesRaw?.weeks || []).length === 1;
 
 /** Whether the week picker is holding every line short of the newest week. */
 function endsEarly() {
@@ -1931,7 +1967,7 @@ function renderHeadline() {
     return;
   }
   const notes = [];
-  if (weeks.length === 1) notes.push('Only one week has been processed so far — the line starts once there are two.');
+  if (onlyOneWeekEver()) notes.push('Only one week has been processed so far — the line starts once there are two.');
   if (state.cumulative) notes.push(`Each point is the running total of every week shown, starting from ${shortWeek(weeks[0])}.`);
   if (prepared.hasGaps) notes.push(gapNote());
   if (at >= 0 && at < t.weeks.length - 1) notes.push('The line ends at the week you picked above.');
@@ -2171,7 +2207,10 @@ function fillUseCasePicker() {
   const sel = document.getElementById('usecase-select');
   const ucs = [...new Set((matrixSeries?.series || []).map(s => s.dimension))].sort();
   if (!ucs.length) return;
-  if (!state.matrixUseCase || !ucs.includes(state.matrixUseCase)) state.matrixUseCase = ucs[0];
+  if (!state.matrixUseCase || !ucs.includes(state.matrixUseCase)) {
+    state.matrixUseCase = ucs[0];
+    writeHash();   // the URL should not keep naming a use case that is not there
+  }
   sel.innerHTML = ucs.map(u =>
     `<option value="${esc(u)}"${u === state.matrixUseCase ? ' selected' : ''}>${esc(titleCase(u))}</option>`).join('');
 }
@@ -2575,6 +2614,10 @@ async function loadWeek(week) {
     notice.hidden = true;
     renderAll();
     writeHash();
+    // Held at reduced opacity until its own request lands: it arrives after
+    // the figures do, and last week's summary sitting at full strength under
+    // this week's numbers reads as this week's summary.
+    document.getElementById('narrative-card').classList.add('stale');
     loadNarrative(week, seq);
   } catch {
     if (seq !== weekLoadSeq) return;
@@ -2609,6 +2652,8 @@ async function loadNarrative(week, seq) {
     card.hidden = false;
   } catch {
     if (seq === undefined || seq === weekLoadSeq) card.hidden = true;
+  } finally {
+    if (seq === undefined || seq === weekLoadSeq) card.classList.remove('stale');
   }
 }
 
@@ -2780,8 +2825,13 @@ async function init() {
   let reopened = [];
   window.addEventListener('beforeprint', () => {
     printing = true;
-    reopened = [...document.querySelectorAll('details:not([open])')];
-    reopened.forEach(d => { d.open = true; });
+    // Only on the way in. A second beforeprint without an afterprint between
+    // them would otherwise record an empty list and leave both sections
+    // expanded for good.
+    if (!reopened.length) {
+      reopened = [...document.querySelectorAll('details:not([open])')];
+      reopened.forEach(d => { d.open = true; });
+    }
     renderAll();
   });
   window.addEventListener('afterprint', () => {
@@ -2827,7 +2877,14 @@ async function init() {
     state.offTouched.add(id);
     renderAll();
     writeHash();
-    document.querySelector(`.legend-chip[data-chart="${CSS.escape(id)}"][data-key="${CSS.escape(key)}"]`)?.focus();
+
+    // Matched by reading the attributes, not by building a selector out of
+    // them: CSS.escape produces an escaped *identifier*, and a key that starts
+    // with a digit — "3d-gaming" — comes back as "\\33 d-gaming", which
+    // matches nothing inside a quoted attribute value. The focus was landing
+    // on <body>.
+    [...document.querySelectorAll('.legend-chip')]
+      .find(c => c.dataset.chart === id && c.dataset.key === key)?.focus();
   });
 
   await loadSeries();
