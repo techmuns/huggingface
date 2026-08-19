@@ -55,6 +55,25 @@ jobs:
           echo "week=$WEEK" >> "$GITHUB_OUTPUT"
           echo "Processing week of $WEEK"
 
+      - name: Check the database schema matches the deployed code
+        env:
+          BASE: ${{ secrets.WORKER_URL }}
+          TOKEN: ${{ secrets.ADMIN_TOKEN }}
+        run: |
+          set -euo pipefail
+          # `git push` deploys the Worker; a human applies the migration. When
+          # those two drift, parse fails on a missing column a third of the way
+          # into the run, after the D1 writes have already been spent. Catch it
+          # here, before anything is written, and say which migration is owed.
+          BASE="${BASE:-https://huggingface.tech-441.workers.dev}"
+          S=$(curl -sS --max-time 30 "$BASE/api/admin/stats" -H "Authorization: Bearer $TOKEN")
+          if [ "$(echo "$S" | jq -r '.schema.ok // "absent"')" = "false" ]; then
+            echo "::error::Database is missing columns the deployed code writes: \
+          $(echo "$S" | jq -r '.schema.missingColumns | join(", ")'). \
+          Apply the pending migration in migrations/ before this run."
+            exit 1
+          fi
+
       - name: Start the run
         id: start
         env:
