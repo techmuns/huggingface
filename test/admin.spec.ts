@@ -1,6 +1,6 @@
 import { SELF, env } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
-import { parseRunParams } from "../src/index";
+import { missingColumns, parseRunParams } from "../src/index";
 import { isAuthorized, timingSafeEqual } from "../src/lib/auth";
 
 describe("timingSafeEqual", () => {
@@ -151,5 +151,33 @@ describe("unknown API routes", () => {
     const res = await SELF.fetch("https://example.com/api/nope");
     expect(res.status).toBe(404);
     await expect(res.json()).resolves.toMatchObject({ error: "not_found" });
+  });
+});
+
+describe("schema drift probe", () => {
+  it("reports nothing missing when every migration has been applied", async () => {
+    const res = await SELF.fetch("https://example.com/api/admin/stats", {
+      headers: { authorization: `Bearer ${env.ADMIN_TOKEN}` },
+    });
+    expect(res.status).toBe(200);
+    await expect(res.json()).resolves.toMatchObject({
+      schema: { ok: true, missingColumns: [] },
+    });
+  });
+
+  it("names a column the database does not have", async () => {
+    // The point of the probe: a column the deployed code writes but the
+    // database lacks has to surface here, not as a failed write deep inside
+    // a run. Local D1 has every migration applied, so an absent column is the
+    // only way to exercise the detection.
+    await expect(
+      missingColumns(env.DB, [["hf_models", "column_that_does_not_exist"]]),
+    ).resolves.toEqual(["hf_models.column_that_does_not_exist"]);
+  });
+
+  it("passes a column that does exist", async () => {
+    await expect(
+      missingColumns(env.DB, [["hf_models", "model_type"]]),
+    ).resolves.toEqual([]);
   });
 });

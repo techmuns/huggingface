@@ -501,6 +501,12 @@ async function handleStats(request: Request, env: Env): Promise<Response> {
     .prepare("SELECT MIN(created_at) AS a, MAX(created_at) AS b FROM hf_spaces")
     .first<{ a: string | null; b: string | null }>();
 
+  // Code and schema are deployed by different mechanisms — `git push` ships
+  // the Worker, a human runs the migration — so they drift, and the drift is
+  // invisible until a write fails deep inside a run. Name the columns a
+  // deployed migration should have added and report which are actually there.
+  const schema = await missingColumns(env.DB, EXPECTED_COLUMNS);
+
   return Response.json({
     stage: raw === 0 ? "ingesting (nothing written yet)"
       : spaces === 0 ? "ingesting — raw records landing, not yet parsed"
@@ -517,7 +523,45 @@ async function handleStats(request: Request, env: Env): Promise<Response> {
     metricRows: metrics,
     weeksAggregated: weeks,
     spaceDateRange: { oldest: oldest?.a ?? null, newest: oldest?.b ?? null },
+    schema: {
+      ok: schema.length === 0,
+      missingColumns: schema,
+    },
   });
+}
+
+/**
+ * Columns the deployed code writes that arrived in a migration. Each entry is
+ * the migration that adds it; a name appearing in `missingColumns` means that
+ * migration has not been applied to this database and writes touching it will
+ * fail.
+ */
+const EXPECTED_COLUMNS: ReadonlyArray<[table: string, column: string]> = [
+  ["hf_models", "card_base_model"], // 0002_model_card_base
+  ["hf_models", "model_type"],      // 0003_model_config_type
+];
+
+/**
+ * Probes each column with a zero-row SELECT.
+ *
+ * `PRAGMA table_info` would list them in one query, but D1 returns pragma
+ * results in a shape that varies by driver version, and a failed SELECT is
+ * unambiguous. The identifiers are compile-time literals from the table
+ * above, never request input, so interpolating them is not an injection path.
+ */
+export async function missingColumns(
+  db: D1Database,
+  expected: ReadonlyArray<[string, string]>,
+): Promise<string[]> {
+  const missing: string[] = [];
+  for (const [table, column] of expected) {
+    try {
+      await db.prepare(`SELECT ${column} FROM ${table} LIMIT 0`).all();
+    } catch {
+      missing.push(`${table}.${column}`);
+    }
+  }
+  return missing;
 }
 
 async function handleReviewQueue(request: Request, env: Env): Promise<Response> {
