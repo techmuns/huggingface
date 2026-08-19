@@ -108,6 +108,10 @@ h1 { font-size: 22px; font-weight: 600; letter-spacing: -0.01em; }
   padding: 12px 0 18px;
 }
 .provenance b { color: var(--ink-2); font-weight: 500; }
+.load-error {
+  font-size: 12.5px; color: var(--bad); padding: 0 0 12px;
+}
+.load-error::before { content: "\26A0"; margin-right: 6px; }
 .provenance .wip { color: var(--ink-2); }
 .provenance .wip::before {
   content: "\25CB"; margin-right: 6px;   /* icon, not colour: the marker has to
@@ -406,6 +410,7 @@ details.method li { margin-bottom: 7px; max-width: 82ch; }
   </header>
 
   <div class="provenance" id="provenance"></div>
+  <p class="load-error" id="load-error" role="status" hidden></p>
 
   <nav class="tabs" role="tablist" aria-label="Dashboard sections">
     <button role="tab" id="tab-overview"   data-tab="overview"   aria-selected="true"  aria-controls="panel-overview">Overview</button>
@@ -765,6 +770,7 @@ const state = {
 let weeksAvailable = [];
 let printing = false;
 let seriesFailed = false;
+let weekLoadSeq = 0;
 let current = { byCut: {}, coverage: null, week: null };
 let seriesRaw = null;    // /api/series payload, all cuts, up to 52 weeks
 let matrixSeries = null; // /api/series?cut=family_share_by_use_case, lazily
@@ -1070,16 +1076,23 @@ function bars(rows, { unit = '', shareOf = null } = {}) {
 /** The table twin. Every figure a chart shows is reachable here without hovering. */
 function table(rows, { unit = '' } = {}) {
   if (!rows.length) return '<p class="empty">No data for this week.</p>';
+  // Marked, not merely greyed. A reader who cannot pick the shade out — on a
+  // dim screen, in print, with any colour-vision deficiency — would otherwise
+  // read a low-base figure as an ordinary one, and its blank growth columns as
+  // "no earlier week" rather than "too few to say".
+  const anySuppressed = rows.some(r => r.suppressed);
   return `<div class="table-scroll"><table>
     <thead><tr><th>Category</th><th>Value</th><th>Base</th><th>1 week</th><th>4 weeks</th><th>12 weeks</th></tr></thead>
     <tbody>${rows.map(r => `<tr>
       <td>${esc(titleCase(r.dimension))}</td>
-      <td${r.suppressed ? ' class="suppressed"' : ''}>${num(r.value)}${unit}</td>
+      <td${r.suppressed ? ' class="suppressed"' : ''}>${num(r.value)}${unit}${r.suppressed ? '*' : ''}</td>
       <td>${num(r.denominator)}</td>
-      <td>${delta(r.delta_1w)}</td>
-      <td>${delta(r.delta_4w)}</td>
-      <td>${delta(r.delta_12w)}</td>
-    </tr>`).join('')}</tbody></table></div>`;
+      <td>${r.suppressed ? '<span class="delta flat">too few</span>' : delta(r.delta_1w)}</td>
+      <td>${r.suppressed ? '<span class="delta flat">too few</span>' : delta(r.delta_4w)}</td>
+      <td>${r.suppressed ? '<span class="delta flat">too few</span>' : delta(r.delta_12w)}</td>
+    </tr>`).join('')}</tbody></table></div>${anySuppressed
+      ? '<p class="hint" style="margin-top:10px">* too few behind this figure to call it a trend &mdash; shown for completeness.</p>'
+      : ''}`;
 }
 
 function renderMatrix() {
@@ -2006,10 +2019,11 @@ async function renderMatrixTrend() {
     fillUseCasePicker();
   }
 
-  // A hash that dropped `uc=` leaves this null; the picker resolves it back to
-  // its documented default rather than the last thing that happened to be on
-  // screen.
-  if (!state.matrixUseCase) fillUseCasePicker();
+  // A hash that dropped `uc=` leaves this null, and a hand-edited one can name
+  // a use case that is not there. Both resolve back to the documented default
+  // rather than rendering "No history" beside a picker showing something else.
+  const known = new Set((matrixSeries?.series || []).map(s => s.dimension));
+  if (!state.matrixUseCase || !known.has(state.matrixUseCase)) fillUseCasePicker();
 
   const weeksAll = matrixSeries.weeks || [];
   const uc = state.matrixUseCase;
@@ -2383,36 +2397,66 @@ function wireTabStrip(strip, onPick) {
 /* ── Loading ──────────────────────────────────────────────────────────── */
 
 async function loadWeek(week) {
+  // Two clicks on the picker start two loads, and the network decides which
+  // lands last. Without a generation the older answer can overwrite the newer
+  // one, putting the week the reader has already left back on screen — under
+  // a picker that says otherwise.
+  const seq = ++weekLoadSeq;
   const main = document.querySelector('.wrap');
+  const notice = document.getElementById('load-error');
   main.classList.add('stale');           // hold the previous render, never flash
+
   try {
     const [m, c] = await Promise.all([
       getJSON(`/api/metrics?week=${encodeURIComponent(week)}`),
       getJSON(`/api/coverage?week=${encodeURIComponent(week)}`),
     ]);
+    if (seq !== weekLoadSeq) return;     // a later pick already won
+
     current = { byCut: {}, coverage: c, week };
     state.week = week;
     for (const row of (m.metrics || [])) {
       (current.byCut[row.metric_cut] ||= []).push(row);
     }
     document.getElementById('m-taxonomy').textContent = `Taxonomy version ${m.taxonomyVersion}.`;
+    notice.hidden = true;
     renderAll();
     writeHash();
-    loadNarrative(week);
+    loadNarrative(week, seq);
+  } catch {
+    if (seq !== weekLoadSeq) return;
+    // The figures on screen belong to the week before this one. Leaving the
+    // picker pointing at the week that failed would label them as its, which
+    // is the one thing worse than showing nothing.
+    const sel = document.getElementById('week-select');
+    notice.textContent = current.week
+      ? `Week of ${week} could not be loaded. Still showing week of ${current.week}.`
+      : `Week of ${week} could not be loaded. Reload the page to try again.`;
+    notice.hidden = false;
+    if (current.week) {
+      sel.value = current.week;
+      state.week = current.week;
+      writeHash();
+    }
   } finally {
-    main.classList.remove('stale');
+    if (seq === weekLoadSeq) main.classList.remove('stale');
   }
 }
 
-async function loadNarrative(week) {
+async function loadNarrative(week, seq) {
   const card = document.getElementById('narrative-card');
   try {
     const d = await getJSON(`/api/narrative?week=${encodeURIComponent(week)}`);
+    // Same race, its own request: a slow narrative for last week's pick must
+    // not print itself under this week's figures.
+    if (seq !== undefined && seq !== weekLoadSeq) return;
     if (!d.narrative) { card.hidden = true; return; }
     document.getElementById('narrative-body').innerHTML =
       d.narrative.split(/\n\n+/).map(p => `<p>${esc(p)}</p>`).join('');
     card.hidden = false;
-  } catch { card.hidden = true; }
+  } catch {
+    if (seq === undefined || seq === weekLoadSeq) card.hidden = true;
+  }
 }
 
 /**
