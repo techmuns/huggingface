@@ -1238,6 +1238,19 @@ function applyReading(values, denominators, isCount) {
 }
 
 /**
+ * Which points are carried rather than measured.
+ *
+ * Both readings hold their last figure across a week that was never measured,
+ * so the line stays continuous where the weekly view would break. That point
+ * is a floor, not a reading — we do not know what the unmeasured week would
+ * have added — so it is drawn hollow and says so on hover, the same way a
+ * below-threshold point does.
+ */
+function carriedMask(raw, read) {
+  return raw.map((v, i) => (v == null && read[i] != null ? 1 : 0));
+}
+
+/**
  * Draws one line chart into `host` and keeps it redrawable.
  *
  * The spec is stored on the element so a resize repaints from the same data:
@@ -1353,7 +1366,8 @@ function paintChart(host) {
       d += (pen ? 'L' : 'M') + px.toFixed(1) + ' ' + py.toFixed(1) + ' ';
       // A lone value with gaps either side would otherwise draw nothing at all.
       const alone = (i === 0 || l.values[i - 1] == null) && (i === l.values.length - 1 || l.values[i + 1] == null);
-      if (alone || l.suppressed?.[i]) dots.push({ px, py, hollow: !!l.suppressed?.[i] });
+      const unmeasured = !!(l.suppressed?.[i] || l.carried?.[i]);
+      if (alone || unmeasured) dots.push({ px, py, hollow: unmeasured });
       pen = true;
     });
 
@@ -1473,7 +1487,7 @@ function wireChart(host, ctx) {
       const val = document.createElement('span');
       val.className = 'tip-val';
       val.textContent = v == null ? 'no data' : exact(v, ctx.unit)
-        + (l.suppressed?.[i] ? ' (too few)' : '');
+        + (l.suppressed?.[i] ? ' (too few)' : l.carried?.[i] ? ' (carried — that week was not measured)' : '');
       row.appendChild(name);
       row.appendChild(val);
       tip.appendChild(row);
@@ -1550,7 +1564,10 @@ function renderTrendInto(el, { rows, weeks, cut, unit = '', chartId, extraNote =
   const prepared = prepareSeries(weeks, rows, { zeroFill: true });
   const w = prepared.weeks;
   const isCount = COUNT_CUTS.has(cut);
-  const read = l => ({ ...l, values: applyReading(l.values, l.denominators, isCount) });
+  const read = (l) => {
+    const values = applyReading(l.values, l.denominators, isCount);
+    return { ...l, values, carried: carriedMask(l.values, values) };
+  };
 
   const picked = pickLines(prepared.rows, w, { sum: isCount, chartId });
   const lines = picked.lines.map(read);
@@ -1708,11 +1725,11 @@ function renderHeadline() {
   const lines = [
     { key: 'spaces', label: 'All new Spaces', color: 'var(--s1)' },
     { key: 'classified', label: 'Of those, classified', color: 'var(--s3)' },
-  ].map((l, i) => ({
-    ...l,
-    values: applyReading(prepared.rows[i].values, prepared.rows[i].denominators, true),
-    suppressed: prepared.rows[i].suppressed,
-  }));
+  ].map((l, i) => {
+    const raw = prepared.rows[i].values;
+    const values = applyReading(raw, prepared.rows[i].denominators, true);
+    return { ...l, values, suppressed: prepared.rows[i].suppressed, carried: carriedMask(raw, values) };
+  });
 
   if (state.table) {
     setHTML(el, trendTable(weeks, lines));
@@ -1779,10 +1796,13 @@ function renderTrendsTab() {
       suppressed: w.arrays[0].map(() => 0),
     }]);
     const weeks = prepared.weeks;
+    const raw = prepared.rows[0].values;
+    const readValues = applyReading(raw, prepared.rows[0].denominators, isCount);
     const lines = [{
       key: track.id, label: track.label, color: 'var(--s1)',
-      values: applyReading(prepared.rows[0].values, prepared.rows[0].denominators, isCount),
+      values: readValues,
       suppressed: prepared.rows[0].suppressed,
+      carried: carriedMask(raw, readValues),
     }];
     const notes = [];
     if (state.cumulative && isCount) notes.push(`Each point is the running total of every week shown, starting from ${shortWeek(weeks[0])}.`);
