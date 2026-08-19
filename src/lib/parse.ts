@@ -1,3 +1,9 @@
+import {
+  D1_JSON_ARG_MAX_BYTES,
+  D1_RECORD_MAX_BYTES,
+  D1_STATEMENTS_PER_BATCH,
+  chunkByBytes,
+} from "./raw-store";
 /**
  * Parses raw records into typed tables via SQL INSERT…SELECT.
  *
@@ -156,21 +162,52 @@ const UPSERT_MODELS_SQL = `
     updated_at = excluded.updated_at
 `;
 
-/** Chunked so one statement never approaches D1's 100 KB statement cap. */
-const MODEL_UPSERT_CHUNK = 250;
-
+/**
+ * Chunked by BYTES, sharing the helper with the raw layer.
+ *
+ * This was a count — 250 records, under a comment claiming it "never
+ * approaches D1's 100 KB statement cap". It approached it, then went 5x past
+ * it, when `config` joined the model expand list and every record grew ~8.6x.
+ *
+ * The raw layer had the identical bug and was fixed first, which fixed
+ * nothing here: models skip the raw layer entirely (see the note above
+ * UPSERT_MODELS_SQL), so this is the models path and the one carrying the
+ * `config` field that caused the growth. Three runs kept failing with
+ * SQLITE_TOOBIG after the "fix" because of exactly that.
+ *
+ * Sharing the helper rather than copying the logic is the point: a second
+ * hand-rolled chunker is how there came to be two of these.
+ */
 export async function upsertModels(
   db: D1Database,
   records: readonly unknown[],
   fetchedAt: string,
 ): Promise<number> {
   if (records.length === 0) return 0;
-  const stmts: D1PreparedStatement[] = [];
-  for (let i = 0; i < records.length; i += MODEL_UPSERT_CHUNK) {
-    stmts.push(
-      db.prepare(UPSERT_MODELS_SQL).bind(fetchedAt, JSON.stringify(records.slice(i, i + MODEL_UPSERT_CHUNK))),
+
+  const { chunks, oversized } = chunkByBytes(
+    records,
+    D1_JSON_ARG_MAX_BYTES,
+    D1_RECORD_MAX_BYTES,
+  );
+
+  if (oversized.length > 0) {
+    console.warn(
+      `upsertModels: skipped ${oversized.length} model(s) over ${D1_RECORD_MAX_BYTES} bytes: ` +
+        oversized.map((r) => (r as { id?: string }).id ?? "(no id)").join(", "),
     );
   }
-  const results = await db.batch(stmts);
-  return results.reduce((t, r) => t + (r.meta?.changes ?? 0), 0);
+
+  const stmts = chunks.map((batch) =>
+    db.prepare(UPSERT_MODELS_SQL).bind(fetchedAt, JSON.stringify(batch)),
+  );
+
+  // Grouped for the same reason as the raw insert: many statements each
+  // carrying up to D1_JSON_ARG_MAX_BYTES would make one oversized request.
+  let written = 0;
+  for (let i = 0; i < stmts.length; i += D1_STATEMENTS_PER_BATCH) {
+    const results = await db.batch(stmts.slice(i, i + D1_STATEMENTS_PER_BATCH));
+    written += results.reduce((t, r) => t + (r.meta?.changes ?? 0), 0);
+  }
+  return written;
 }

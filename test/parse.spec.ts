@@ -497,3 +497,49 @@ describe("resolveByModelType", () => {
     expect(row).toMatchObject({ family: "qwen", resolution_source: "base_model_tag" });
   });
 });
+
+// ── upsertModels size safety ────────────────────────────────────────────────
+
+describe("upsertModels stays inside D1's statement limit", () => {
+  it("writes a page of realistically fat model records", async () => {
+    // The regression: this chunked by COUNT (250) under a comment claiming it
+    // "never approaches D1's 100 KB statement cap". Once `config` joined the
+    // model expand list, 250 records serialized to 518,088 bytes and ingest
+    // died with SQLITE_TOOBIG on three consecutive runs.
+    //
+    // Fixing the raw layer did not fix this: models skip the raw layer, so
+    // this is the path that actually carries `config`. Sized to reproduce
+    // that — 400 records averaging ~1.3 KB is well past a single statement.
+    const records = Array.from({ length: 400 }, (_, i) => ({
+      id: `author/model-${i}`,
+      author: "author",
+      createdAt: "2026-08-17T00:00:00.000Z",
+      likes: 1,
+      tags: ["text-generation"],
+      config: { model_type: "qwen3_moe", quantization_config: { bits: 4, blob: "x".repeat(1200) } },
+    }));
+
+    const written = await upsertModels(DB, records, "2026-08-18T00:00:00.000Z");
+    expect(written).toBe(400);
+
+    const row = await DB.prepare("select count(*) as n from hf_models").first<{ n: number }>();
+    expect(row?.n).toBe(400);
+  });
+
+  it("still captures config.model_type across the chunk boundary", async () => {
+    // Chunking must not lose or garble a field — the last record of one chunk
+    // and the first of the next are where an off-by-one would show.
+    const records = Array.from({ length: 300 }, (_, i) => ({
+      id: `a/m-${i}`,
+      createdAt: "2026-08-17T00:00:00.000Z",
+      tags: [],
+      config: { model_type: "gemma3", pad: "y".repeat(800) },
+    }));
+    await upsertModels(DB, records, "2026-08-18T00:00:00.000Z");
+
+    const n = await DB.prepare(
+      "select count(*) as n from hf_models where model_type = 'gemma3'",
+    ).first<{ n: number }>();
+    expect(n?.n).toBe(300);
+  });
+});

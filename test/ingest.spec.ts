@@ -3,8 +3,8 @@ import { beforeEach, describe, expect, it } from "vitest";
 import { HfApiError, HfClient, MAX_PAGE_SIZE, parseNextCursor } from "../src/lib/hf-api";
 import { ingestPage } from "../src/lib/ingest";
 import {
-  RAW_INSERT_MAX_BYTES,
-  RAW_RECORD_MAX_BYTES,
+  D1_JSON_ARG_MAX_BYTES,
+  D1_RECORD_MAX_BYTES,
   chunk,
   chunkByBytes,
   insertRawRecords,
@@ -331,12 +331,12 @@ describe("chunkByBytes", () => {
       config: { model_type: "qwen3_moe", blob: "x".repeat(900) },
     }));
 
-    const { chunks, oversized } = chunkByBytes(records, RAW_INSERT_MAX_BYTES, RAW_RECORD_MAX_BYTES);
+    const { chunks, oversized } = chunkByBytes(records, D1_JSON_ARG_MAX_BYTES, D1_RECORD_MAX_BYTES);
 
     expect(oversized).toEqual([]);
     expect(chunks.length).toBeGreaterThan(1);
     for (const c of chunks) {
-      expect(bytes(c)).toBeLessThanOrEqual(RAW_INSERT_MAX_BYTES);
+      expect(bytes(c)).toBeLessThanOrEqual(D1_JSON_ARG_MAX_BYTES);
     }
     expect(chunks.flat()).toHaveLength(400);
   });
@@ -347,8 +347,8 @@ describe("chunkByBytes", () => {
     const small = Array.from({ length: 200 }, (_, i) => ({ id: `s/${i}`, t: "x".repeat(100) }));
     const large = Array.from({ length: 200 }, (_, i) => ({ id: `l/${i}`, t: "x".repeat(1000) }));
 
-    const a = chunkByBytes(small, RAW_INSERT_MAX_BYTES, RAW_RECORD_MAX_BYTES).chunks.length;
-    const b = chunkByBytes(large, RAW_INSERT_MAX_BYTES, RAW_RECORD_MAX_BYTES).chunks.length;
+    const a = chunkByBytes(small, D1_JSON_ARG_MAX_BYTES, D1_RECORD_MAX_BYTES).chunks.length;
+    const b = chunkByBytes(large, D1_JSON_ARG_MAX_BYTES, D1_RECORD_MAX_BYTES).chunks.length;
     expect(b).toBeGreaterThan(a);
   });
 
@@ -356,23 +356,23 @@ describe("chunkByBytes", () => {
     // One pathological repo must not take the week's ingest with it, and must
     // not vanish silently either — it comes back so the caller can report it.
     const ok = { id: "fine/one", t: "x" };
-    const huge = { id: "pathological/one", t: "x".repeat(RAW_RECORD_MAX_BYTES + 1) };
+    const huge = { id: "pathological/one", t: "x".repeat(D1_RECORD_MAX_BYTES + 1) };
 
-    const { chunks, oversized } = chunkByBytes([ok, huge], RAW_INSERT_MAX_BYTES, RAW_RECORD_MAX_BYTES);
+    const { chunks, oversized } = chunkByBytes([ok, huge], D1_JSON_ARG_MAX_BYTES, D1_RECORD_MAX_BYTES);
     expect(oversized).toEqual([huge]);
     expect(chunks.flat()).toEqual([ok]);
   });
 
   it("never emits an empty chunk", () => {
-    const { chunks } = chunkByBytes([], RAW_INSERT_MAX_BYTES, RAW_RECORD_MAX_BYTES);
+    const { chunks } = chunkByBytes([], D1_JSON_ARG_MAX_BYTES, D1_RECORD_MAX_BYTES);
     expect(chunks).toEqual([]);
   });
 
   it("puts a single record in its own chunk when it fills the budget", () => {
     const a = { id: "a", t: "x".repeat(60_000) };
     const b = { id: "b", t: "x".repeat(60_000) };
-    const { chunks } = chunkByBytes([a, b], RAW_INSERT_MAX_BYTES, RAW_RECORD_MAX_BYTES);
+    const { chunks } = chunkByBytes([a, b], D1_JSON_ARG_MAX_BYTES, D1_RECORD_MAX_BYTES);
     expect(chunks).toHaveLength(2);
-    for (const c of chunks) expect(bytes(c)).toBeLessThanOrEqual(RAW_INSERT_MAX_BYTES);
+    for (const c of chunks) expect(bytes(c)).toBeLessThanOrEqual(D1_JSON_ARG_MAX_BYTES);
   });
 });

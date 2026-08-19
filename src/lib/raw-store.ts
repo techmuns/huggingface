@@ -39,7 +39,7 @@ import type { EntityKind, HfRecord } from "./hf-api";
  */
 export const D1_BATCH = 40;
 
-export const RAW_INSERT_MAX_BYTES = 80_000;
+export const D1_JSON_ARG_MAX_BYTES = 80_000;
 
 /**
  * A record too large to ever be inserted alone.
@@ -48,7 +48,16 @@ export const RAW_INSERT_MAX_BYTES = 80_000;
  * `config` and `cardData` are free-form, so one pathological repo should cost
  * that one record rather than the whole week's ingest.
  */
-export const RAW_RECORD_MAX_BYTES = 90_000;
+export const D1_RECORD_MAX_BYTES = 90_000;
+
+/**
+ * Statements per `db.batch()` when each carries a large JSON argument.
+ *
+ * 10 x 80 KB keeps a batch request under ~800 KB. Separate from D1_BATCH,
+ * which sizes batches of small per-row statements against the query count
+ * rather than against request size.
+ */
+export const D1_STATEMENTS_PER_BATCH = 10;
 
 const INSERT_SQL = `
   insert into hf_raw_records (run_id, entity_kind, entity_id, fetched_at, payload)
@@ -141,8 +150,8 @@ export async function insertRawRecords(
 
   const { chunks, oversized } = chunkByBytes(
     records,
-    RAW_INSERT_MAX_BYTES,
-    RAW_RECORD_MAX_BYTES,
+    D1_JSON_ARG_MAX_BYTES,
+    D1_RECORD_MAX_BYTES,
   );
 
   if (oversized.length > 0) {
@@ -150,7 +159,7 @@ export async function insertRawRecords(
     // rebuilt from, so a gap in it has to be findable later.
     console.warn(
       `insertRawRecords: skipped ${oversized.length} ${kind} record(s) over ` +
-        `${RAW_RECORD_MAX_BYTES} bytes: ` +
+        `${D1_RECORD_MAX_BYTES} bytes: ` +
         oversized
           .map((r) => (r as { id?: string }).id ?? "(no id)")
           .join(", "),
@@ -161,8 +170,18 @@ export async function insertRawRecords(
     db.prepare(INSERT_SQL).bind(runId, kind, fetchedAt, JSON.stringify(batch)),
   );
 
-  const results = await db.batch(statements);
-  return results.reduce((total, r) => total + (r.meta?.changes ?? 0), 0);
+  // Sent in groups rather than as one batch. Byte-sized chunks are smaller
+  // than the old count-sized ones, so a page now produces several times as
+  // many statements, and every one of them carries up to
+  // D1_JSON_ARG_MAX_BYTES of JSON. One batch of all of them would be a
+  // multi-megabyte request — a different limit from the per-statement one
+  // just fixed, and not one worth discovering the same way.
+  let written = 0;
+  for (let i = 0; i < statements.length; i += D1_STATEMENTS_PER_BATCH) {
+    const results = await db.batch(statements.slice(i, i + D1_STATEMENTS_PER_BATCH));
+    written += results.reduce((total, r) => total + (r.meta?.changes ?? 0), 0);
+  }
+  return written;
 }
 
 /**
