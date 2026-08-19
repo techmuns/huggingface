@@ -222,3 +222,43 @@ describe("run registry", () => {
     expect(res.status).not.toBe(200);
   });
 });
+
+describe("run params cannot be silently dropped", () => {
+  const post = (init: RequestInit) =>
+    SELF.fetch("https://example.com/api/admin/run", { method: "POST", ...init });
+
+  it("refuses a body sent without a JSON content-type", async () => {
+    // The failure this pins: the body used to be ignored, the run started with
+    // defaults, and 202 came back as though the request had been honoured — so
+    // a run asked for one week quietly processed another.
+    const res = await post({
+      headers: { authorization: `Bearer ${env.ADMIN_TOKEN}` },
+      body: JSON.stringify({ weekStart: "2026-08-10", backfillWeeks: 1 }),
+    });
+    expect(res.status).toBe(415);
+    const json = (await res.json()) as { error: string; detail: string };
+    expect(json.error).toBe("unsupported_media_type");
+    // The message has to name what actually arrived, or the next occurrence is
+    // another archaeology exercise. fetch stamps text/plain on a string body
+    // when the caller sets no content-type, so that is what should be quoted
+    // back — the header the server saw, not a guess at what was intended.
+    expect(json.detail).toContain("text/plain");
+  });
+
+  it("still accepts a bodyless POST, which means defaults on purpose", async () => {
+    const res = await post({ headers: { authorization: `Bearer ${env.ADMIN_TOKEN}` } });
+    expect(res.status).toBe(202);
+    await expect(res.json()).resolves.toMatchObject({ params: {} });
+  });
+
+  it("echoes back exactly the params it accepted", async () => {
+    const res = await post({
+      headers: { authorization: `Bearer ${env.ADMIN_TOKEN}`, "content-type": "application/json" },
+      body: JSON.stringify({ weekStart: "2026-08-10", backfillWeeks: 1, dryRun: true }),
+    });
+    expect(res.status).toBe(202);
+    await expect(res.json()).resolves.toMatchObject({
+      params: { weekStart: "2026-08-10", backfillWeeks: 1, dryRun: true },
+    });
+  });
+});

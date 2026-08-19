@@ -120,13 +120,37 @@ async function handleAdminRun(request: Request, env: Env): Promise<Response> {
     return Response.json({ error: "unauthorized" }, { status: 401 });
   }
 
+  // A body that arrives without a JSON content-type used to be dropped on the
+  // floor: `body` stayed {}, parseRunParams returned {}, and the run started
+  // with defaults — silently processing the CURRENT week instead of the one
+  // asked for, and answering 202 as though nothing was wrong. Two runs did
+  // exactly that before anyone noticed, because the only visible symptom was
+  // a week's figures not moving.
+  //
+  // Refuse instead, and name what actually arrived, so the next occurrence
+  // identifies its own cause rather than needing the request reconstructed
+  // from a log.
+  const contentType = request.headers.get("content-type") ?? "";
+  const isJson = contentType.includes("application/json");
+
   let body: unknown = {};
-  if (request.headers.get("content-type")?.includes("application/json")) {
+  if (isJson) {
     try {
       body = await request.json();
     } catch {
       return Response.json({ error: "invalid_json" }, { status: 400 });
     }
+  } else if (request.body !== null && request.headers.get("content-length") !== "0") {
+    return Response.json(
+      {
+        error: "unsupported_media_type",
+        detail:
+          `a request body was sent with content-type "${contentType || "(none)"}". ` +
+          "It must be application/json, or the parameters are ignored and the run " +
+          "silently processes the current week with defaults.",
+      },
+      { status: 415 },
+    );
   }
 
   const parsed = parseRunParams(body);

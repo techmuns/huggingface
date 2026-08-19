@@ -121,6 +121,19 @@ jobs:
           echo "$RESP"
           ID=$(echo "$RESP" | jq -r '.id // empty')
           [ -n "$ID" ] || { echo "::error::could not start run: $RESP"; exit 1; }
+
+          # Confirm the Worker actually took the week we asked for. It answers
+          # 202 with the params it accepted; twice now that came back {} while
+          # the body was correct, and the run silently processed the current
+          # week instead. A 202 is not evidence the request was honoured — the
+          # echo is. Fail here rather than spend an hour on the wrong week.
+          GOT=$(echo "$RESP" | jq -r '.params.weekStart // empty')
+          if [ "$GOT" != "${{ steps.week.outputs.week }}" ]; then
+            echo "::error::Worker accepted weekStart='$GOT' but we sent \
+          '${{ steps.week.outputs.week }}'. The run would process the wrong week. \
+          Full response: $RESP"
+            exit 1
+          fi
           echo "id=$ID" >> "$GITHUB_OUTPUT"
 
       - name: Wait for it to finish
