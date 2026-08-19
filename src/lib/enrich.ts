@@ -130,6 +130,17 @@ export async function enrichBlindSpaces(params: EnrichBatchParams): Promise<Enri
     skippedUnchanged: 0,
   };
 
+  // Newest first, deliberately.
+  //
+  // This queue is global on purpose: blind Spaces accumulate faster than one
+  // run's cap drains them, so scoping it to the run's week would strand the
+  // backlog permanently. But the previous ordering was `space_id`, which is
+  // alphabetical and unrelated to anything — a run asked to process one week
+  // could spend its entire README budget on old Spaces whose ids happen to
+  // sort early and never reach the week it was started for. Ordering by
+  // created_at serves the week being processed first and lets whatever budget
+  // is left spill into the backlog.
+  //
   // Only rows never attempted. An 'error' row deliberately stays out of the
   // queue for the rest of the run: the caller drains this batch-by-batch
   // until it comes back short, and re-selecting failures would put the same
@@ -141,7 +152,7 @@ export async function enrichBlindSpaces(params: EnrichBatchParams): Promise<Enri
     .prepare(
       `SELECT space_id, readme_hash FROM hf_spaces
        WHERE signal_tier = 'blind' AND readme_status IS NULL
-       ORDER BY space_id
+       ORDER BY created_at DESC, space_id
        LIMIT ?1 OFFSET ?2`,
     )
     .bind(batchSize, offset)

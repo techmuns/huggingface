@@ -246,4 +246,50 @@ describe("enrichBlindSpaces", () => {
     const result = await enrichBlindSpaces({ db: DB, batchSize: 50 });
     expect(result).toMatchObject({ total: 0, fetched: 0 });
   });
+
+  it("serves the newest blind Spaces first", async () => {
+    // The queue is global — blind Spaces accumulate across weeks — so the
+    // ordering decides whether a run's README budget reaches the week it was
+    // started for or gets spent on backlog. Ordered by space_id, "aaa/old"
+    // sorts first and the current week's Space is never reached.
+    await insertRawRecords(DB, {
+      runId: "run-order",
+      kind: "space",
+      records: [
+        {
+          id: "aaa/old", author: "aaa",
+          createdAt: "2026-07-01T00:00:00.000Z",
+          lastModified: "2026-07-01T00:00:00.000Z",
+          likes: 0, sdk: "gradio", tags: [], models: [], datasets: [], cardData: {},
+        },
+        {
+          id: "zzz/new", author: "zzz",
+          createdAt: "2026-08-17T00:00:00.000Z",
+          lastModified: "2026-08-17T00:00:00.000Z",
+          likes: 0, sdk: "gradio", tags: [], models: [], datasets: [], cardData: {},
+        },
+      ],
+      fetchedAt: "2026-08-18T00:00:00.000Z",
+    });
+    await parseRawSpaces(DB, "run-order");
+
+    // 404 keeps the test off the network and is a terminal status, so the row
+    // leaves the queue exactly as a real fetch would leave it.
+    vi.stubGlobal("fetch", async () => new Response("", { status: 404 }));
+    try {
+      const result = await enrichBlindSpaces({ db: DB, batchSize: 1 });
+      expect(result.total).toBe(1);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+
+    const rows = await DB.prepare(
+      "SELECT space_id, readme_status FROM hf_spaces ORDER BY space_id",
+    ).all<{ space_id: string; readme_status: string | null }>();
+
+    expect(rows.results).toEqual([
+      { space_id: "aaa/old", readme_status: null },
+      { space_id: "zzz/new", readme_status: "missing" },
+    ]);
+  });
 });
