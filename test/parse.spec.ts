@@ -439,3 +439,57 @@ describe("upsertModels", () => {
     expect(c?.c).toBe(1);
   });
 });
+
+// ── config.model_type resolution ────────────────────────────────────────────
+
+describe("resolveByModelType", () => {
+  it("resolves a family from the model's own declared architecture", async () => {
+    // ~11.5% of new models declare no base_model but do report a model_type.
+    // It rides the listing request we already make, so it costs nothing.
+    await upsertModels(
+      DB,
+      [{ id: "someone/undeclared", createdAt: "2026-08-17T00:00:00.000Z",
+         tags: ["text-generation"], config: { model_type: "qwen3_5_moe" } }],
+      "2026-08-18T00:00:00.000Z",
+    );
+    await resolveModelFamilies(DB);
+
+    const row = await DB.prepare("SELECT family, resolution_source, model_type FROM hf_models WHERE repo_id = ?")
+      .bind("someone/undeclared")
+      .first<{ family: string; resolution_source: string; model_type: string }>();
+    expect(row?.model_type).toBe("qwen3_5_moe");
+    expect(row?.family).toBe("qwen");
+    // Provenance must not read as a declared parent or a guess from the title.
+    expect(row?.resolution_source).toBe("config_model_type");
+  });
+
+  it("leaves a bespoke architecture unresolved rather than forcing a bucket", async () => {
+    await upsertModels(
+      DB,
+      [{ id: "someone/bespoke", createdAt: "2026-08-17T00:00:00.000Z",
+         tags: [], config: { model_type: "inkling_mm_model" } }],
+      "2026-08-18T00:00:00.000Z",
+    );
+    await resolveModelFamilies(DB);
+
+    const row = await DB.prepare("SELECT family FROM hf_models WHERE repo_id = ?")
+      .bind("someone/bespoke")
+      .first<{ family: string | null }>();
+    expect(row?.family).toBeNull();
+  });
+
+  it("prefers a declared parent over the architecture", async () => {
+    await upsertModels(
+      DB,
+      [{ id: "someone/declared", createdAt: "2026-08-17T00:00:00.000Z",
+         tags: ["base_model:quantized:Qwen/Qwen3-8B"], config: { model_type: "llama" } }],
+      "2026-08-18T00:00:00.000Z",
+    );
+    await resolveModelFamilies(DB);
+
+    const row = await DB.prepare("SELECT family, resolution_source FROM hf_models WHERE repo_id = ?")
+      .bind("someone/declared")
+      .first<{ family: string; resolution_source: string }>();
+    expect(row).toMatchObject({ family: "qwen", resolution_source: "base_model_tag" });
+  });
+});

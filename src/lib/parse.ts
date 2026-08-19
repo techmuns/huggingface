@@ -15,7 +15,7 @@ const PARSE_MODELS_SQL = `
   INSERT INTO hf_models (
     repo_id, author, created_at, last_modified,
     downloads, downloads_all_time, likes,
-    pipeline_tag, library_name, tags, card_base_model,
+    pipeline_tag, library_name, tags, card_base_model, model_type,
     first_seen_at, updated_at
   )
   SELECT
@@ -30,6 +30,7 @@ const PARSE_MODELS_SQL = `
     json_extract(payload, '$.library_name'),
     COALESCE(json_extract(payload, '$.tags'), '[]'),
     json_extract(payload, '$.cardData.base_model'),
+    json_extract(payload, '$.config.model_type'),
     fetched_at,
     fetched_at
   FROM hf_raw_records
@@ -44,6 +45,7 @@ const PARSE_MODELS_SQL = `
     library_name = COALESCE(excluded.library_name, hf_models.library_name),
     tags = excluded.tags,
     card_base_model = COALESCE(excluded.card_base_model, hf_models.card_base_model),
+    model_type = COALESCE(excluded.model_type, hf_models.model_type),
     updated_at = excluded.updated_at
 `;
 
@@ -121,7 +123,7 @@ const UPSERT_MODELS_SQL = `
   INSERT INTO hf_models (
     repo_id, author, created_at, last_modified,
     downloads, downloads_all_time, likes,
-    pipeline_tag, library_name, tags, card_base_model,
+    pipeline_tag, library_name, tags, card_base_model, model_type,
     first_seen_at, updated_at
   )
   SELECT
@@ -136,6 +138,7 @@ const UPSERT_MODELS_SQL = `
     json_extract(value, '$.library_name'),
     COALESCE(json_extract(value, '$.tags'), '[]'),
     json_extract(value, '$.cardData.base_model'),
+    json_extract(value, '$.config.model_type'),
     ?1,
     ?1
   FROM json_each(?2)
@@ -149,6 +152,7 @@ const UPSERT_MODELS_SQL = `
     library_name = COALESCE(excluded.library_name, hf_models.library_name),
     tags = excluded.tags,
     card_base_model = COALESCE(excluded.card_base_model, hf_models.card_base_model),
+    model_type = COALESCE(excluded.model_type, hf_models.model_type),
     updated_at = excluded.updated_at
 `;
 

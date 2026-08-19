@@ -46,6 +46,11 @@ const EXPAND: Record<EntityKind, readonly string[]> = {
     "pipeline_tag",
     "library_name",
     "cardData",
+    // The canonical architecture field. Free — it rides the listing request we
+    // already make — and it resolves ~11.5% more models than declared lineage
+    // alone. Unlike the architecture *tags*, which are derived from it, this
+    // is what the model itself says it is.
+    "config",
   ],
   // Verified against the live API: `title` and `shortDescription` are NOT
   // expandable on Spaces — the endpoint rejects them and enumerates what it

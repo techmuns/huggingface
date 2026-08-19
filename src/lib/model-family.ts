@@ -24,6 +24,7 @@ export interface ResolveSummary {
   byTag: number;
   byCardData: number;
   byChain: number;
+  byModelType: number;
   byName: number;
   /** Repos with no declared parent, labelled `base`. */
   byBase: number;
@@ -231,6 +232,62 @@ async function resolveByChain(db: D1Database): Promise<number> {
   return total;
 }
 
+
+/**
+ * Architecture -> family, from config.model_type.
+ *
+ * The Hub reports what the model says it is: "llama", "qwen3_5_moe",
+ * "gemma3", "chatglm". Prefix-anchored so a family name never matches inside
+ * an unrelated architecture, and so the many bespoke model_types the Hub
+ * carries ("inkling_mm_model", "Gr00tN1d7") fall through rather than being
+ * forced into a bucket.
+ */
+const FAMILY_BY_MODEL_TYPE: ReadonlyArray<[RegExp, string]> = [
+  [/^qwen/i, "qwen"],
+  [/^llama/i, "llama"],
+  [/^deepseek/i, "deepseek"],
+  [/^gemma/i, "gemma"],
+  [/^(?:mistral|mixtral)/i, "mistral"],
+  [/^(?:glm|chatglm)/i, "glm-zhipu"],
+  [/^(?:kimi|moonshot)/i, "kimi-moonshot"],
+  [/^nemotron/i, "nvidia-nemotron"],
+];
+
+export function matchFamilyByModelType(modelType: string | null): string | null {
+  if (!modelType) return null;
+  for (const [re, family] of FAMILY_BY_MODEL_TYPE) {
+    if (re.test(modelType)) return family;
+  }
+  return null;
+}
+
+async function resolveByModelType(db: D1Database): Promise<number> {
+  const rows = await db
+    .prepare(
+      `SELECT repo_id, model_type FROM hf_models
+       WHERE family IS NULL AND base_model IS NULL AND model_type IS NOT NULL`,
+    )
+    .all<{ repo_id: string; model_type: string }>();
+
+  if (!rows.results?.length) return 0;
+
+  const stmts: D1PreparedStatement[] = [];
+  for (const row of rows.results) {
+    const family = matchFamilyByModelType(row.model_type);
+    if (!family) continue;
+    stmts.push(
+      db
+        .prepare(
+          `UPDATE hf_models
+             SET family = ?1, resolution_source = 'config_model_type'
+           WHERE repo_id = ?2`,
+        )
+        .bind(family, row.repo_id),
+    );
+  }
+  return batchExec(db, stmts);
+}
+
 async function resolveByNamePattern(db: D1Database): Promise<number> {
   const rows = await db
     .prepare("SELECT repo_id FROM hf_models WHERE family IS NULL AND base_model IS NULL")
@@ -261,6 +318,10 @@ export async function resolveModelFamilies(db: D1Database): Promise<ResolveSumma
   const byTag = await resolveFromTags(db);
   const byCardData = await resolveFromCardData(db);
   const byChain = await resolveByChain(db);
+  // Between a declared parent and a guess from the title: the model's own
+  // declared architecture. Stronger than the name, weaker than a stated
+  // base_model, and recorded as such.
+  const byModelType = await resolveByModelType(db);
   const byName = await resolveByNamePattern(db);
 
   // Anything with a declared lineage that still couldn't be placed
@@ -282,6 +343,9 @@ export async function resolveModelFamilies(db: D1Database): Promise<ResolveSumma
     )
     .run();
 
-  const total = byTag + byCardData + byChain + byName;
-  return { byTag, byCardData, byChain, byName, byBase: base.meta?.changes ?? 0, total };
+  const total = byTag + byCardData + byChain + byModelType + byName;
+  return {
+    byTag, byCardData, byChain, byModelType, byName,
+    byBase: base.meta?.changes ?? 0, total,
+  };
 }

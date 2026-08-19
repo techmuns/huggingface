@@ -1,18 +1,22 @@
--- Adds 'architecture_tag' as a resolution source.
+-- Adds config.model_type as a family-resolution source.
 --
--- ~13% of new models (measured on 400 of the Hub's newest) declare no
--- base_model but do carry a model_type tag — "llama", "qwen3_5_moe", "gemma".
--- Reading those is the cheapest family coverage available and entirely
--- deterministic, but it needs its own provenance value: recording it as
--- 'name_pattern' would present a declared architecture as a guess from the
--- title, and 'gguf_architecture' would claim we parsed GGUF metadata we never
--- read. The whole purpose of resolution_source is that a confident source is
--- never confused with a weak one.
+-- The Hub returns config.model_type in the same listing request we already
+-- make — it just has to be asked for. Measured on 400 of the newest models it
+-- resolves a further 11.5% (22% -> 34% coverage), and it is the canonical
+-- architecture field rather than a tag derived from it.
 --
--- SQLite cannot alter a CHECK constraint in place, so the table is rebuilt.
--- COST: this rewrites every row in hf_models (~75,000 at time of writing),
--- which is most of a day's 100,000-row free-plan write budget. Run it on a day
--- with no pipeline run, or after moving to Workers Paid.
+-- It needs its own provenance value. Recording it as 'name_pattern' would
+-- present a declared architecture as a guess from the title, and
+-- 'gguf_architecture' would claim we parsed GGUF metadata we never read. The
+-- point of resolution_source is that a confident source is never mistaken for
+-- a weak one.
+--
+-- SQLite cannot alter a CHECK in place, so the table is rebuilt. That also
+-- lets the new column land in the same pass rather than costing two rewrites.
+--
+-- COST: rewrites every hf_models row (~75,000 at time of writing), most of a
+-- day's 100,000-row free-plan budget. Run it on a day with no pipeline run, or
+-- after moving to Workers Paid.
 
 PRAGMA foreign_keys = OFF;
 
@@ -29,6 +33,8 @@ CREATE TABLE hf_models_new (
   tags                TEXT NOT NULL DEFAULT '[]' CHECK (json_valid(tags)),
   base_model          TEXT,
   card_base_model     TEXT,
+  -- config.model_type, e.g. "llama", "qwen3_5_moe", "gemma3".
+  model_type          TEXT,
   family              TEXT,
   derivative_type     TEXT CHECK (
                         derivative_type IS NULL OR derivative_type IN
@@ -36,7 +42,7 @@ CREATE TABLE hf_models_new (
                       ),
   resolution_source   TEXT CHECK (
                         resolution_source IS NULL OR resolution_source IN
-                        ('base_model_tag', 'card_data', 'architecture_tag',
+                        ('base_model_tag', 'card_data', 'config_model_type',
                          'gguf_architecture', 'name_pattern')
                       ),
   first_seen_at       TEXT NOT NULL,
@@ -46,7 +52,7 @@ CREATE TABLE hf_models_new (
 INSERT INTO hf_models_new
   SELECT repo_id, author, created_at, last_modified, downloads, downloads_all_time,
          likes, pipeline_tag, library_name, tags, base_model, card_base_model,
-         family, derivative_type, resolution_source, first_seen_at, updated_at
+         NULL, family, derivative_type, resolution_source, first_seen_at, updated_at
   FROM hf_models;
 
 DROP TABLE hf_models;
