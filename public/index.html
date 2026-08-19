@@ -866,6 +866,27 @@ function windowed(weeks, arrays) {
   return { weeks: weeks.slice(from), arrays: arrays.map(a => a.slice(from)) };
 }
 
+/**
+ * The same slice applied to whole series rows.
+ *
+ * Values, denominators and suppression flags are three arrays indexed by the
+ * same week. Slicing one and not the others silently pairs a week's figure
+ * with another week's base, which a pooled average would then quietly build
+ * on — so they are only ever sliced together.
+ */
+function windowRows(weeks, rows) {
+  const from = Math.max(0, weeks.length - state.win);
+  return {
+    weeks: weeks.slice(from),
+    rows: rows.map(r => ({
+      ...r,
+      values: r.values.slice(from),
+      denominators: (r.denominators || []).slice(from),
+      suppressed: (r.suppressed || []).slice(from),
+    })),
+  };
+}
+
 const WEEK_MS = 7 * 86_400_000;
 
 /**
@@ -1481,12 +1502,8 @@ function renderCutPanel(elId, cut, { unit = '', shareOf = null, chartId } = {}) 
   if (!el) return;
 
   if (state.view === 'trend') {
-    const weeksAll = seriesRaw?.weeks || [];
-    const rows = seriesOf(cut);
-    const w = windowed(weeksAll, rows.map(r => r.values));
-    const sw = windowed(weeksAll, rows.map(r => r.suppressed));
-    const sliced = rows.map((r, i) => ({ ...r, values: w.arrays[i], suppressed: sw.arrays[i] }));
-    renderTrendInto(el, { rows: sliced, weeks: w.weeks, cut, unit, chartId });
+    const w = windowRows(seriesRaw?.weeks || [], seriesOf(cut));
+    renderTrendInto(el, { rows: w.rows, weeks: w.weeks, cut, unit, chartId });
     return;
   }
 
@@ -1656,13 +1673,9 @@ function renderTrendsTab() {
     return;
   }
 
-  const weeksAll = seriesRaw.weeks;
-  const rows = seriesOf(track.cut);
-  const w = windowed(weeksAll, rows.map(r => r.values));
-  const sw = windowed(weeksAll, rows.map(r => r.suppressed));
-  const sliced = rows.map((r, i) => ({ ...r, values: w.arrays[i], suppressed: sw.arrays[i] }));
+  const w = windowRows(seriesRaw.weeks, seriesOf(track.cut));
   renderTrendInto(el, {
-    rows: sliced, weeks: w.weeks, cut: track.cut,
+    rows: w.rows, weeks: w.weeks, cut: track.cut,
     unit: track.unit || '', chartId: 'trend-' + track.id,
   });
 }
@@ -1750,11 +1763,9 @@ async function renderMatrixTrend() {
     return;
   }
 
-  const w = windowed(weeksAll, rows.map(r => r.values));
-  const sw = windowed(weeksAll, rows.map(r => r.suppressed));
-  const sliced = rows.map((r, i) => ({ ...r, values: w.arrays[i], suppressed: sw.arrays[i] }));
+  const w = windowRows(weeksAll, rows);
   renderTrendInto(el, {
-    rows: sliced, weeks: w.weeks, cut: CUTS.matrix, unit: '%',
+    rows: w.rows, weeks: w.weeks, cut: CUTS.matrix, unit: '%',
     chartId: 'matrix-' + uc,
     extraNote: `Each line is the share of ${titleCase(uc)} Spaces built on that family.`,
   });
