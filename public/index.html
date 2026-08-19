@@ -289,8 +289,15 @@ tbody tr:last-child td { border-bottom: 0; }
   transition: border-color .12s ease, opacity .12s ease;
 }
 .legend-chip:hover { border-color: var(--axis); }
-.legend-chip[aria-pressed="false"] { opacity: .45; }
-.legend-chip[aria-pressed="false"] .key-line { background: var(--ink-muted) !important; }
+/* Switched off is carried by a struck-through name and a hollow key, not by a
+   wash that drops the label to about 2:1 against the card. */
+.legend-chip[aria-pressed="false"] { color: var(--ink-2); }
+.legend-chip[aria-pressed="false"] .label { text-decoration: line-through; }
+.legend-chip[aria-pressed="false"] .key-line {
+  background: transparent !important;
+  box-shadow: inset 0 0 0 1px var(--ink-muted);
+  height: 6px; border-radius: 2px;
+}
 .legend-msg { font-size: 12px; color: var(--ink-muted); align-self: center; }
 
 .plot { position: relative; }
@@ -1068,13 +1075,16 @@ function sparkline(values, { w = 132, h = 30 } = {}) {
   if (pts.length < 2) return '';
   const lo = Math.min(...pts), hi = Math.max(...pts);
   const span = hi - lo || 1;
-  const step = values.length > 1 ? w / (values.length - 1) : 0;
-  const y = v => h - 3 - ((v - lo) / span) * (h - 6);
+  // Inset by the accent dot's outer radius. Mapped edge to edge, the newest
+  // week's dot sits exactly on the viewBox boundary and prints as a half-moon.
+  const pad = 5;
+  const step = values.length > 1 ? (w - pad * 2) / (values.length - 1) : 0;
+  const y = v => h - 5 - ((v - lo) / span) * (h - 10);
 
   let d = '', pen = false, lastX = 0, lastY = 0;
   values.forEach((v, i) => {
     if (v == null) { pen = false; return; }
-    const x = i * step, yy = y(v);
+    const x = pad + i * step, yy = y(v);
     d += (pen ? 'L' : 'M') + x.toFixed(1) + ' ' + yy.toFixed(1) + ' ';
     pen = true; lastX = x; lastY = yy;
   });
@@ -1091,6 +1101,43 @@ function sparkline(values, { w = 132, h = 30 } = {}) {
 
 const SLOTS = ['var(--s1)','var(--s2)','var(--s3)','var(--s4)','var(--s5)','var(--s6)','var(--s7)','var(--s8)'];
 
+/** Which hue each category holds, per chart, remembered between renders. */
+const slotMemory = {};
+
+/**
+ * Hands each category a hue and lets it keep it.
+ *
+ * Rank decides which series are worth drawing; it must not decide their
+ * colour. A reader who has learnt that Qwen is the blue line should still see
+ * Qwen in blue after changing the use case filter, even though Llama now
+ * ranks above it — a filter that repaints the survivors makes every earlier
+ * reading wrong. Newcomers take the lowest hue nothing else is holding, and a
+ * category that drops out of the selection releases its hue for the next one.
+ */
+function assignSlots(chartId, dims) {
+  const previous = slotMemory[chartId] || new Map();
+  const next = new Map();
+  const taken = new Set();
+
+  for (const d of dims) {
+    if (!previous.has(d)) continue;
+    const slot = previous.get(d);
+    if (taken.has(slot)) continue;
+    next.set(d, slot);
+    taken.add(slot);
+  }
+  for (const d of dims) {
+    if (next.has(d)) continue;
+    let i = 0;
+    while (taken.has(i) && i < SLOTS.length) i++;
+    next.set(d, Math.min(i, SLOTS.length - 1));
+    taken.add(i);
+  }
+
+  slotMemory[chartId] = next;
+  return next;
+}
+
 /**
  * Picks the lines to draw.
  *
@@ -1100,7 +1147,7 @@ const SLOTS = ['var(--s1)','var(--s2)','var(--s3)','var(--s4)','var(--s5)','var(
  * "Unresolved") never take a categorical slot — they are drawn recessive, the
  * same treatment the bars give them, and they sit last however large they get.
  */
-function pickLines(rows, weeks, { sum = true } = {}) {
+function pickLines(rows, weeks, { sum = true, chartId = '' } = {}) {
   const score = (s) => {
     for (let i = weeks.length - 1; i >= 0; i--) if (s.values[i] != null) return s.values[i];
     return 0;
@@ -1108,10 +1155,13 @@ function pickLines(rows, weeks, { sum = true } = {}) {
   const real = rows.filter(s => !RESIDUAL.has(s.dimension)).sort((a, b) => score(b) - score(a));
   const rest = rows.filter(s => RESIDUAL.has(s.dimension));
 
-  const lines = real.slice(0, SLOTS.length).map((s, i) => ({
+  const shown = real.slice(0, SLOTS.length);
+  const slots = assignSlots(chartId, shown.map(s => s.dimension));
+
+  const lines = shown.map((s) => ({
     key: s.dimension,
     label: titleCase(s.dimension),
-    color: SLOTS[i],
+    color: SLOTS[slots.get(s.dimension) ?? 0],
     values: s.values,
     denominators: s.denominators,
     suppressed: s.suppressed,
@@ -1326,7 +1376,8 @@ function paintChart(host) {
         stroke-linecap="round" stroke-linejoin="round"${l.residual ? ' opacity="0.75"' : ''}/>
       ${tail}
       ${dots.map(p => `<circle cx="${p.px.toFixed(1)}" cy="${p.py.toFixed(1)}" r="4"
-        fill="${p.hollow ? 'var(--surface)' : l.color}" stroke="${l.color}" stroke-width="2"/>`).join('')}
+        fill="${p.hollow ? 'var(--surface)' : l.color}"
+        stroke="${p.hollow ? l.color : 'var(--surface)'}" stroke-width="2"/>`).join('')}
       ${endDot}${endLabel}
     </g>`;
   }).join('');
@@ -1362,7 +1413,7 @@ function legendHTML(lines, off, chartId) {
     <button class="legend-chip" data-key="${esc(l.key)}" data-chart="${esc(chartId)}"
       aria-pressed="${off.has(l.key) ? 'false' : 'true'}"
       title="Show or hide this line">
-      <span class="key-line" style="background:${l.color}"></span>${esc(l.label)}
+      <span class="key-line" style="background:${l.color}"></span><span class="label">${esc(l.label)}</span>
     </button>`).join('')}</div>`;
 }
 
@@ -1470,13 +1521,19 @@ function trendTable(weeks, lines, unit = '') {
   // Newest week first, the same way the week picker lists them — a reader
   // opening the numbers is looking for the latest one, not for February.
   const order = weeks.map((_, i) => i).reverse();
+  // Grey alone would leave the low-base warning on colour, which every other
+  // surface avoids: the chart draws a hollow marker and the tooltip says
+  // "too few". Here it is an asterisk against a footnote.
+  const anySuppressed = lines.some(l => (l.suppressed || []).some(Boolean));
   return `<div class="table-scroll"><table>
     <thead><tr><th>Week</th>${lines.map(l => `<th>${esc(l.label)}</th>`).join('')}</tr></thead>
     <tbody>${order.map(i => `<tr>
       <td>${esc(shortWeek(weeks[i]))}</td>
       ${lines.map(l => `<td${l.suppressed?.[i] ? ' class="suppressed"' : ''}>${
-        esc(exact(l.values[i], unit))}</td>`).join('')}
-    </tr>`).join('')}</tbody></table></div>`;
+        esc(exact(l.values[i], unit))}${l.suppressed?.[i] ? '*' : ''}</td>`).join('')}
+    </tr>`).join('')}</tbody></table></div>${anySuppressed
+      ? '<p class="hint" style="margin-top:10px">* too few behind this figure to call it a trend &mdash; shown for completeness.</p>'
+      : ''}`;
 }
 
 /**
@@ -1495,7 +1552,7 @@ function renderTrendInto(el, { rows, weeks, cut, unit = '', chartId, extraNote =
   const isCount = COUNT_CUTS.has(cut);
   const read = l => ({ ...l, values: applyReading(l.values, l.denominators, isCount) });
 
-  const picked = pickLines(prepared.rows, w, { sum: isCount });
+  const picked = pickLines(prepared.rows, w, { sum: isCount, chartId });
   const lines = picked.lines.map(read);
 
   const notes = [];
@@ -1843,7 +1900,7 @@ async function renderMatrixTrend() {
   const w = windowRows(weeksAll, rows);
   renderTrendInto(el, {
     rows: w.rows, weeks: w.weeks, cut: CUTS.matrix, unit: '%',
-    chartId: 'matrix-' + uc,
+    chartId: 'matrix',
     extraNote: `Each line is the share of ${titleCase(uc)} Spaces built on that family.`,
   });
 }
