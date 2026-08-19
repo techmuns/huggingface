@@ -17,8 +17,11 @@
 -- COST: rewrites every hf_models row (~75,000 at time of writing), most of a
 -- day's 100,000-row free-plan budget. Run it on a day with no pipeline run, or
 -- after moving to Workers Paid.
-
-PRAGMA foreign_keys = OFF;
+--
+-- No PRAGMA foreign_keys guard: the only foreign key in the schema is
+-- hf_classifications.space_id -> hf_spaces, so dropping and renaming
+-- hf_models cannot trip one. D1 accepts only a subset of PRAGMAs, and an
+-- unnecessary one is just a way for the whole paste to fail.
 
 CREATE TABLE hf_models_new (
   repo_id             TEXT PRIMARY KEY,
@@ -61,5 +64,3 @@ ALTER TABLE hf_models_new RENAME TO hf_models;
 CREATE INDEX idx_models_created ON hf_models (created_at);
 CREATE INDEX idx_models_family ON hf_models (family, created_at);
 CREATE INDEX idx_models_base ON hf_models (base_model);
-
-PRAGMA foreign_keys = ON;
