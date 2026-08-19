@@ -128,6 +128,62 @@ describe("classifyByRules — primary use case", () => {
       .toBe("document-ai");
   });
 
+  it("reads education from a slug at all", () => {
+    // The whole education slug rule was dead: every alternative was written
+    // `\\btutor` etc., and in a regex literal `\\b` matches a literal
+    // backslash, not a word boundary. So `education` — one of the fourteen use
+    // cases the brief names — could never be assigned from a name, and its bar
+    // was structurally empty on every chart.
+    for (const slug of [
+      "user/math-tutor-bot",
+      "user/quiz-generator",
+      "user/ai-course-helper",
+      "user/teach-me-python",
+      "user/study-buddy",
+    ]) {
+      expect(classifyByRules(signals({ spaceId: slug }))?.primaryUseCase, slug)
+        .toBe("education");
+    }
+  });
+
+  it("does not read 'machine learning' as education", () => {
+    // The negative lookbehind guarding this has never actually executed —
+    // the rule it guards could not match anything. Now that the rule works,
+    // this is what stops every ML demo being filed as a tutoring Space.
+    for (const slug of [
+      "user/machine-learning-demo",
+      "user/deep-learning-playground",
+      "user/reinforcement-learning-gym",
+      "user/transfer-learning-kit",
+      "user/federated-learning-sim",
+    ]) {
+      expect(classifyByRules(signals({ spaceId: slug }))?.primaryUseCase, slug)
+        .not.toBe("education");
+    }
+  });
+
+  it("reads a bare 'coder' in a LINKED MODEL name as coding", () => {
+    // Same `\\b` defect, but this rule lives in USE_CASE_MODEL_PATTERNS, so it
+    // is matched against linked model names — not the slug. The first version
+    // of this test passed `spaceId` and therefore exercised a different table
+    // and pinned nothing: it stayed green with the rule still broken.
+    expect(
+      classifyByRules(signals({ linkedModels: ["Qwen/Qwen2.5-Coder-7B"] }))?.primaryUseCase,
+    ).toBe("coding");
+    expect(
+      classifyByRules(signals({ linkedModels: ["someone/my-coder-model"] }))?.primaryUseCase,
+    ).toBe("coding");
+  });
+
+  it("still refuses encoder, decoder and vocoder as coding", () => {
+    // What the word boundary is FOR, per the comment above the rule: an
+    // unanchored `coder` swept all of these in, and none is a coding tool.
+    for (const m of ["org/cross-encoder-base", "org/xdecoder-seg", "org/hifigan-vocoder"]) {
+      expect(classifyByRules(signals({ linkedModels: [m] }))?.primaryUseCase, m)
+        .not.toBe("coding");
+    }
+  });
+
   it("records lower confidence for a slug guess than a tag declaration", () => {
     const byTag = classifyByRules(signals({ tags: ["code-generation"] }))!;
     const bySlug = classifyByRules(signals({ spaceId: "user/code-helper" }))!;

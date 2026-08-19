@@ -122,7 +122,7 @@ const USE_CASE_MODEL_PATTERNS: ReadonlyArray<[UseCase, RegExp]> = [
   // `coder` unanchored also matched cross-encoder, xdecoder and vocoder
   // repos, which are not coding tools. Require a boundary that a preceding
   // "en"/"de"/"vo" cannot satisfy.
-  ["coding", /\\bcoder\\b|codellama|starcoder|deepseek-coder|codegen|codet5/i],
+  ["coding", /\bcoder\b|codellama|starcoder|deepseek-coder|codegen|codet5/i],
   ["search-research", /\bbge\b|\be5-\b|gte-|sentence-transformers|colbert|reranker/i],
 ];
 
@@ -156,7 +156,7 @@ const USE_CASE_SLUG_PATTERNS: ReadonlyArray<[UseCase, RegExp]> = [
   ["scientific-tools", /protein|molecul|chem|\bbio\b|genom|climate|physics/i],
   // Bare `learn` matched "machine learning", "deep learning" and
   // "reinforcement learning" — none of which are education Spaces.
-  ["education", /\\btutor|\\bteach|\\blearn(ing)?\\b(?<!(machine|deep|reinforcement|federated|transfer|ensemble)[- ]learning)|\\bcourse\\b|\\bquiz\\b|\\bstudy\\b/i],
+  ["education", /\btutor|\bteach|\blearn(ing)?\b(?<!(machine|deep|reinforcement|federated|transfer|ensemble)[- ]learning)|\bcourse\b|\bquiz\b|\bstudy\b/i],
   ["chat-assistant", /\bchat|\bbot\b|assistant|\bllm\b|conversat/i],
 ];
 
