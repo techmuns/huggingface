@@ -769,6 +769,7 @@ let current = { byCut: {}, coverage: null, week: null };
 let seriesRaw = null;    // /api/series payload, all cuts, up to 52 weeks
 let matrixSeries = null; // /api/series?cut=family_share_by_use_case, lazily
 let totalsCache = null;
+let ranCache = null;
 
 /* ── Small helpers ────────────────────────────────────────────────────── */
 
@@ -824,6 +825,23 @@ function axisTicks(max, count = 4) {
 }
 
 /* ── Series access ────────────────────────────────────────────────────── */
+
+/**
+ * The weeks the pipeline actually wrote something for, by date.
+ *
+ * A single cut cannot answer this about itself: a week with no new models at
+ * all leaves `models_by_family` with no rows, which looks identical to a week
+ * that cut was never computed for. The rest of the payload settles it — if
+ * anything was written that week, the week ran, and no rows means zero.
+ */
+function weeksThatRan() {
+  if (ranCache) return ranCache;
+  ranCache = new Set();
+  (seriesRaw?.weeks || []).forEach((w, i) => {
+    if ((seriesRaw.series || []).some(x => x.values[i] != null)) ranCache.add(w);
+  });
+  return ranCache;
+}
 
 /** Every series of one cut, aligned to the payload's own `weeks` array. */
 function seriesOf(cut, payload = seriesRaw) {
@@ -960,9 +978,15 @@ function denseWeeks(weeks) {
 function prepareSeries(weeks, rows, { zeroFill = false } = {}) {
   const dense = denseWeeks(weeks);
   const at = new Map(weeks.map((w, i) => [w, i]));
+  // Measured by this cut, or — when we are filling zeros — by anything at all
+  // that week. Judging on this cut's own rows alone turns "nobody published a
+  // model" into "we have no idea", which is the invented-unknown twin of the
+  // invented zero the null rule exists to prevent.
+  const ran = zeroFill ? weeksThatRan() : null;
   const measured = dense.map(w => {
     const i = at.get(w);
-    return i !== undefined && rows.some(r => r.values[i] != null);
+    if (i !== undefined && rows.some(r => r.values[i] != null)) return true;
+    return !!ran && ran.has(w);
   });
 
   // Within one cut every category shares a week's base — the classified count,
@@ -1982,6 +2006,11 @@ async function renderMatrixTrend() {
     fillUseCasePicker();
   }
 
+  // A hash that dropped `uc=` leaves this null; the picker resolves it back to
+  // its documented default rather than the last thing that happened to be on
+  // screen.
+  if (!state.matrixUseCase) fillUseCasePicker();
+
   const weeksAll = matrixSeries.weeks || [];
   const uc = state.matrixUseCase;
   const rows = (matrixSeries.series || [])
@@ -2299,9 +2328,10 @@ function readHash() {
   const track = p.get('track');
   state.track = TRACKS.some(t => t.id === track) ? track : 'spaces_total';
 
-  // Checked against the cross-tab's own use cases once that payload arrives;
+  // Omitted means the default, like every other omitted parameter. Checked
+  // against the cross-tab's own use cases once that payload arrives;
   // fillUseCasePicker falls back to the first if this names one that is gone.
-  state.matrixUseCase = p.get('uc') || state.matrixUseCase;
+  state.matrixUseCase = p.get('uc') || null;
 
   const weeks = Number(p.get('weeks'));
   state.win = [12, 26, 52].includes(weeks) ? weeks : 26;
@@ -2405,6 +2435,7 @@ async function loadSeries() {
     seriesFailed = true;
   }
   totalsCache = null;
+  ranCache = null;
 }
 
 /** What a trend has to say when there is nothing to draw. */
