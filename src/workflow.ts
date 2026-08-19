@@ -146,6 +146,8 @@ export class WeeklyPipeline extends WorkflowEntrypoint<Env, WeeklyPipelineParams
 
     // ── Phase 4: parse raw → typed, then resolve model families ──────────
     const parse = await step.do("parse", SQL_RETRY, async () => {
+      // Models are upserted during ingest now; this still runs so any raw
+      // model records stored by an earlier build are not stranded.
       const models = await parseRawModels(this.env.DB, config.runId);
       const spaces = await parseRawSpaces(this.env.DB, config.runId);
       return { models, spaces } satisfies ParseSummary;

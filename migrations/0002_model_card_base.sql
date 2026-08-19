@@ -1,0 +1,11 @@
+-- Lets raw model payloads stop being stored.
+--
+-- Family resolution's second rung reads cardData.base_model, which until now
+-- meant joining hf_raw_records — the only reason a raw copy of every model
+-- payload had to be kept. Models are ~75% of ingest volume by row count, and
+-- unlike Spaces they are never re-derived against a changing taxonomy: their
+-- family resolution is deterministic and recomputable from this table alone.
+--
+-- Capturing the one field that mattered at parse time removes that need, and
+-- with it roughly 22,500 row-writes per week.
+ALTER TABLE hf_models ADD COLUMN card_base_model TEXT;

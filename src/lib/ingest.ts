@@ -1,4 +1,5 @@
 import { type EntityKind, type HfClient, type HfRecord, MAX_PAGE_SIZE } from "./hf-api";
+import { upsertModels } from "./parse";
 import { insertRawRecords } from "./raw-store";
 
 /**
@@ -48,7 +49,13 @@ export async function ingestPage(params: IngestPageParams): Promise<IngestPageRe
     limit: params.pageSize ?? MAX_PAGE_SIZE,
   });
 
-  const rowsWritten = await insertRawRecords(db, { runId, kind, records, fetchedAt });
+  // Spaces keep their immutable raw copy — they are re-classified whenever the
+  // taxonomy changes, and re-scraping a deleted Space is impossible. Models go
+  // straight to the typed table; see upsertModels for why that is safe.
+  const rowsWritten =
+    kind === "model"
+      ? await upsertModels(db, records, fetchedAt)
+      : await insertRawRecords(db, { runId, kind, records, fetchedAt });
   const oldestCreatedAt = oldestCreated(records);
 
   // Stop when this page has reached past the window, or the Hub ran out of

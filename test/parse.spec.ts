@@ -7,7 +7,7 @@ import {
   matchFamilyByName,
   resolveModelFamilies,
 } from "../src/lib/model-family";
-import { parseRawModels, parseRawSpaces } from "../src/lib/parse";
+import { parseRawModels, parseRawSpaces, upsertModels } from "../src/lib/parse";
 import { insertRawRecords } from "../src/lib/raw-store";
 
 const DB = env.DB;
@@ -373,5 +373,69 @@ describe("resolveModelFamilies", () => {
       .bind("user/card-declared")
       .first<{ family: string; resolution_source: string }>();
     expect(row).toMatchObject({ family: "llama", resolution_source: "card_data" });
+  });
+});
+
+// ── upsertModels (models bypass the raw store) ──────────────────────────────
+
+describe("upsertModels", () => {
+  const rec = (o: Record<string, unknown> = {}) => ({
+    id: "author/direct-model",
+    author: "author",
+    createdAt: "2026-08-17T00:00:00.000Z",
+    downloads: 7,
+    likes: 3,
+    tags: ["text-generation"],
+    ...o,
+  });
+
+  it("writes models straight to hf_models without a raw record", async () => {
+    const n = await upsertModels(DB, [rec(), rec({ id: "author/second" })], "2026-08-18T00:00:00.000Z");
+    expect(n).toBe(2);
+
+    const raw = await DB.prepare("SELECT COUNT(*) AS c FROM hf_raw_records WHERE entity_kind = 'model'")
+      .first<{ c: number }>();
+    expect(raw?.c).toBe(0);
+
+    const row = await DB.prepare("SELECT repo_id, downloads, likes FROM hf_models WHERE repo_id = ?")
+      .bind("author/direct-model")
+      .first<{ repo_id: string; downloads: number; likes: number }>();
+    expect(row).toMatchObject({ repo_id: "author/direct-model", downloads: 7, likes: 3 });
+  });
+
+  it("captures cardData.base_model, so family resolution keeps its second rung", async () => {
+    // This column is the whole reason raw model payloads can be dropped:
+    // resolveFromCardData used to reach into hf_raw_records for it.
+    await upsertModels(
+      DB,
+      [rec({ id: "user/card-declared", tags: [], cardData: { base_model: "meta-llama/Llama-3-8B" } })],
+      "2026-08-18T00:00:00.000Z",
+    );
+
+    const row = await DB.prepare("SELECT card_base_model FROM hf_models WHERE repo_id = ?")
+      .bind("user/card-declared")
+      .first<{ card_base_model: string }>();
+    expect(row?.card_base_model).toBe("meta-llama/Llama-3-8B");
+
+    const result = await resolveModelFamilies(DB);
+    expect(result.byCardData).toBeGreaterThanOrEqual(1);
+
+    const fam = await DB.prepare("SELECT family, resolution_source FROM hf_models WHERE repo_id = ?")
+      .bind("user/card-declared")
+      .first<{ family: string; resolution_source: string }>();
+    expect(fam).toMatchObject({ family: "llama", resolution_source: "card_data" });
+  });
+
+  it("upserts on re-ingest rather than duplicating", async () => {
+    await upsertModels(DB, [rec({ likes: 3 })], "2026-08-18T00:00:00.000Z");
+    await upsertModels(DB, [rec({ likes: 91 })], "2026-08-25T00:00:00.000Z");
+
+    const row = await DB.prepare("SELECT likes FROM hf_models WHERE repo_id = ?")
+      .bind("author/direct-model")
+      .first<{ likes: number }>();
+    expect(row?.likes).toBe(91);
+
+    const c = await DB.prepare("SELECT COUNT(*) AS c FROM hf_models").first<{ c: number }>();
+    expect(c?.c).toBe(1);
   });
 });

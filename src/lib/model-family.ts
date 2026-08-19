@@ -159,13 +159,12 @@ async function resolveFromTags(db: D1Database): Promise<number> {
 async function resolveFromCardData(db: D1Database): Promise<number> {
   const rows = await db
     .prepare(
-      `SELECT m.repo_id, json_extract(r.payload, '$.cardData.base_model') AS cd_base
-       FROM hf_models m
-       JOIN hf_raw_records r
-         ON r.entity_id = m.repo_id AND r.entity_kind = 'model'
-       WHERE m.base_model IS NULL AND m.family IS NULL
-         AND json_extract(r.payload, '$.cardData.base_model') IS NOT NULL
-       GROUP BY m.repo_id`,
+      // Reads the column captured at parse time rather than re-joining the
+      // raw payloads, which is what allows raw model records to be skipped.
+      `SELECT repo_id, card_base_model AS cd_base
+       FROM hf_models
+       WHERE base_model IS NULL AND family IS NULL
+         AND card_base_model IS NOT NULL`,
     )
     .all<{ repo_id: string; cd_base: string }>();
 
