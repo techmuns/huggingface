@@ -4,6 +4,7 @@ import { aggregateWeeklyMetrics } from "../src/lib/aggregate";
 import { classifySpacesByRules } from "../src/lib/classify-rules";
 import { insertRawRecords } from "../src/lib/raw-store";
 import { parseRawSpaces } from "../src/lib/parse";
+import { TAXONOMY_VERSION } from "../src/lib/taxonomy";
 
 const DB = env.DB;
 
@@ -221,14 +222,39 @@ describe("GET /api/series", () => {
 
   it("omits the cross-tab cut unless it is asked for by name", async () => {
     await seedTwoWeeks();
+    // Written straight into the metrics table rather than aggregated: the
+    // cross-tab needs Spaces with resolved model families behind them, and
+    // what is under test here is the endpoint's filtering, not the pipeline
+    // that fills the table. Without a row of this cut in the database the
+    // assertion below passes over an empty array and proves nothing.
+    await DB.prepare(
+      `INSERT INTO hf_weekly_metrics (
+         week_start, metric_cut, dimension, sub_dimension, value, denominator,
+         coverage, delta_1w, delta_4w, delta_12w, suppressed, taxonomy_version, computed_at
+       ) VALUES ('2026-08-17', 'family_share_by_use_case', 'coding', 'qwen',
+                 42.0, 100, NULL, NULL, NULL, NULL, 0, ?1, datetime('now'))`,
+    )
+      .bind(TAXONOMY_VERSION)
+      .run();
 
     const wide = (await (await SELF.fetch("http://localhost/api/series")).json()) as SeriesResponse;
     expect(wide.series.some((s) => s.cut === "family_share_by_use_case")).toBe(false);
+    expect(wide.series.length).toBeGreaterThan(0);
 
     const asked = (await (
       await SELF.fetch("http://localhost/api/series?cut=family_share_by_use_case")
     ).json()) as SeriesResponse;
+    expect(asked.series.length).toBeGreaterThan(0);
     expect(asked.series.every((s) => s.cut === "family_share_by_use_case")).toBe(true);
+    expect(asked.series[0]?.subDimension).toBe("qwen");
+  });
+
+  it("treats an empty cut= as no cut at all", async () => {
+    await seedTwoWeeks();
+    const res = await SELF.fetch("http://localhost/api/series?cut=");
+    expect(res.status).toBe(200);
+    const data = (await res.json()) as SeriesResponse;
+    expect(data.series.length).toBeGreaterThan(0);
   });
 
   it("returns only the newest week when asked for one", async () => {

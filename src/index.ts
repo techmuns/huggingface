@@ -756,7 +756,10 @@ async function handleSeries(request: Request, env: Env, url: URL): Promise<Respo
     return Response.json({ error: "method_not_allowed" }, { status: 405, headers: { allow: "GET" } });
   }
 
-  const cut = url.searchParams.get("cut");
+  // `?cut=` with no value is not a request for a cut named "": it would bind
+  // an empty string into the predicate below, match nothing, and answer 200
+  // with an empty body that looks exactly like "no data yet".
+  const cut = url.searchParams.get("cut") || null;
   if (cut && !VALID_CUTS.has(cut)) {
     return Response.json(
       { error: "invalid_params", detail: `unknown cut: ${cut}. Valid: ${[...VALID_CUTS].join(", ")}` },
@@ -820,12 +823,17 @@ async function handleSeries(request: Request, env: Env, url: URL): Promise<Respo
     if (at === undefined) continue;
 
     const sub = r.sub_dimension ?? "";
-    const key = `${r.metric_cut} ${r.dimension} ${sub}`;
+    const key = `${r.metric_cut}\u0000${r.dimension}\u0000${sub}`;
     let entry = series.get(key);
     if (!entry) {
-      // Gaps stay null rather than 0. A category that did not appear in a week
-      // is not a category that scored zero that week, and a line drawn down
-      // through an invented zero reads as a collapse that never happened.
+      // Gaps stay null rather than 0. This endpoint cannot tell the two cases
+      // apart on its own: a category with no row in a week that WAS aggregated
+      // scored zero, while one in a week that was never computed is unknown.
+      // aggregateWeeklyMetrics draws the same distinction for its own growth
+      // windows (see the aggregatedWeeks set in lib/aggregate.ts), and the
+      // dashboard resolves it the same way — a null means zero only when a
+      // sibling series of the same cut has a figure that week. Answering 0
+      // here would throw that distinction away before anyone can make it.
       entry = {
         cut: r.metric_cut,
         dimension: r.dimension,
