@@ -813,6 +813,7 @@ const viewNow = () => (state.tab === 'trends' ? 'trend' : state.view);
 let weeksAvailable = [];
 let printing = false;
 let seriesFailed = false;
+let weekFailed = false;   // the first week ever asked for did not answer
 let weekLoadSeq = 0;
 let current = { byCut: {}, coverage: null, week: null };
 let seriesRaw = null;    // /api/series payload, all cuts, up to 52 weeks
@@ -1902,9 +1903,12 @@ function renderTiles() {
   const classified = cov.classifiedSpaces ?? uc.reduce((s, r) => s + r.value, 0);
   const totalSpaces = cov.totalSpaces ?? uc[0]?.denominator ?? classified;
   const totalModels = fam.reduce((s, r) => s + r.value, 0);
-  // Sorted the way the bars are: "Other" is a leftovers bucket, not a use case,
-  // so a big one must never be announced as the thing developers are building.
-  const lead = [...uc].sort(byValueOtherLast)[0];
+  // "Other" is a leftovers bucket, not a use case, so it is never announced as
+  // the thing developers are building — not even in a week where it is the
+  // only row there is. Sorting it last is not enough: last of one is first.
+  const lead = [...uc]
+    .filter(r => !RESIDUAL.has(r.dimension))
+    .sort((a, b) => b.value - a.value)[0];
 
   // Sparklines follow the twelve weeks up to and including the one on screen,
   // so a tile read for an older week shows that week's history, not today's.
@@ -2202,8 +2206,17 @@ async function renderMatrixTrend() {
   // A hash that dropped `uc=` leaves this null, and a hand-edited one can name
   // a use case that is not there. Both resolve back to the documented default
   // rather than rendering "No history" beside a picker showing something else.
+  // Filled when the value is unusable — and when the control itself is still
+  // empty. A reader who opens this view, leaves before the history lands and
+  // comes back gets here with matrixSeries cached (assigned before the
+  // stale-render guard returns) and a perfectly valid use case from the hash,
+  // so both of those tests pass and the dropdown beside the chart would stay
+  // blank for good.
   const known = new Set((matrixSeries?.series || []).map(s => s.dimension));
-  if (!state.matrixUseCase || !known.has(state.matrixUseCase)) fillUseCasePicker();
+  const picker = document.getElementById('usecase-select');
+  if (!state.matrixUseCase || !known.has(state.matrixUseCase) || !picker.options.length) {
+    fillUseCasePicker();
+  }
 
   const weeksAll = matrixSeries.weeks || [];
   const uc = state.matrixUseCase;
@@ -2257,6 +2270,20 @@ function renderProvenance() {
 function renderAll() {
   renderProvenance();
   syncToolbar();
+
+  // The week never answered and no earlier week is on screen, so there is
+  // nothing to draw from. Every later render — the history landing behind
+  // it, a tab click — comes back through here, which is what keeps the
+  // message on screen instead of being repainted over.
+  if (weekFailed && !current.week) {
+    const failed = '<p class="empty">These figures could not be loaded. Reload the page to try again.</p>';
+    document.getElementById('tiles').innerHTML =
+      `<div class="tile" style="grid-column:1/-1">${failed}</div>`;
+    setHTML(document.getElementById('c-headline'), failed);
+    document.getElementById('movers-card').hidden = true;
+    document.getElementById('narrative-card').hidden = true;
+    return;
+  }
 
   // Nothing has answered yet. Rendering here would fill the tiles with zeros
   // derived from an empty object, and a reader cannot tell a measured zero
@@ -2628,6 +2655,7 @@ async function loadWeek(week) {
 
     current = { byCut: {}, coverage: c, week };
     state.week = week;
+    weekFailed = false;
     for (const row of (m.metrics || [])) {
       (current.byCut[row.metric_cut] ||= []).push(row);
     }
@@ -2654,6 +2682,15 @@ async function loadWeek(week) {
       sel.value = current.week;
       state.week = current.week;
       writeHash();
+    } else {
+      // Nothing has ever loaded, so there is no previous render to hold. The
+      // drawing is left to renderAll() rather than done here, because the
+      // history lands behind the week and renders again: a message written
+      // only here would be painted over, and the cards would stand at full
+      // opacity as a heading, a hint and an empty space, which reads as "we
+      // measured nothing" rather than "the request failed".
+      weekFailed = true;
+      renderAll();
     }
   } finally {
     if (seq === weekLoadSeq) main.classList.remove('stale');
@@ -2702,9 +2739,15 @@ async function loadSeries() {
 }
 
 /** What a trend has to say when there is nothing to draw. */
-const noSeriesNote = () => seriesFailed
-  ? '<p class="empty">The week-by-week history could not be loaded just now. The figures for the week you picked are unaffected.</p>'
-  : '<p class="empty">No weeks have been processed yet.</p>';
+const noSeriesNote = () => {
+  if (seriesFailed) {
+    return '<p class="empty">The week-by-week history could not be loaded just now. The figures for the week you picked are unaffected.</p>';
+  }
+  // Still in flight. The week's own figures arrive first by design, so this
+  // must not read as "there is nothing here" while the history is on its way.
+  if (!seriesRaw) return '<p class="empty">Loading the week-by-week history…</p>';
+  return '<p class="empty">No weeks have been processed yet.</p>';
+};
 
 async function init() {
   const sel = document.getElementById('week-select');
@@ -2912,12 +2955,19 @@ async function init() {
       .find(c => c.dataset.chart === id && c.dataset.key === key)?.focus();
   });
 
-  await loadSeries();
+  // The history is the biggest request the page makes and nothing on the
+  // Overview's tiles needs it. Started here but awaited after the week, so a
+  // slow 52-week scan delays the trend lines rather than the whole dashboard.
+  const history = loadSeries();
+
   showTab(state.tab);
-  // Read back rather than reused: the picker has been live throughout the
-  // fetch above, and a reader who changed the week during it must not have
-  // their choice undone by the load that finishes initialisation.
+  // Read back rather than reused: the picker has been live throughout, and a
+  // reader who changed the week must not have their choice undone by the load
+  // that finishes initialisation.
   await loadWeek(sel.value || wanted);
+
+  await history;
+  renderAll();   // the trends and the tile sparklines fill in behind the week
 }
 
 init();
