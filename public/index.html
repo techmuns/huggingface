@@ -855,11 +855,18 @@ function weeklyTotals() {
     return best;
   });
 
-  const classified = sumOf(CUTS.usecase);
+  // A week where anything at all was written is a week that ran. A count with
+  // no rows in such a week is a zero — no models were published — not an
+  // unknown; the this-week tile has always said 0, and the line beside it
+  // should not disagree by breaking.
+  const ran = weeks.map((_, i) => (seriesRaw?.series || []).some(s => s.values[i] != null));
+  const orZero = (arr) => weeks.map((_, i) => arr[i] ?? (ran[i] ? 0 : null));
+
+  const classified = orZero(sumOf(CUTS.usecase));
   const bySdk = sumOf(CUTS.sdk);
   const byDenom = denomOf(CUTS.usecase);
-  const spaces = weeks.map((_, i) => bySdk[i] ?? byDenom[i]);
-  const models = sumOf(CUTS.family);
+  const spaces = weeks.map((_, i) => bySdk[i] ?? byDenom[i] ?? (ran[i] ? 0 : null));
+  const models = orZero(sumOf(CUTS.family));
   const coverage = weeks.map((_, i) =>
     spaces[i] ? ((classified[i] ?? 0) / spaces[i]) * 100 : null);
 
@@ -874,8 +881,27 @@ function weeklyTotals() {
  * screen. Slicing client-side keeps the control instant and costs one request
  * for the whole session rather than one per change.
  */
+const WEEK_MS = 7 * 86_400_000;
+
+/**
+ * Where a window of `state.win` calendar weeks starts.
+ *
+ * The payload holds only the weeks that were aggregated, so counting rows back
+ * from the end is not the same as counting weeks: with one week missing,
+ * "12" would keep twelve rows and then densify to thirteen dates on the axis,
+ * quietly shifting a running total's start a week earlier than asked for.
+ */
+function windowFrom(weeks) {
+  if (!weeks.length) return 0;
+  const last = Date.parse(weeks[weeks.length - 1] + 'T00:00:00Z');
+  if (!Number.isFinite(last)) return Math.max(0, weeks.length - state.win);
+  const cutoff = last - (state.win - 1) * WEEK_MS;
+  const i = weeks.findIndex(w => Date.parse(w + 'T00:00:00Z') >= cutoff);
+  return i < 0 ? 0 : i;
+}
+
 function windowed(weeks, arrays) {
-  const from = Math.max(0, weeks.length - state.win);
+  const from = windowFrom(weeks);
   return { weeks: weeks.slice(from), arrays: arrays.map(a => a.slice(from)) };
 }
 
@@ -888,7 +914,7 @@ function windowed(weeks, arrays) {
  * on — so they are only ever sliced together.
  */
 function windowRows(weeks, rows) {
-  const from = Math.max(0, weeks.length - state.win);
+  const from = windowFrom(weeks);
   return {
     weeks: weeks.slice(from),
     rows: rows.map(r => ({
@@ -899,8 +925,6 @@ function windowRows(weeks, rows) {
     })),
   };
 }
-
-const WEEK_MS = 7 * 86_400_000;
 
 /**
  * Every Monday between the first week in view and the last.
@@ -973,8 +997,15 @@ function prepareSeries(weeks, rows, { zeroFill = false } = {}) {
       const v = i === undefined ? null : r.values[i];
       const filled = v == null && zeroFill && measured[k];
       values.push(v != null ? v : (filled ? 0 : null));
-      denominators.push(i === undefined ? null : (r.denominators?.[i] ?? (filled ? base[k] : null)));
-      suppressed.push(i === undefined ? 0 : (r.suppressed?.[i] ?? (filled ? baseSuppressed[k] : 0)));
+      // Order matters, and the obvious `?? ` does not work here: /api/series
+      // pads an absent category's suppression slot with a real 0, so a nullish
+      // fallback never reaches the week's own flag. A filled point takes the
+      // week's base and the week's flag; only a point that has its own row
+      // keeps its own.
+      denominators.push(i === undefined ? null
+        : filled ? base[k] : (r.denominators?.[i] ?? null));
+      suppressed.push(i === undefined ? 0
+        : filled ? baseSuppressed[k] : (r.suppressed?.[i] ?? 0));
     });
     return { ...r, values, denominators, suppressed };
   });
@@ -1423,7 +1454,8 @@ function paintChart(host) {
       <div class="tip hidden" role="status" aria-live="polite"></div>
     </div>
     ${note ? `<p class="chart-note">${esc(note)}</p>` : ''}
-    ${provisionalLast ? '<p class="chart-note">○ The last point is a week that is still open, so it will keep rising.</p>' : ''}`;
+    ${provisionalLast ? `<p class="chart-note">○ The last point is a week that is still open, so it will keep ${
+      unit === '%' ? 'changing' : 'rising'}.</p>` : ''}`;
 
   wireChart(host, { weeks, shown, unit, x, padL, plotW, padT, plotH });
 }
@@ -1545,14 +1577,20 @@ function trendTable(weeks, lines, unit = '') {
   // surface avoids: the chart draws a hollow marker and the tooltip says
   // "too few". Here it is an asterisk against a footnote.
   const anySuppressed = lines.some(l => (l.suppressed || []).some(Boolean));
+  // A carried figure is marked here as well as on the chart. The numbers are
+  // the view a reader turns to when they want the exact figure, which is
+  // exactly where a total that was never measured must not pass for one.
+  const anyCarried = lines.some(l => (l.carried || []).some(Boolean));
   return `<div class="table-scroll"><table>
     <thead><tr><th>Week</th>${lines.map(l => `<th>${esc(l.label)}</th>`).join('')}</tr></thead>
     <tbody>${order.map(i => `<tr>
       <td>${esc(shortWeek(weeks[i]))}</td>
-      ${lines.map(l => `<td${l.suppressed?.[i] ? ' class="suppressed"' : ''}>${
-        esc(exact(l.values[i], unit))}${l.suppressed?.[i] ? '*' : ''}</td>`).join('')}
+      ${lines.map(l => `<td${l.suppressed?.[i] || l.carried?.[i] ? ' class="suppressed"' : ''}>${
+        esc(exact(l.values[i], unit))}${l.suppressed?.[i] ? '*' : ''}${l.carried?.[i] ? '†' : ''}</td>`).join('')}
     </tr>`).join('')}</tbody></table></div>${anySuppressed
       ? '<p class="hint" style="margin-top:10px">* too few behind this figure to call it a trend &mdash; shown for completeness.</p>'
+      : ''}${anyCarried
+      ? '<p class="hint" style="margin-top:10px">&dagger; carried forward &mdash; that week was never measured, so nothing was added.</p>'
       : ''}`;
 }
 
@@ -1569,6 +1607,16 @@ function renderTrendInto(el, { rows, weeks, cut, unit = '', chartId, extraNote =
 
   const prepared = prepareSeries(weeks, rows, { zeroFill: true });
   const w = prepared.weeks;
+
+  // Rows can exist and still hold nothing across the weeks on screen — a
+  // category that only ever appeared outside the window, or a cut that has
+  // not run lately. That is not "no weeks have been processed"; it is this
+  // window having nothing in it, and saying which is the difference between
+  // "look further back" and "wait for the pipeline".
+  if (!prepared.rows.some(r => r.values.some(v => v != null))) {
+    setHTML(el, `<p class="empty">Nothing in the last ${w.length} week${w.length === 1 ? '' : 's'} — try a longer window.</p>`);
+    return;
+  }
   const isCount = COUNT_CUTS.has(cut);
   const read = (l) => {
     const values = applyReading(l.values, l.denominators, isCount);
@@ -2379,7 +2427,11 @@ async function init() {
   readHash();
   trackSel.value = state.track;
 
-  const { weeks } = await getJSON('/api/weeks').catch(() => ({ weeks: [] }));
+  let weeksFailed = false;
+  const { weeks } = await getJSON('/api/weeks').catch(() => {
+    weeksFailed = true;
+    return { weeks: [] };
+  });
   weeksAvailable = weeks || [];
 
   if (!weeksAvailable.length) {
@@ -2388,7 +2440,9 @@ async function init() {
     // "we measured zero" rather than "nothing has been measured yet".
     showTab('overview');
     document.getElementById('tiles').innerHTML =
-      '<div class="tile" style="grid-column:1/-1"><p class="empty">No week has finished processing yet. Figures appear here as soon as the first run completes.</p></div>';
+      `<div class="tile" style="grid-column:1/-1"><p class="empty">${weeksFailed
+        ? 'The list of weeks could not be loaded just now. Reload the page to try again — this is not the same as there being nothing to show.'
+        : 'No week has finished processing yet. Figures appear here as soon as the first run completes.'}</p></div>`;
     ['tab-trends', 'tab-build', 'tab-tech', 'tab-engagement'].forEach(id => {
       document.getElementById(id).disabled = true;
     });
@@ -2443,7 +2497,7 @@ async function init() {
   // Back and forward move between views the same way they move between pages:
   // every control writes to the hash, so the history entry is the whole view.
   const snapshot = () => JSON.stringify([state.tab, state.sub, state.view, state.table,
-    state.win, state.cumulative, state.track, state.week]);
+    state.win, state.cumulative, state.track, state.week, state.matrixUseCase]);
 
   window.addEventListener('hashchange', () => {
     const before = snapshot();
@@ -2454,6 +2508,10 @@ async function init() {
     // the tab AND the week used to reload the week and return, leaving the
     // reader on the tab they had just navigated away from.
     trackSel.value = state.track;
+    const ucSel = document.getElementById('usecase-select');
+    if (state.matrixUseCase && [...ucSel.options].some(o => o.value === state.matrixUseCase)) {
+      ucSel.value = state.matrixUseCase;
+    }
     const target = state.week && weeksAvailable.includes(state.week)
       ? state.week
       : weeksAvailable[0];
@@ -2488,9 +2546,22 @@ async function init() {
     writeHash();
   });
 
-  // Paper gets the whole dashboard, not just the open tab.
-  window.addEventListener('beforeprint', () => { printing = true; renderAll(); });
-  window.addEventListener('afterprint', () => { printing = false; renderAll(); });
+  // Paper gets the whole dashboard, not just the open tab — including the two
+  // collapsed <details>, which a print stylesheet cannot open on its own: a
+  // closed details hides its children whatever `display` says.
+  let reopened = [];
+  window.addEventListener('beforeprint', () => {
+    printing = true;
+    reopened = [...document.querySelectorAll('details:not([open])')];
+    reopened.forEach(d => { d.open = true; });
+    renderAll();
+  });
+  window.addEventListener('afterprint', () => {
+    printing = false;
+    reopened.forEach(d => { d.open = false; });
+    reopened = [];
+    renderAll();
+  });
 
   // Legend clicks are delegated: charts are repainted wholesale on resize and
   // on every control change, so per-chip listeners would not survive.
