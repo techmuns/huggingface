@@ -25,6 +25,26 @@ export interface ReadmeResult {
   status: ReadmeStatus;
 }
 
+/**
+ * The most README text that is ever stored.
+ *
+ * A run died with `D1_ERROR: string or blob too big: SQLITE_TOOBIG` because
+ * this column was written with whatever the Hub returned. A README is
+ * arbitrary user content — embedded base64 images, generated tables, pasted
+ * model dumps — and one Space large enough to breach D1's per-value ceiling
+ * took down the entire week, for every Space in it.
+ *
+ * Nothing downstream wants the whole document. Rule classification reads the
+ * first 2,000 characters and the LLM prompt reads 500; the rest was stored
+ * only because nothing said not to. 8,000 is four times the largest consumer
+ * and keeps a 40-statement D1 batch comfortably inside its limits.
+ *
+ * The HASH is still taken over the full document — see fetchReadme — so a
+ * change past the cap is still detected and the cap cannot silently freeze a
+ * Space's classification.
+ */
+export const MAX_README_CHARS = 8_000;
+
 export async function fetchReadme(
   spaceId: string,
   existingHash: string | null,
@@ -58,7 +78,11 @@ export async function fetchReadme(
     return { text: null, hash, status: "stub" };
   }
 
-  return { text: stripped, hash, status: "ok" };
+  // Truncated for storage only, and only after the hash is taken: the hash is
+  // the change-detection key, so hashing the truncated text would make every
+  // edit past the cap invisible and pin that Space to its first reading for
+  // good.
+  return { text: stripped.slice(0, MAX_README_CHARS), hash, status: "ok" };
 }
 
 export function stripFrontMatter(raw: string): string {

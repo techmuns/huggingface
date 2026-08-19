@@ -1,9 +1,11 @@
 import { env } from "cloudflare:test";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  MAX_README_CHARS,
   contentHash,
   dedupSpaces,
   enrichBlindSpaces,
+  fetchReadme,
   isBoilerplate,
   normalizeTitle,
   stripFrontMatter,
@@ -291,5 +293,64 @@ describe("enrichBlindSpaces", () => {
       { space_id: "aaa/old", readme_status: null },
       { space_id: "zzz/new", readme_status: "missing" },
     ]);
+  });
+});
+
+/**
+ * A run died with `D1_ERROR: string or blob too big: SQLITE_TOOBIG`.
+ *
+ * README text is arbitrary user content and was stored with whatever the Hub
+ * returned, so one Space large enough to breach D1's per-value ceiling failed
+ * the write, the stage and the whole week — for every Space in it.
+ */
+describe("README size is bounded before it reaches D1", () => {
+  it("caps the stored text", async () => {
+    const huge = `# Real heading\n\n${"x".repeat(MAX_README_CHARS * 4)}`;
+    globalThis.fetch = (async () =>
+      new Response(huge, { status: 200 })) as unknown as typeof fetch;
+
+    const result = await fetchReadme("owner/huge", null);
+    expect(result.status).toBe("ok");
+    expect(result.text).not.toBeNull();
+    expect((result.text as string).length).toBe(MAX_README_CHARS);
+  });
+
+  it("leaves a README under the cap completely untouched", async () => {
+    // Comfortably past MIN_USEFUL_BYTES, or fetchReadme calls it boilerplate
+    // and returns no text at all — which would pass a naive assertion for
+    // entirely the wrong reason.
+    const small = `# Small\n\n${"y".repeat(1500)}`;
+    globalThis.fetch = (async () =>
+      new Response(small, { status: 200 })) as unknown as typeof fetch;
+
+    const result = await fetchReadme("owner/small", null);
+    expect(result.text).toBe(small);
+  });
+
+  it("hashes the WHOLE document, not the truncated copy", async () => {
+    // The hash is the change-detection key. Hashing the stored copy would make
+    // every edit past the cap invisible and pin that Space to its first
+    // reading for ever — a subtler failure than the crash this cap fixes.
+    const head = `# Same start\n\n${"z".repeat(MAX_README_CHARS * 2)}`;
+    const shipOne = `${head}TAIL-ONE`;
+    const shipTwo = `${head}TAIL-TWO`;
+
+    globalThis.fetch = (async () =>
+      new Response(shipOne, { status: 200 })) as unknown as typeof fetch;
+    const first = await fetchReadme("owner/x", null);
+
+    globalThis.fetch = (async () =>
+      new Response(shipTwo, { status: 200 })) as unknown as typeof fetch;
+    const second = await fetchReadme("owner/x", null);
+
+    expect(first.text).toEqual(second.text);       // identical once truncated
+    expect(first.hash).not.toEqual(second.hash);   // still detected as changed
+  });
+
+  it("keeps the cap well above every consumer's appetite", () => {
+    // classify-rules reads 2,000 characters and the LLM prompt reads 500.
+    // If the cap ever drops below those, classification silently degrades
+    // rather than failing, which is far harder to notice than a crash.
+    expect(MAX_README_CHARS).toBeGreaterThanOrEqual(2000 * 2);
   });
 });

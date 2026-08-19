@@ -34,6 +34,52 @@ export const D1_BATCH = 40;
 
 export const RAW_INSERT_CHUNK = 250;
 
+/**
+ * The most JSON one insert may carry, in bytes.
+ *
+ * The chunk above counts RECORDS, and a record is whatever the Hub sends —
+ * some Spaces carry enormous `cardData` and sibling lists. 250 ordinary
+ * records is a comfortable insert; 250 fat ones is a single bound value large
+ * enough to be refused with SQLITE_TOOBIG, which fails the page, the walk and
+ * the week.
+ *
+ * So the chunker splits on whichever limit is reached first. 512 KB leaves
+ * room under D1's per-value ceiling for the encoding overhead of the JSON
+ * array itself.
+ */
+export const RAW_INSERT_BYTES = 512 * 1024;
+
+/**
+ * Splits records into inserts bounded by BOTH count and encoded size.
+ *
+ * A single record larger than the byte budget still gets its own insert rather
+ * than being dropped: one oversized Space should cost one failed insert at
+ * worst, never the silent loss of the 249 beside it.
+ */
+export function chunkBySize(
+  records: readonly HfRecord[],
+  maxCount = RAW_INSERT_CHUNK,
+  maxBytes = RAW_INSERT_BYTES,
+): HfRecord[][] {
+  const out: HfRecord[][] = [];
+  let batch: HfRecord[] = [];
+  let bytes = 0;
+
+  for (const record of records) {
+    // The +1 is the comma this record adds to the array once it is not first.
+    const size = JSON.stringify(record).length + 1;
+    if (batch.length > 0 && (batch.length >= maxCount || bytes + size > maxBytes)) {
+      out.push(batch);
+      batch = [];
+      bytes = 0;
+    }
+    batch.push(record);
+    bytes += size;
+  }
+  if (batch.length > 0) out.push(batch);
+  return out;
+}
+
 const INSERT_SQL = `
   insert into hf_raw_records (run_id, entity_kind, entity_id, fetched_at, payload)
   select ?1, ?2, json_extract(j.value, '$.id'), ?3, j.value
@@ -73,7 +119,7 @@ export async function insertRawRecords(
   const { runId, kind, records, fetchedAt } = params;
   if (records.length === 0) return 0;
 
-  const statements = chunk(records, RAW_INSERT_CHUNK).map((batch) =>
+  const statements = chunkBySize(records).map((batch) =>
     db.prepare(INSERT_SQL).bind(runId, kind, fetchedAt, JSON.stringify(batch)),
   );
 

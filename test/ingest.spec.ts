@@ -2,7 +2,14 @@ import { env } from "cloudflare:test";
 import { beforeEach, describe, expect, it } from "vitest";
 import { HfApiError, HfClient, MAX_PAGE_SIZE, parseNextCursor } from "../src/lib/hf-api";
 import { ingestPage } from "../src/lib/ingest";
-import { RAW_INSERT_CHUNK, chunk, insertRawRecords, pruneRawRecords } from "../src/lib/raw-store";
+import {
+  RAW_INSERT_BYTES,
+  RAW_INSERT_CHUNK,
+  chunk,
+  chunkBySize,
+  insertRawRecords,
+  pruneRawRecords,
+} from "../src/lib/raw-store";
 
 const DB = env.DB;
 
@@ -308,5 +315,54 @@ describe("ingestPage", () => {
     const result = await ingestPage({ ...params, client });
     expect(result.oldestCreatedAt).toBeNull();
     expect(result.done).toBe(false);
+  });
+});
+
+/**
+ * The raw insert binds a whole chunk of records as ONE value.
+ *
+ * Chunking by record COUNT alone assumes every record is about the same size,
+ * and Hub records are not — some Spaces carry enormous cardData and sibling
+ * lists. 250 fat records is a bound value big enough to be refused with
+ * SQLITE_TOOBIG, which fails the page, the walk and the week.
+ */
+describe("chunkBySize", () => {
+  const rec = (id: string, padding = 0) =>
+    ({ id, _pad: "p".repeat(padding) }) as unknown as Parameters<typeof chunkBySize>[0][number];
+
+  it("splits on the record count when records are small", () => {
+    const records = Array.from({ length: 600 }, (_, i) => rec(`s/${i}`));
+    const batches = chunkBySize(records, 250, RAW_INSERT_BYTES);
+    expect(batches.map((b) => b.length)).toEqual([250, 250, 100]);
+  });
+
+  it("splits on encoded size well before the count when records are fat", () => {
+    const records = Array.from({ length: 20 }, (_, i) => rec(`s/${i}`, 100_000));
+    const batches = chunkBySize(records, 250, RAW_INSERT_BYTES);
+    expect(batches.length).toBeGreaterThan(1);
+    for (const batch of batches) {
+      expect(JSON.stringify(batch).length).toBeLessThanOrEqual(RAW_INSERT_BYTES * 1.1);
+    }
+  });
+
+  it("keeps every record, losing none at a boundary", () => {
+    const records = Array.from({ length: 137 }, (_, i) => rec(`s/${i}`, i * 900));
+    const batches = chunkBySize(records, 250, RAW_INSERT_BYTES);
+    expect(batches.flat()).toHaveLength(137);
+    expect(batches.flat().map((r) => r.id)).toEqual(records.map((r) => r.id));
+  });
+
+  it("gives a single oversized record its own insert rather than dropping it", () => {
+    // One enormous Space should cost one failed insert at worst, never the
+    // silent loss of the records batched beside it.
+    const records = [rec("s/normal"), rec("s/enormous", RAW_INSERT_BYTES * 2), rec("s/after")];
+    const batches = chunkBySize(records, 250, RAW_INSERT_BYTES);
+    expect(batches.flat()).toHaveLength(3);
+    const alone = batches.find((b) => b.length === 1 && b[0]?.id === "s/enormous");
+    expect(alone).toBeDefined();
+  });
+
+  it("returns nothing for no records", () => {
+    expect(chunkBySize([], 250, RAW_INSERT_BYTES)).toEqual([]);
   });
 });
