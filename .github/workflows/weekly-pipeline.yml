@@ -1,11 +1,17 @@
 # Weekly pipeline trigger.
 #
-# Repairing several weeks? Dispatch this once PER WEEK, not once with
-# backfillWeeks=3. A Workflow instance is killed with WorkflowFatalError
-# ("exceeded CPU or memory limits outside of a step") when the orchestration
-# accumulates too many steps, because Workflows replays it from the top at
-# every step boundary. A 3-week run died that way at 23 minutes. One week is
-# ~660 steps and well inside the budget; three weeks is not.
+# Repairing several weeks? Dispatch this once PER WEEK. A Workflow instance
+# has a CPU/memory budget for the orchestration itself, which Workflows
+# replays from the top at every step boundary, so cost grows with the NUMBER
+# of steps and a wide run used to be killed outright with WorkflowFatalError
+# ("exceeded CPU or memory limits outside of a step"). Two runs died that way.
+#
+# It can no longer be fatal: the step budget in src/workflow.ts is a set of
+# fixed per-stage shares that sum inside the ceiling, and it takes no backfill
+# depth, so asking for more weeks cannot ask for more steps. A wide dispatch
+# now covers what it can and reports `truncated` instead of dying. One week at
+# a time is still the way to repair history — it is what the shares are sized
+# for — but getting it wrong costs coverage rather than the whole run.
 #
 # Cloudflare caps the Workers Free plan at 5 cron triggers per account and all
 # five are in use, so the schedule lives here instead. This calls the same
@@ -33,6 +39,10 @@ on:
         type: boolean
         required: false
         default: false
+
+# The keepalive step writes one small file per run through the Contents API.
+permissions:
+  contents: write
 
 concurrency:
   # Two runs writing the same weeks would double the D1 write cost and can
@@ -171,6 +181,62 @@ jobs:
           done
           echo "::error::Timed out after 350 minutes; run $ID may still be going"
           exit 1
+
+      # ── Keep the schedule alive ──────────────────────────────────────────
+      #
+      # GitHub disables a scheduled workflow after 60 days with no repository
+      # activity, silently. A SUCCESSFUL run already commits its weekly
+      # snapshot, which resets that clock — but the clock only ever matters
+      # when runs are FAILING, and a failing run commits nothing. The two
+      # compound: the pipeline breaks, nothing is committed, and sixty days
+      # later the schedule that would have retried it is switched off as well.
+      # Nobody is told, and the dashboard simply stops at whatever week it last
+      # managed — which looks identical to a quiet quarter on the Hub.
+      #
+      # One small file a week, written whatever the outcome, resets the clock
+      # and leaves a git-visible record of every run. Written through the
+      # Contents API rather than a checkout and push, so there is no working
+      # tree to conflict and no branch to protect against.
+      - name: Record the run, and keep the schedule alive
+        if: always()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          WEEK: ${{ steps.week.outputs.week }}
+          OUTCOME: ${{ job.status }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -uo pipefail
+          FILE="data/runs/${WEEK}.json"
+          API="https://api.github.com/repos/${REPO}/contents/${FILE}"
+
+          BODY=$(jq -nc \
+            --arg w "$WEEK" --arg o "$OUTCOME" --arg u "$RUN_URL" \
+            --arg t "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            '{week:$w, outcome:$o, finishedAt:$t, run:$u}')
+
+          # Re-running a week overwrites its record rather than failing, so a
+          # repair leaves the outcome that actually stands.
+          SHA=$(curl -sS -H "Authorization: Bearer $GH_TOKEN" "$API" | jq -r '.sha // empty')
+
+          PAYLOAD=$(jq -nc \
+            --arg m "chore(run): week of ${WEEK} — ${OUTCOME}" \
+            --arg c "$(printf '%s' "$BODY" | base64 -w0)" \
+            --arg s "$SHA" \
+            '{message:$m, content:$c} + (if $s == "" then {} else {sha:$s} end)')
+
+          CODE=$(curl -sS -X PUT -H "Authorization: Bearer $GH_TOKEN" "$API" \
+            -d "$PAYLOAD" -o /tmp/keepalive.json -w '%{http_code}')
+
+          # A failure here must not turn a green pipeline run red — but it must
+          # be visible, because the thing it protects against is invisible.
+          if [ "$CODE" != "200" ] && [ "$CODE" != "201" ]; then
+            echo "::warning::Could not write $FILE (HTTP $CODE). The 60-day \
+          schedule-inactivity clock was NOT reset by this run: \
+          $(jq -r '.message // empty' /tmp/keepalive.json)"
+          else
+            echo "Recorded $FILE — schedule inactivity clock reset."
+          fi
 
       - name: Report
         if: always()
