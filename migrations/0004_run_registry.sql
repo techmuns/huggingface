@@ -22,6 +22,6 @@ CREATE TABLE hf_runs (
   -- without fanning out to the binding for rows that already finished.
   last_status  TEXT,
   checked_at   TEXT
-);
+) STRICT;
 
 CREATE INDEX idx_runs_started ON hf_runs (started_at DESC);
