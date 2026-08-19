@@ -9,6 +9,7 @@ import {
   chunkByBytes,
   insertRawRecords,
   pruneRawRecords,
+  utf8Bytes,
 } from "../src/lib/raw-store";
 
 const DB = env.DB;
@@ -374,5 +375,56 @@ describe("chunkByBytes", () => {
     const { chunks } = chunkByBytes([a, b], D1_JSON_ARG_MAX_BYTES, D1_RECORD_MAX_BYTES);
     expect(chunks).toHaveLength(2);
     for (const c of chunks) expect(bytes(c)).toBeLessThanOrEqual(D1_JSON_ARG_MAX_BYTES);
+  });
+});
+
+/**
+ * Checked against TextEncoder rather than against a table, so the two cannot
+ * drift. This function exists only because TextEncoder allocates the whole
+ * encoded buffer to report a length, once per record — the moment it stops
+ * agreeing with TextEncoder it is a bug, not an optimisation.
+ */
+describe("utf8Bytes", () => {
+  const cases = [
+    "",
+    "plain ascii",
+    "café",                      // 2-byte
+    "日本語のモデルカード",          // 3-byte
+    "🤗 hugging face 🚀",         // 4-byte, surrogate pairs
+    "mixed ünïcode 中文 🎉 tail",
+    JSON.stringify({ id: "owner/space", tags: ["ai", "café", "日本語"] }),
+    "\u{1F600}\u{1F601}\u{1F602}",
+  ];
+
+  it("agrees with TextEncoder on every shape of text", () => {
+    const enc = new TextEncoder();
+    for (const s of cases) {
+      expect(utf8Bytes(s)).toBe(enc.encode(s).length);
+    }
+  });
+
+  it("agrees on a lone high surrogate", () => {
+    // An unpaired surrogate encodes as U+FFFD — three bytes, not the four a
+    // complete pair takes. Counting it as four silently inflates every size.
+    const lone = "a\uD83Db";
+    expect(utf8Bytes(lone)).toBe(new TextEncoder().encode(lone).length);
+  });
+
+  it("agrees on a lone low surrogate", () => {
+    const lone = "a\uDE00b";
+    expect(utf8Bytes(lone)).toBe(new TextEncoder().encode(lone).length);
+  });
+
+  it("agrees on a trailing high surrogate at the very end", () => {
+    const trailing = "ok\uD83D";
+    expect(utf8Bytes(trailing)).toBe(new TextEncoder().encode(trailing).length);
+  });
+
+  it("agrees across a swept range of code points", () => {
+    const enc = new TextEncoder();
+    for (let cp = 0; cp < 0x2000; cp += 7) {
+      const s = String.fromCodePoint(cp);
+      expect(utf8Bytes(s)).toBe(enc.encode(s).length);
+    }
   });
 });
