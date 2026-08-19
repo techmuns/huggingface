@@ -95,17 +95,23 @@ const MAX_RULE_PAGES = 500;
  * the routine weekly run (backfillWeeks = 1) sits far inside it:
  *
  *   ingest pages          ~100
- *   enrichment batches     250  (cap; covers a week plus the standing backlog)
- *   rule pages              18
- *   LLM batches            400  (cap; ~275 used at 5,500 unsettled Spaces)
- *   per-week + terminal     ~25
+ *   enrichment batches      120  (flat cap; 150 a batch drains the queue)
+ *   rule pages               18
+ *   LLM batches             400  (cap; ~275 used at 5,500 unsettled Spaces)
+ *   per-week + terminal      ~25
  *   -------------------------------
- *   worst case             ~793  of 10,000
+ *   worst case              ~663  of 10,000
  *
- * The caps are deliberately above measured demand — a week that runs hot
- * should absorb into headroom, not silently truncate. A 26-week backfill is
- * the real ceiling test: ~1,800 ingest pages + 1,200 enrichment + 500 rule +
- * 3,000 classification + ~60 terminal, still inside 10,000.
+ * The 10,000 figure is NOT the operative limit. A Workflow instance also has
+ * a CPU/memory budget for the orchestration itself, which Workflows replays
+ * from the top at every step boundary — so cost grows with step COUNT, and a
+ * run can be killed with WorkflowFatalError ("exceeded CPU or memory limits
+ * outside of a step") long before 10,000. A backfillWeeks=3 run asking for
+ * ~2,400 steps died that way at 23 minutes.
+ *
+ * So treat roughly 700 steps as the working ceiling, and prefer more work per
+ * step over more steps. Deep backfills are best run one week at a time rather
+ * than as a single wide instance.
  *
  * Every stage reports `truncated` rather than quietly covering less.
  */
@@ -342,21 +348,24 @@ export class WeeklyPipeline extends WorkflowEntrypoint<Env, WeeklyPipelineParams
       resetTransientReadmeErrors(this.env.DB),
     );
 
-    const BATCH_SIZE = 50;
-    // A measured week leaves 4,089 Spaces blind (~82 steps at 50 a batch), and
-    // there is a standing backlog on top: this queue is global, and 7,434
-    // Spaces are currently waiting. 130 covered the week but not the backlog,
-    // so it never drained — every run left more behind than it cleared.
+    // 150 a batch, not 50. Steps are not free: Workflows replays the
+    // orchestration from the top at every step boundary, so the cost of a run
+    // grows with the NUMBER of steps, not the work inside them. A run that
+    // took 750 enrichment steps died with WorkflowFatalError — "exceeded CPU
+    // or memory limits outside of a step" — which is that replay, not the
+    // fetching. At concurrency 8 a batch of 150 is ~19 waves, well inside the
+    // 2-minute step timeout, and writes 4 D1 batches instead of 2.
+    const BATCH_SIZE = 150;
+
+    // Flat, NOT scaled by backfillWeeks. This queue is global — every blind
+    // Space regardless of week — so its size does not grow with backfill
+    // depth, and multiplying the cap by it bought nothing while tripling the
+    // step count. That was the actual cause of the fatal error above: a
+    // 3-week backfill asked for 750 enrichment steps against a queue of
+    // 14,312 rows that 96 steps can drain.
     //
-    // 250 covers a week plus the whole backlog in one pass. It is affordable
-    // because the account is on Workers Paid: 10,000 steps per instance, not
-    // the 1,024 the earlier caps were sized against. README fetches cost HTTP
-    // requests and no model tokens, so draining the queue is a latency
-    // decision, not a spend one.
-    //
-    // Scaled by backfill depth because a flat cap silently covered a twelfth
-    // of a 12-week backfill. See the step budget above.
-    const MAX_BATCHES = Math.min(250 * backfillWeeks, 1200);
+    // 120 x 150 = 18,000 Spaces, comfortably the whole standing queue.
+    const MAX_BATCHES = 120;
 
     for (let batch = 0; batch < MAX_BATCHES; batch++) {
       const result = await step.do(`enrich-batch-${batch}`, PAGE_RETRY, async () =>

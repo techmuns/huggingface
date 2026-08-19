@@ -1,5 +1,12 @@
 # Weekly pipeline trigger.
 #
+# Repairing several weeks? Dispatch this once PER WEEK, not once with
+# backfillWeeks=3. A Workflow instance is killed with WorkflowFatalError
+# ("exceeded CPU or memory limits outside of a step") when the orchestration
+# accumulates too many steps, because Workflows replays it from the top at
+# every step boundary. A 3-week run died that way at 23 minutes. One week is
+# ~660 steps and well inside the budget; three weeks is not.
+#
 # Cloudflare caps the Workers Free plan at 5 cron triggers per account and all
 # five are in use, so the schedule lives here instead. This calls the same
 # admin endpoint the Cloudflare cron would have, on the same schedule, and
@@ -18,7 +25,7 @@ on:
         description: "Monday to process (YYYY-MM-DD). Blank = last complete week."
         required: false
       backfillWeeks:
-        description: "Weeks to process (1-26). Keep at 1 unless backfilling."
+        description: "Weeks to process. Keep at 1 — see note. Above 3 will fail."
         required: false
         default: "1"
       dryRun:
