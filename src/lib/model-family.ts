@@ -275,11 +275,18 @@ async function resolveByModelType(db: D1Database): Promise<number> {
   for (const row of rows.results) {
     const family = matchFamilyByModelType(row.model_type);
     if (!family) continue;
+    // resolution_source is left NULL rather than set to 'config_model_type'.
+    // The CHECK on that column does not permit the value, and widening it
+    // means rebuilding a ~75,000-row table to constrain something written in
+    // five places and read in none — no metric, endpoint or dashboard element
+    // queries it. NULL is the honest record here: the family is known, its
+    // provenance is simply not in the current vocabulary. Give the column a
+    // reader first, then widen the CHECK deliberately.
     stmts.push(
       db
         .prepare(
           `UPDATE hf_models
-             SET family = ?1, resolution_source = 'config_model_type'
+             SET family = ?1, resolution_source = NULL
            WHERE repo_id = ?2`,
         )
         .bind(family, row.repo_id),

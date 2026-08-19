@@ -460,7 +460,11 @@ describe("resolveByModelType", () => {
     expect(row?.model_type).toBe("qwen3_5_moe");
     expect(row?.family).toBe("qwen");
     // Provenance must not read as a declared parent or a guess from the title.
-    expect(row?.resolution_source).toBe("config_model_type");
+    // NULL, not 'config_model_type': the CHECK does not permit that value, and
+    // widening it costs a ~75,000-row table rebuild to constrain a column
+    // nothing reads. The family is what the dashboard consumes; recording it
+    // as 'name_pattern' to dodge the CHECK is the outcome this pins against.
+    expect(row?.resolution_source).toBeNull();
   });
 
   it("leaves a bespoke architecture unresolved rather than forcing a bucket", async () => {

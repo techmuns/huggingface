@@ -666,7 +666,7 @@ async function handleStats(request: Request, env: Env): Promise<Response> {
  */
 const EXPECTED_COLUMNS: ReadonlyArray<[table: string, column: string]> = [
   ["hf_models", "card_base_model"], // 0002_model_card_base
-  ["hf_models", "model_type"],      // 0003_model_config_type
+  ["hf_models", "model_type"],      // 0003_model_config_type (free ADD COLUMN)
   ["hf_runs", "instance_id"],       // 0004_run_registry
 ];
 
