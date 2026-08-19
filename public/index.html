@@ -764,6 +764,7 @@ const state = {
 
 let weeksAvailable = [];
 let printing = false;
+let seriesFailed = false;
 let current = { byCut: {}, coverage: null, week: null };
 let seriesRaw = null;    // /api/series payload, all cuts, up to 52 weeks
 let matrixSeries = null; // /api/series?cut=family_share_by_use_case, lazily
@@ -1286,7 +1287,7 @@ function paintChart(host) {
 
   if (!weeks.length || !lines.length) {
     host._spec = null;
-    host.innerHTML = '<p class="empty">No weeks have been processed yet.</p>';
+    host.innerHTML = noSeriesNote();
     return;
   }
 
@@ -1296,6 +1297,11 @@ function paintChart(host) {
     state.off[chartId] = new Set(lines.filter(l => l.defaultOff).map(l => l.key));
   }
   const off = state.off[chartId];
+  // The set outlives the lines it was made for. Switch the use case behind the
+  // cross-tab and the families change underneath it, so a set that hid the
+  // right ones before can hide every one of the new ones — a blank chart under
+  // a full legend. The top line comes back on rather than showing nothing.
+  if (lines.length && lines.every(l => off.has(l.key))) off.delete(lines[0].key);
   const shown = lines.filter(l => !off.has(l.key));
 
   const width = Math.max(280, Math.round(host.clientWidth || 640));
@@ -1531,7 +1537,7 @@ function wireChart(host, ctx) {
 
 /** The table twin of a trend: weeks down, series across. */
 function trendTable(weeks, lines, unit = '') {
-  if (!weeks.length || !lines.length) return '<p class="empty">No weeks have been processed yet.</p>';
+  if (!weeks.length || !lines.length) return noSeriesNote();
   // Newest week first, the same way the week picker lists them — a reader
   // opening the numbers is looking for the latest one, not for February.
   const order = weeks.map((_, i) => i).reverse();
@@ -1559,7 +1565,7 @@ function trendTable(weeks, lines, unit = '') {
  * it is a different, working answer to the same question.
  */
 function renderTrendInto(el, { rows, weeks, cut, unit = '', chartId, extraNote = '' }) {
-  if (!weeks.length) { setHTML(el, '<p class="empty">No weeks have been processed yet.</p>'); return; }
+  if (!weeks.length) { setHTML(el, noSeriesNote()); return; }
 
   const prepared = prepareSeries(weeks, rows, { zeroFill: true });
   const w = prepared.weeks;
@@ -1709,7 +1715,7 @@ function renderTiles() {
 function renderHeadline() {
   const el = document.getElementById('c-headline');
   const t = weeklyTotals();
-  if (!t.weeks.length) { setHTML(el, '<p class="empty">No weeks have been processed yet.</p>'); return; }
+  if (!t.weeks.length) { setHTML(el, noSeriesNote()); return; }
 
   // Ends at the week the reader picked, not always at the newest one. The
   // tiles above it are that week's figures and the intro says so — a line
@@ -1717,10 +1723,14 @@ function renderHeadline() {
   const at = current.week ? t.weeks.indexOf(current.week) : -1;
   const upto = at < 0 ? t.weeks.length : at + 1;
   const w = windowed(t.weeks.slice(0, upto), [t.spaces.slice(0, upto), t.classified.slice(0, upto)]);
+  // Zero-filled: a week with Spaces but nothing classified is a real zero on
+  // the classified line, and the Spaces line beside it is the proof the week
+  // was measured. Spaces itself can only be null when both cuts are missing,
+  // in which case nothing fills either row.
   const prepared = prepareSeries(w.weeks, [
     { dimension: 'spaces', values: w.arrays[0], denominators: w.arrays[0], suppressed: w.arrays[0].map(() => 0) },
     { dimension: 'classified', values: w.arrays[1], denominators: w.arrays[0], suppressed: w.arrays[1].map(() => 0) },
-  ]);
+  ], { zeroFill: true });
   const weeks = prepared.weeks;
   const lines = [
     { key: 'spaces', label: 'All new Spaces', color: 'var(--s1)' },
@@ -1781,7 +1791,7 @@ function renderTrendsTab() {
   const el = document.getElementById('c-trend');
 
   if (!seriesRaw || !seriesRaw.weeks.length) {
-    setHTML(el, '<p class="empty">No weeks have been processed yet.</p>');
+    setHTML(el, noSeriesNote());
     return;
   }
 
@@ -1846,7 +1856,7 @@ function renderEngagementTrend(el) {
   const weeksAll = seriesRaw?.weeks || [];
   const rows = seriesOf(CUTS.engage);
   if (!weeksAll.length || !rows.length) {
-    setHTML(el, '<p class="empty">No weeks have been processed yet.</p>');
+    setHTML(el, noSeriesNote());
     return;
   }
 
@@ -2045,7 +2055,10 @@ function renderEveryPanel() {
   renderCutPanel('c-family', CUTS.family, { chartId: 'family' });
   renderCutPanel('c-tech', CUTS.tech, { unit: '%', chartId: 'tech' });
   renderCutPanel('c-sdk', CUTS.sdk, { chartId: 'sdk' });
-  if (state.view === 'trend') renderMatrixTrend(); else renderMatrix();
+  // The cross-tab's history is fetched on demand, and beforeprint cannot wait
+  // for it: printing before it has ever been opened would capture the loading
+  // line. The week's matrix is always to hand and is a complete answer.
+  if (state.view === 'trend' && matrixSeries) renderMatrixTrend(); else renderMatrix();
   const eng = document.getElementById('c-engagement');
   if (state.view === 'trend') renderEngagementTrend(eng);
   else setHTML(eng, engagementTable());
@@ -2247,10 +2260,10 @@ function readHash() {
 
   state.cumulative = p.get('total') === '1';
 
-  // The week is the one field a caller validates against the weeks that
-  // actually exist, so it is carried through rather than defaulted here.
-  const week = p.get('week');
-  if (week) state.week = week;
+  // Omitted means the newest week, the same way every other omitted parameter
+  // means its default. Callers resolve null against the weeks that actually
+  // exist, which is the only place that list is known.
+  state.week = p.get('week') || null;
 }
 
 /**
@@ -2334,11 +2347,22 @@ async function loadNarrative(week) {
 async function loadSeries() {
   try {
     seriesRaw = await getJSON('/api/series?weeks=52');
+    seriesFailed = false;
   } catch {
+    // Kept apart from an empty answer. "No weeks have been processed yet" is a
+    // statement about the database; an unreachable endpoint is a statement
+    // about right now, and a reader who cannot tell them apart will wait for a
+    // pipeline that already ran.
     seriesRaw = { weeks: [], series: [] };
+    seriesFailed = true;
   }
   totalsCache = null;
 }
+
+/** What a trend has to say when there is nothing to draw. */
+const noSeriesNote = () => seriesFailed
+  ? '<p class="empty">The week-by-week history could not be loaded just now. The figures for the week you picked are unaffected.</p>'
+  : '<p class="empty">No weeks have been processed yet.</p>';
 
 async function init() {
   const sel = document.getElementById('week-select');
@@ -2430,11 +2454,13 @@ async function init() {
     // the tab AND the week used to reload the week and return, leaving the
     // reader on the tab they had just navigated away from.
     trackSel.value = state.track;
-    const weekMoved = state.week && state.week !== current.week && weeksAvailable.includes(state.week);
+    const target = state.week && weeksAvailable.includes(state.week)
+      ? state.week
+      : weeksAvailable[0];
     showTab(state.tab);
-    if (weekMoved) {
-      sel.value = state.week;
-      loadWeek(state.week);
+    if (target && target !== current.week) {
+      sel.value = target;
+      loadWeek(target);
     }
   });
 
@@ -2506,7 +2532,10 @@ async function init() {
 
   await loadSeries();
   showTab(state.tab);
-  await loadWeek(wanted);
+  // Read back rather than reused: the picker has been live throughout the
+  // fetch above, and a reader who changed the week during it must not have
+  // their choice undone by the load that finishes initialisation.
+  await loadWeek(sel.value || wanted);
 }
 
 init();
