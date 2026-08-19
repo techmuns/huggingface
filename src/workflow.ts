@@ -228,9 +228,29 @@ export class WeeklyPipeline extends WorkflowEntrypoint<Env, WeeklyPipelineParams
       return { models, spaces } satisfies ParseSummary;
     });
 
-    const resolve = await step.do("resolve-models", SQL_RETRY, async () => {
-      return resolveModelFamilies(this.env.DB);
-    });
+    // Looped, not called once. Each pass looks at a bounded number of rows —
+    // the unbounded version built ~40,000 prepared statements in one
+    // invocation and the run died with "Worker exceeded CPU time limit". A
+    // pass that resolves nothing means the queue is drained, so the loop ends
+    // on its own; the cap is a backstop, and hitting it is reported.
+    const MAX_RESOLVE_PASSES = 40;
+    const resolve: ResolveSummary = {
+      byTag: 0, byCardData: 0, byChain: 0, byModelType: 0, byName: 0,
+      byBase: 0, total: 0,
+    };
+    for (let pass = 0; pass < MAX_RESOLVE_PASSES; pass++) {
+      const part = await step.do(`resolve-models-${pass}`, SQL_RETRY, async () =>
+        resolveModelFamilies(this.env.DB),
+      );
+      resolve.byTag += part.byTag;
+      resolve.byCardData += part.byCardData;
+      resolve.byChain += part.byChain;
+      resolve.byModelType += part.byModelType;
+      resolve.byName += part.byName;
+      resolve.byBase += part.byBase;
+      resolve.total += part.total;
+      if (part.total === 0) break;
+    }
 
     // ── Phase 5: enrich blind Spaces + dedup ─────────────────────────────
     const enrich = await this.enrichBlind(step, config.backfillWeeks);

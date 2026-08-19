@@ -543,3 +543,60 @@ describe("upsertModels stays inside D1's statement limit", () => {
     expect(n?.n).toBe(300);
   });
 });
+
+// ── resolver bounding ───────────────────────────────────────────────────────
+
+describe("family resolution is bounded per call", () => {
+  const seed = async (n: number, prefix: string) => {
+    const now = "2026-08-18T00:00:00.000Z";
+    for (let i = 0; i < n; i += 200) {
+      await DB.batch(
+        Array.from({ length: Math.min(200, n - i) }, (_, k) =>
+          DB.prepare(
+            `INSERT INTO hf_models (repo_id, created_at, tags, first_seen_at, updated_at)
+             VALUES (?1, ?2, '[]', ?2, ?2)`,
+          ).bind(`${prefix}/m-${String(i + k).padStart(5, "0")}`, now),
+        ),
+      );
+    }
+  };
+
+  it("looks at no more than `limit` rows per resolver", async () => {
+    // The regression: every resolver selected its whole working set and built
+    // one prepared statement per row. At ~40,000 unresolved models that is
+    // 40,000 statement objects in one invocation, and the run died with
+    // "Worker exceeded CPU time limit".
+    await seed(1200, "qwen");   // names that DO match, so work is measurable
+    const first = await resolveModelFamilies(DB, 300);
+    expect(first.byName).toBeLessThanOrEqual(300);
+
+    const resolved = await DB.prepare(
+      "select count(*) as n from hf_models where family is not null",
+    ).first<{ n: number }>();
+    expect(resolved?.n).toBeLessThanOrEqual(300);
+  });
+
+  it("advances past rows nothing can resolve, instead of re-reading them", async () => {
+    // The reason a bare LIMIT is not enough. These names match no family, so a
+    // LIMIT-only pager would select the same first N rows forever and never
+    // reach the resolvable ones. The cursor advances on rows SEEN.
+    await seed(600, "zzzunknownvendor");
+    await seed(50, "qwen");     // sort after 'zzz...'? no — before it.
+
+    // Two passes over 650 rows at 300 a pass must reach the tail.
+    await resolveModelFamilies(DB, 300);
+    await resolveModelFamilies(DB, 300);
+    await resolveModelFamilies(DB, 300);
+
+    const qwen = await DB.prepare(
+      "select count(*) as n from hf_models where family = 'qwen'",
+    ).first<{ n: number }>();
+    expect(qwen?.n).toBe(50);
+  });
+
+  it("terminates when nothing is resolvable", async () => {
+    await seed(400, "zzzunknownvendor");
+    const out = await resolveModelFamilies(DB, 200);
+    expect(out.total).toBe(0);
+  });
+});

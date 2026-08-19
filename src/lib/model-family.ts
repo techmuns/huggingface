@@ -112,17 +112,77 @@ async function batchExec(db: D1Database, stmts: D1PreparedStatement[]): Promise<
   return total;
 }
 
-async function resolveFromTags(db: D1Database): Promise<number> {
-  const rows = await db
-    .prepare("SELECT repo_id, tags FROM hf_models WHERE family IS NULL")
-    .all<{ repo_id: string; tags: string }>();
+/**
+ * Rows a single resolver pass will look at.
+ *
+ * The resolvers used to select their whole working set — every model with no
+ * family — and build one prepared statement per row. At 77,632 models with
+ * roughly half unresolved that is 40,000 rows and 40,000 statement objects in
+ * one Worker invocation, and the run died with "Worker exceeded CPU time
+ * limit". resolveByChain was worse: it did that ten times in a loop.
+ *
+ * So a pass is bounded. The bound has to come with a cursor rather than a bare
+ * LIMIT, because most of these resolvers legitimately leave rows unmatched — a
+ * repo whose name says nothing about its family is simply not resolvable — and
+ * a LIMIT alone would re-select those same unmatched rows on every pass and
+ * never advance.
+ */
+export const RESOLVE_PAGE = 2_000;
 
-  if (!rows.results?.length) return 0;
+/**
+ * Walks `family IS NULL` rows in repo_id order, bounded, resolving as it goes.
+ *
+ * `build` returns the statements for one page and how many of them actually
+ * resolved a family; rows it declines to act on are still passed over, because
+ * the cursor advances on rows SEEN rather than rows changed.
+ */
+async function paginateUnresolved<T extends { repo_id: string }>(
+  db: D1Database,
+  sql: (cursorParam: string, limitParam: string) => string,
+  limit: number,
+  build: (rows: T[]) => { stmts: D1PreparedStatement[]; resolved: number },
+): Promise<{ resolved: number; seen: number }> {
+  let cursor = "";
+  let resolved = 0;
+  let seen = 0;
 
+  while (seen < limit) {
+    const page = Math.min(500, limit - seen);
+    const rows = await db
+      .prepare(sql("?1", "?2"))
+      .bind(cursor, page)
+      .all<T>();
+
+    const batch = rows.results ?? [];
+    if (batch.length === 0) break;
+
+    seen += batch.length;
+    // Non-null by construction: batch.length > 0 was checked above.
+    cursor = batch[batch.length - 1]!.repo_id;
+
+    const { stmts, resolved: n } = build(batch);
+    if (stmts.length > 0) await batchExec(db, stmts);
+    resolved += n;
+
+    if (batch.length < page) break;
+  }
+
+  return { resolved, seen };
+}
+
+async function resolveFromTags(db: D1Database, limit: number): Promise<number> {
+  const { resolved } = await paginateUnresolved<{ repo_id: string; tags: string }>(
+    db,
+    (c, l) =>
+      `SELECT repo_id, tags FROM hf_models
+       WHERE family IS NULL AND repo_id > ${c}
+       ORDER BY repo_id LIMIT ${l}`,
+    limit,
+    (batch) => {
   const stmts: D1PreparedStatement[] = [];
   let resolved = 0;
 
-  for (const row of rows.results) {
+  for (const row of batch) {
     const tags: string[] = JSON.parse(row.tags);
     const info = extractBaseModelInfo(tags);
     if (!info) continue;
@@ -153,28 +213,29 @@ async function resolveFromTags(db: D1Database): Promise<number> {
     }
   }
 
-  await batchExec(db, stmts);
+  return { stmts, resolved };
+    },
+  );
   return resolved;
 }
 
-async function resolveFromCardData(db: D1Database): Promise<number> {
-  const rows = await db
-    .prepare(
-      // Reads the column captured at parse time rather than re-joining the
-      // raw payloads, which is what allows raw model records to be skipped.
+async function resolveFromCardData(db: D1Database, limit: number): Promise<number> {
+  const { resolved } = await paginateUnresolved<{ repo_id: string; cd_base: string }>(
+    db,
+    // Reads the column captured at parse time rather than re-joining the raw
+    // payloads, which is what allows raw model records to be skipped.
+    (c, l) =>
       `SELECT repo_id, card_base_model AS cd_base
        FROM hf_models
        WHERE base_model IS NULL AND family IS NULL
-         AND card_base_model IS NOT NULL`,
-    )
-    .all<{ repo_id: string; cd_base: string }>();
-
-  if (!rows.results?.length) return 0;
-
+         AND card_base_model IS NOT NULL AND repo_id > ${c}
+       ORDER BY repo_id LIMIT ${l}`,
+    limit,
+    (batch) => {
   const stmts: D1PreparedStatement[] = [];
   let resolved = 0;
 
-  for (const row of rows.results) {
+  for (const row of batch) {
     let target: string | null = null;
     try {
       const parsed = JSON.parse(row.cd_base);
@@ -198,12 +259,17 @@ async function resolveFromCardData(db: D1Database): Promise<number> {
     if (family) resolved++;
   }
 
-  await batchExec(db, stmts);
+  return { stmts, resolved };
+    },
+  );
   return resolved;
 }
 
-async function resolveByChain(db: D1Database): Promise<number> {
+async function resolveByChain(db: D1Database, limit: number): Promise<number> {
   let total = 0;
+  // Every selected row IS resolved here — the join requires the parent to have
+  // a family — so this one cannot stall on unmatched rows and a plain bound is
+  // enough. The old code ran ten unbounded passes; the bound is what matters.
   for (let pass = 0; pass < 10; pass++) {
     const rows = await db
       .prepare(
@@ -212,8 +278,10 @@ async function resolveByChain(db: D1Database): Promise<number> {
          JOIN hf_models parent ON m.base_model = parent.repo_id
          WHERE m.family IS NULL
            AND m.base_model IS NOT NULL
-           AND parent.family IS NOT NULL`,
+           AND parent.family IS NOT NULL
+         LIMIT ?1`,
       )
+      .bind(limit)
       .all<{ repo_id: string; family: string }>();
 
     if (!rows.results?.length) break;
@@ -261,20 +329,22 @@ export function matchFamilyByModelType(modelType: string | null): string | null 
   return null;
 }
 
-async function resolveByModelType(db: D1Database): Promise<number> {
-  const rows = await db
-    .prepare(
+async function resolveByModelType(db: D1Database, limit: number): Promise<number> {
+  const { resolved } = await paginateUnresolved<{ repo_id: string; model_type: string }>(
+    db,
+    (c, l) =>
       `SELECT repo_id, model_type FROM hf_models
-       WHERE family IS NULL AND base_model IS NULL AND model_type IS NOT NULL`,
-    )
-    .all<{ repo_id: string; model_type: string }>();
-
-  if (!rows.results?.length) return 0;
-
+       WHERE family IS NULL AND base_model IS NULL AND model_type IS NOT NULL
+         AND repo_id > ${c}
+       ORDER BY repo_id LIMIT ${l}`,
+    limit,
+    (batch) => {
   const stmts: D1PreparedStatement[] = [];
-  for (const row of rows.results) {
+  let resolved = 0;
+  for (const row of batch) {
     const family = matchFamilyByModelType(row.model_type);
     if (!family) continue;
+    resolved++;
     // resolution_source is left NULL rather than set to 'config_model_type'.
     // The CHECK on that column does not permit the value, and widening it
     // means rebuilding a ~75,000-row table to constrain something written in
@@ -292,21 +362,28 @@ async function resolveByModelType(db: D1Database): Promise<number> {
         .bind(family, row.repo_id),
     );
   }
-  return batchExec(db, stmts);
+  return { stmts, resolved };
+    },
+  );
+  return resolved;
 }
 
-async function resolveByNamePattern(db: D1Database): Promise<number> {
-  const rows = await db
-    .prepare("SELECT repo_id FROM hf_models WHERE family IS NULL AND base_model IS NULL")
-    .all<{ repo_id: string }>();
-
-  if (!rows.results?.length) return 0;
-
+async function resolveByNamePattern(db: D1Database, limit: number): Promise<number> {
+  const { resolved } = await paginateUnresolved<{ repo_id: string }>(
+    db,
+    (c, l) =>
+      `SELECT repo_id FROM hf_models
+       WHERE family IS NULL AND base_model IS NULL AND repo_id > ${c}
+       ORDER BY repo_id LIMIT ${l}`,
+    limit,
+    (batch) => {
   const stmts: D1PreparedStatement[] = [];
+  let resolved = 0;
 
-  for (const row of rows.results) {
+  for (const row of batch) {
     const family = matchFamilyByName(row.repo_id);
     if (!family) continue;
+    resolved++;
     stmts.push(
       db
         .prepare(
@@ -318,18 +395,24 @@ async function resolveByNamePattern(db: D1Database): Promise<number> {
     );
   }
 
-  return batchExec(db, stmts);
+  return { stmts, resolved };
+    },
+  );
+  return resolved;
 }
 
-export async function resolveModelFamilies(db: D1Database): Promise<ResolveSummary> {
-  const byTag = await resolveFromTags(db);
-  const byCardData = await resolveFromCardData(db);
-  const byChain = await resolveByChain(db);
+export async function resolveModelFamilies(
+  db: D1Database,
+  limit: number = RESOLVE_PAGE,
+): Promise<ResolveSummary> {
+  const byTag = await resolveFromTags(db, limit);
+  const byCardData = await resolveFromCardData(db, limit);
+  const byChain = await resolveByChain(db, limit);
   // Between a declared parent and a guess from the title: the model's own
   // declared architecture. Stronger than the name, weaker than a stated
   // base_model, and recorded as such.
-  const byModelType = await resolveByModelType(db);
-  const byName = await resolveByNamePattern(db);
+  const byModelType = await resolveByModelType(db, limit);
+  const byName = await resolveByNamePattern(db, limit);
 
   // Anything with a declared lineage that still couldn't be placed
   await db
