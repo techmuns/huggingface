@@ -419,6 +419,9 @@ details.method li { margin-bottom: 7px; max-width: 82ch; }
         <button class="btn-view" data-view="bars"  aria-pressed="true">This week</button>
         <button class="btn-view" data-view="trend" aria-pressed="false">Over time</button>
       </div>
+    </div>
+
+    <div class="tool" id="tool-table">
       <button class="btn" id="table-toggle" aria-pressed="false"
         title="Show the numbers behind whatever is on screen">Table</button>
     </div>
@@ -928,13 +931,30 @@ function prepareSeries(weeks, rows, { zeroFill = false } = {}) {
     return i !== undefined && rows.some(r => r.values[i] != null);
   });
 
+  // Within one cut every category shares a week's base — the classified count,
+  // the Space count, the model count — so a week that ran has one, even for a
+  // category with no row in it. Filling a zero without its base would make the
+  // pooled average skip that week: a category that vanished from a huge week
+  // would hold its old percentage instead of falling towards nothing.
+  const base = dense.map(w => {
+    const i = at.get(w);
+    if (i === undefined) return null;
+    let best = null;
+    for (const r of rows) {
+      const d = r.denominators?.[i];
+      if (d != null && (best == null || d > best)) best = d;
+    }
+    return best;
+  });
+
   const mapped = rows.map(r => {
     const values = [], denominators = [], suppressed = [];
     dense.forEach((w, k) => {
       const i = at.get(w);
       const v = i === undefined ? null : r.values[i];
-      values.push(v != null ? v : (zeroFill && measured[k] ? 0 : null));
-      denominators.push(i === undefined ? null : r.denominators?.[i] ?? null);
+      const filled = v == null && zeroFill && measured[k];
+      values.push(v != null ? v : (filled ? 0 : null));
+      denominators.push(i === undefined ? null : (r.denominators?.[i] ?? (filled ? base[k] : null)));
       suppressed.push(i === undefined ? 0 : r.suppressed?.[i] ?? 0);
     });
     return { ...r, values, denominators, suppressed };
@@ -1460,6 +1480,7 @@ function renderTrendInto(el, { rows, weeks, cut, unit = '', chartId, extraNote =
   if (state.cumulative && isCount) notes.push(`Each point is the running total of every week shown, starting from ${shortWeek(w[0])}.`);
   if (state.cumulative && !isCount) notes.push('Each point is the average of every week up to it, counting busier weeks more heavily.');
   if (prepared.hasGaps) notes.push('A week that was never measured leaves a gap in the line rather than a straight line through it.');
+  if (atHistoryCap(w)) notes.push(HISTORY_CAP_NOTE);
   if (extraNote) notes.push(extraNote);
 
   if (state.table) {
@@ -1483,6 +1504,18 @@ function renderTrendInto(el, { rows, weeks, cut, unit = '', chartId, extraNote =
     note: notes.length ? esc(notes.join(' ')) : '',
   });
 }
+
+/**
+ * "All" means every week this page can reach, which is a year.
+ *
+ * Both /api/weeks and /api/series stop at 52, so once the pipeline has run for
+ * longer than that, "All" is showing the most recent year and not the whole
+ * history. Saying so is cheaper than a control that quietly means something
+ * else the moment the project turns one.
+ */
+const HISTORY_CAP = 52;
+const HISTORY_CAP_NOTE = 'This is the most recent year — the page keeps 52 weeks of history.';
+const atHistoryCap = weeks => state.win >= HISTORY_CAP && weeks.length >= HISTORY_CAP;
 
 /** The most recent figure a series actually has. */
 function lastValue(values) {
@@ -1591,6 +1624,7 @@ function renderHeadline() {
   if (weeks.length === 1) notes.push('Only one week has been processed so far — the line starts once there are two.');
   if (state.cumulative) notes.push(`Each point is the running total of every week shown, starting from ${shortWeek(weeks[0])}.`);
   if (prepared.hasGaps) notes.push('A week that was never measured leaves a gap in the line.');
+  if (atHistoryCap(weeks)) notes.push(HISTORY_CAP_NOTE);
   trendChart(el, {
     weeks, lines, chartId: 'headline',
     provisionalLast: inProgress(weeks[weeks.length - 1]),
@@ -1655,6 +1689,7 @@ function renderTrendsTab() {
     if (state.cumulative && isCount) notes.push(`Each point is the running total of every week shown, starting from ${shortWeek(weeks[0])}.`);
     if (state.cumulative && !isCount) notes.push('Each point is the average of every week up to it, counting busier weeks more heavily.');
     if (prepared.hasGaps) notes.push('A week that was never measured leaves a gap in the line.');
+    if (atHistoryCap(weeks)) notes.push(HISTORY_CAP_NOTE);
 
     if (state.table) {
       setHTML(el, trendTable(weeks, lines, track.unit || ''));
@@ -1696,33 +1731,40 @@ function renderEngagementTrend(el) {
     return;
   }
 
-  const w = windowed(weeksAll, rows.map(r => r.values));
+  const w = windowRows(weeksAll, rows);
   // The reading is fixed here whatever the box says elsewhere: a rolling
   // 30-day download figure summed across weeks counts the same downloads over
   // and over. syncToolbar() disables the control on this tab and says so.
   if (state.table) {
-    setHTML(el, trendTable(w.weeks, rows.map((r, i) => ({
+    setHTML(el, trendTable(w.weeks, w.rows.map(r => ({
       label: titleCase(r.dimension),
-      values: w.arrays[i],
+      values: r.values,
+      suppressed: r.suppressed,
     }))));
     return;
   }
 
+  // Addressed by position inside this container, not by a global id: this
+  // function renders into the Trends card AND the Engagement card, and ids
+  // minted per index collide between the two — getElementById would then hand
+  // the second render the first panel's hidden container, and the visible card
+  // would stay empty.
   const open = inProgress(w.weeks[w.weeks.length - 1]);
-  setHTML(el, rows.map((r, i) =>
+  setHTML(el, w.rows.map(r =>
     `<div class="multiple">
        <h3>${esc(titleCase(r.dimension))}</h3>
-       <div id="c-engage-${i}"></div>
+       <div class="engage-plot"></div>
      </div>`).join('') +
     (open ? '<p class="chart-note">○ The last point is a week that is still open, so it will keep rising.</p>' : ''));
 
-  rows.forEach((r, i) => {
-    const host = document.getElementById(`c-engage-${i}`);
+  const hosts = el.querySelectorAll('.engage-plot');
+  w.rows.forEach((r, i) => {
+    const host = hosts[i];
     if (!host) return;
-    const prepared = prepareSeries(w.weeks, [{
-      dimension: r.dimension, values: w.arrays[i],
-      denominators: w.arrays[i], suppressed: w.arrays[i].map(() => 0),
-    }]);
+    // The row's own suppression flags travel with it: a week whose base fell
+    // below the reporting threshold has to keep its hollow marker and its
+    // "too few" note here as much as anywhere else.
+    const prepared = prepareSeries(w.weeks, [r]);
     trendChart(host, {
       weeks: prepared.weeks, chartId: 'engage-' + r.dimension, height: 170,
       provisionalLast: open,
@@ -1846,8 +1888,17 @@ const PANELS = {
   tech: 'panel-tech', engagement: 'panel-engagement',
 };
 
+/** The sub-tabs each panel actually has, so a hash cannot name one that isn't there. */
+const SUBS = {
+  build: ['usecase', 'vertical'],
+  tech: ['family', 'tech', 'sdk', 'matrix'],
+};
+
 function showTab(tab, { push = false, land = false } = {}) {
   state.tab = PANELS[tab] ? tab : 'overview';
+  // Trends has no "this week" reading, so arriving there settles the control
+  // rather than leaving both segments looking unselected.
+  if (state.tab === 'trends') state.view = 'trend';
   for (const [name, id] of Object.entries(PANELS)) {
     const on = name === state.tab;
     document.getElementById(id).hidden = !on;
@@ -1888,10 +1939,19 @@ function syncToolbar() {
   const trendish = state.tab === 'overview' || state.tab === 'trends' || state.view === 'trend';
   const show = (id, on) => { document.getElementById(id).style.display = on ? '' : 'none'; };
 
-  const crossTab = state.tab === 'tech' && state.sub.tech === 'matrix';
-  show('tool-week', state.tab !== 'trends');
+  // The cross-tab is a table in both views, so a Table button there toggles
+  // nothing. Everywhere else it has something to show — including Overview,
+  // whose headline chart has a table twin like every other chart.
+  // The cross-tab is a table in its this-week view, so a Table button there
+  // toggles nothing — but its over-time view is a line chart like any other and
+  // keeps its table twin. The week picker only moves a this-week view; on an
+  // over-time view it would sit there costing two API calls per change and
+  // moving nothing.
+  const weekView = state.view !== 'trend' && state.tab !== 'trends' && state.tab !== 'overview';
+  const crossTabTable = state.tab === 'tech' && state.sub.tech === 'matrix' && state.view !== 'trend';
+  show('tool-week', state.tab === 'overview' || weekView);
   show('tool-view', state.tab !== 'overview');
-  document.getElementById('table-toggle').style.display = crossTab ? 'none' : '';
+  show('tool-table', !crossTabTable);
   show('tool-track', state.tab === 'trends');
   show('tool-window', trendish);
   show('tool-cumulative', trendish);
@@ -1974,23 +2034,44 @@ function writeHash(push = false) {
   else history.replaceState(null, '', next);
 }
 
+/**
+ * Rebuilds the whole view from the hash, defaults included.
+ *
+ * Every field is assigned on every read, never only when its parameter is
+ * present. writeHash leaves a control out of the URL when it sits at its
+ * default, so "assign only if present" made Back a one-way door: stepping
+ * back to a link written before the box was ticked left the box ticked.
+ *
+ * Every value is checked against what actually exists. A shared link with a
+ * typo in it falls back to the default rather than opening a panel with no
+ * card in it.
+ */
 function readHash() {
   const p = new URLSearchParams(location.hash.replace(/^#/, ''));
+
   const tab = p.get('tab');
-  if (tab && PANELS[tab]) state.tab = tab;
+  state.tab = tab && PANELS[tab] ? tab : 'overview';
+
   const sub = p.get('sub');
-  if (sub && (state.tab === 'build' || state.tab === 'tech')) state.sub[state.tab] = sub;
+  if (state.tab === 'build') state.sub.build = SUBS.build.includes(sub) ? sub : 'usecase';
+  if (state.tab === 'tech') state.sub.tech = SUBS.tech.includes(sub) ? sub : 'family';
+
   const view = p.get('view');
-  if (view && ['bars', 'trend'].includes(view)) state.view = view;
+  state.view = state.tab === 'trends' ? 'trend' : (view === 'trend' ? 'trend' : 'bars');
   state.table = p.get('table') === '1';
+
   const track = p.get('track');
-  if (track && TRACKS.some(t => t.id === track)) state.track = track;
+  state.track = TRACKS.some(t => t.id === track) ? track : 'spaces_total';
+
   const weeks = Number(p.get('weeks'));
-  if ([12, 26, 52].includes(weeks)) state.win = weeks;
-  if (p.get('total') === '1') state.cumulative = true;
+  state.win = [12, 26, 52].includes(weeks) ? weeks : 26;
+
+  state.cumulative = p.get('total') === '1';
+
+  // The week is the one field a caller validates against the weeks that
+  // actually exist, so it is carried through rather than defaulted here.
   const week = p.get('week');
   if (week) state.week = week;
-  if (state.tab === 'trends') state.view = 'trend';
 }
 
 /**
@@ -2158,17 +2239,24 @@ async function init() {
 
   // Back and forward move between views the same way they move between pages:
   // every control writes to the hash, so the history entry is the whole view.
+  const snapshot = () => JSON.stringify([state.tab, state.sub, state.view, state.table,
+    state.win, state.cumulative, state.track, state.week]);
+
   window.addEventListener('hashchange', () => {
-    const before = JSON.stringify([state.tab, state.sub, state.view, state.table, state.win, state.cumulative, state.track, state.week]);
+    const before = snapshot();
     readHash();
-    if (JSON.stringify([state.tab, state.sub, state.view, state.table, state.win, state.cumulative, state.track, state.week]) === before) return;
-    if (state.week && state.week !== current.week && weeksAvailable.includes(state.week)) {
+    if (snapshot() === before) return;
+
+    // Both, in order, and never one instead of the other: an entry that moved
+    // the tab AND the week used to reload the week and return, leaving the
+    // reader on the tab they had just navigated away from.
+    trackSel.value = state.track;
+    const weekMoved = state.week && state.week !== current.week && weeksAvailable.includes(state.week);
+    showTab(state.tab);
+    if (weekMoved) {
       sel.value = state.week;
       loadWeek(state.week);
-      return;
     }
-    trackSel.value = state.track;
-    showTab(state.tab);
   });
 
   document.querySelectorAll('.btn-win').forEach(b => b.addEventListener('click', () => {
