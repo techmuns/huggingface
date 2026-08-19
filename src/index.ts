@@ -339,12 +339,13 @@ const CORS_HEADERS = {
 /**
  * Upper bound on a series request.
  *
- * `/api/weeks` already caps its listing at 52, and a year of weekly points is
- * more than any line on this page can usefully draw. The cap is here so a
- * hand-typed `weeks=100000` cannot turn one page load into a scan of every
- * metric row the pipeline has ever written.
+ * Three years. The dashboard groups these weeks into months and quarters, and
+ * a quarterly view needs years behind it before it says anything at all — a
+ * one-year cap would have left it four columns wide for good. The cap is still
+ * here so a hand-typed `weeks=100000` cannot turn one page load into a scan of
+ * every metric row the pipeline has ever written.
  */
-const MAX_SERIES_WEEKS = 52;
+const MAX_SERIES_WEEKS = 156;
 
 const VALID_CUTS = new Set([
   "spaces_by_use_case",
