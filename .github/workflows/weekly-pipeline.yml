@@ -115,16 +115,19 @@ jobs:
           BASE="${BASE:-https://huggingface.tech-441.workers.dev}"
           echo "base=$BASE" >> "$GITHUB_OUTPUT"
 
-          BODY=$(printf '{"weekStart":"%s","backfillWeeks":%s,"dryRun":%s}' \
-            "${{ steps.week.outputs.week }}" \
-            "${{ steps.week.outputs.backfill }}" \
-            "${{ github.event.inputs.dryRun || false }}")
+          # Query string, not a JSON body. Three runs sent a correct body with
+          # `-H 'content-type: application/json'` and the Worker reported
+          # seeing content-type "(none)" every time — the header does not
+          # survive the trip, and whatever drops it is not in this repo. Two of
+          # those runs then processed the wrong week for an hour before anyone
+          # noticed. Parameters in the URL have no header to lose.
+          Q="weekStart=${{ steps.week.outputs.week }}"
+          Q="$Q&backfillWeeks=${{ steps.week.outputs.backfill }}"
+          Q="$Q&dryRun=${{ github.event.inputs.dryRun || false }}"
 
           for attempt in 1 2 3; do
-            RESP=$(curl -sS --max-time 60 -X POST "$BASE/api/admin/run" \
-              -H "Authorization: Bearer $TOKEN" \
-              -H 'content-type: application/json' \
-              -d "$BODY") && break
+            RESP=$(curl -sS --max-time 60 -X POST "$BASE/api/admin/run?$Q" \
+              -H "Authorization: Bearer $TOKEN") && break
             echo "attempt $attempt failed; retrying"; sleep $((attempt * 10))
           done
 

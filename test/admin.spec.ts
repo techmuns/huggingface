@@ -262,3 +262,66 @@ describe("run params cannot be silently dropped", () => {
     });
   });
 });
+
+describe("run params from the query string", () => {
+  const post = (qs: string, init: RequestInit = {}) =>
+    SELF.fetch(`https://example.com/api/admin/run${qs}`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${env.ADMIN_TOKEN}` },
+      ...init,
+    });
+
+  it("accepts weekStart, backfillWeeks and dryRun with no content-type at all", async () => {
+    // The whole point: three runs sent a correct JSON body and the Worker saw
+    // content-type "(none)". The query string carries the parameters in the
+    // URL, where nothing between curl and here can strip them.
+    const res = await post("?weekStart=2026-08-10&backfillWeeks=1&dryRun=true");
+    expect(res.status).toBe(202);
+    await expect(res.json()).resolves.toMatchObject({
+      params: { weekStart: "2026-08-10", backfillWeeks: 1, dryRun: true },
+    });
+  });
+
+  it("rejects a non-numeric backfillWeeks instead of defaulting", async () => {
+    const res = await post("?weekStart=2026-08-10&backfillWeeks=lots");
+    expect(res.status).toBe(400);
+    await expect(res.json()).resolves.toMatchObject({ error: "invalid_params" });
+  });
+
+  it("rejects an empty backfillWeeks instead of reading it as zero", async () => {
+    // Number("") is 0, which would sail past a naive check and then be clamped
+    // to 1 — a silent default in place of a malformed request.
+    const res = await post("?weekStart=2026-08-10&backfillWeeks=");
+    expect(res.status).toBe(400);
+  });
+
+  it("rejects a dryRun that is neither true nor false", async () => {
+    // Guards against `dryRun=yes` meaning false, which would commit a snapshot
+    // the caller asked to skip.
+    const res = await post("?weekStart=2026-08-10&dryRun=yes");
+    expect(res.status).toBe(400);
+    await expect(res.json()).resolves.toMatchObject({ error: "invalid_params" });
+  });
+
+  it("rejects a non-Monday weekStart from the query string too", async () => {
+    const res = await post("?weekStart=2026-08-11");
+    expect(res.status).toBe(400);
+    await expect(res.json()).resolves.toMatchObject({
+      detail: "weekStart must be a Monday",
+    });
+  });
+
+  it("takes the query string in preference to a body", async () => {
+    const res = await post("?weekStart=2026-08-10", {
+      headers: {
+        authorization: `Bearer ${env.ADMIN_TOKEN}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({ weekStart: "2026-08-03" }),
+    });
+    expect(res.status).toBe(202);
+    await expect(res.json()).resolves.toMatchObject({
+      params: { weekStart: "2026-08-10" },
+    });
+  });
+});

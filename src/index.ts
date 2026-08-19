@@ -28,7 +28,7 @@ export default {
     }
 
     if (url.pathname === "/api/admin/run") {
-      return handleAdminRun(request, env);
+      return handleAdminRun(request, env, url);
     }
 
     if (url.pathname === "/api/admin/runs") {
@@ -111,7 +111,7 @@ export default {
  * Needed for the initial 12-week backfill, for re-running after a taxonomy
  * change, and for debugging without waiting a week for the cron.
  */
-async function handleAdminRun(request: Request, env: Env): Promise<Response> {
+async function handleAdminRun(request: Request, env: Env, url: URL): Promise<Response> {
   if (request.method !== "POST") {
     return Response.json({ error: "method_not_allowed" }, { status: 405, headers: { allow: "POST" } });
   }
@@ -120,37 +120,60 @@ async function handleAdminRun(request: Request, env: Env): Promise<Response> {
     return Response.json({ error: "unauthorized" }, { status: 401 });
   }
 
-  // A body that arrives without a JSON content-type used to be dropped on the
-  // floor: `body` stayed {}, parseRunParams returned {}, and the run started
-  // with defaults — silently processing the CURRENT week instead of the one
-  // asked for, and answering 202 as though nothing was wrong. Two runs did
-  // exactly that before anyone noticed, because the only visible symptom was
-  // a week's figures not moving.
+  // Parameters come from the query string first, and only then from a JSON
+  // body.
   //
-  // Refuse instead, and name what actually arrived, so the next occurrence
-  // identifies its own cause rather than needing the request reconstructed
-  // from a log.
-  const contentType = request.headers.get("content-type") ?? "";
-  const isJson = contentType.includes("application/json");
+  // The body path depends on a content-type header surviving the trip, and
+  // three separate runs proved it does not: the Action sent
+  // `-H 'content-type: application/json'` and the Worker saw "(none)" every
+  // time. Whatever strips it sits between curl and here and is not ours to
+  // fix. A query string has no such dependency — the parameters are in the
+  // URL, which nothing rewrites.
+  //
+  // The body is still accepted, because it is the obvious thing to reach for
+  // by hand. But a body sent without its content-type is now refused rather
+  // than ignored: silently dropping it started runs on the CURRENT week while
+  // answering 202, and the only symptom was a week's figures not moving,
+  // which reads as a quiet week rather than a wrong one.
+  const fromQuery = ["weekStart", "backfillWeeks", "dryRun"].some((k) => url.searchParams.has(k));
 
   let body: unknown = {};
-  if (isJson) {
-    try {
-      body = await request.json();
-    } catch {
-      return Response.json({ error: "invalid_json" }, { status: 400 });
+  if (fromQuery) {
+    const q: Record<string, unknown> = {};
+    const week = url.searchParams.get("weekStart");
+    if (week !== null) q.weekStart = week;
+
+    const weeks = url.searchParams.get("backfillWeeks");
+    // Number("") is 0 and Number("x") is NaN; both fail parseRunParams with a
+    // message naming the field, which is what we want over a silent default.
+    if (weeks !== null) q.backfillWeeks = weeks.trim() === "" ? Number.NaN : Number(weeks);
+
+    const dry = url.searchParams.get("dryRun");
+    // Anything that is not exactly true/false stays a string and is rejected,
+    // rather than every unrecognised value quietly meaning false.
+    if (dry !== null) q.dryRun = dry === "true" ? true : dry === "false" ? false : dry;
+
+    body = q;
+  } else {
+    const contentType = request.headers.get("content-type") ?? "";
+    if (contentType.includes("application/json")) {
+      try {
+        body = await request.json();
+      } catch {
+        return Response.json({ error: "invalid_json" }, { status: 400 });
+      }
+    } else if (request.body !== null && request.headers.get("content-length") !== "0") {
+      return Response.json(
+        {
+          error: "unsupported_media_type",
+          detail:
+            `a request body was sent with content-type "${contentType || "(none)"}". ` +
+            "Send the parameters in the query string instead " +
+            "(?weekStart=YYYY-MM-DD&backfillWeeks=1), which does not depend on a header.",
+        },
+        { status: 415 },
+      );
     }
-  } else if (request.body !== null && request.headers.get("content-length") !== "0") {
-    return Response.json(
-      {
-        error: "unsupported_media_type",
-        detail:
-          `a request body was sent with content-type "${contentType || "(none)"}". ` +
-          "It must be application/json, or the parameters are ignored and the run " +
-          "silently processes the current week with defaults.",
-      },
-      { status: 415 },
-    );
   }
 
   const parsed = parseRunParams(body);
