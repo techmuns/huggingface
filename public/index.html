@@ -774,6 +774,7 @@ let weekLoadSeq = 0;
 let current = { byCut: {}, coverage: null, week: null };
 let seriesRaw = null;    // /api/series payload, all cuts, up to 52 weeks
 let matrixSeries = null; // /api/series?cut=family_share_by_use_case, lazily
+let matrixPending = null; // the in-flight request for it, shared by every render
 let totalsCache = null;
 let ranCache = null;
 
@@ -894,7 +895,15 @@ function weeklyTotals() {
   const coverage = weeks.map((_, i) =>
     spaces[i] ? ((classified[i] ?? 0) / spaces[i]) * 100 : null);
 
-  totalsCache = { weeks, spaces, classified, models, coverage };
+  // Suppression follows the base a total was built on, so a derived line
+  // cannot present a week the pipeline marked as too small to report as
+  // though the client's own arithmetic had made it solid.
+  const supOf = (...cuts) => weeks.map((_, i) =>
+    cuts.some(c => seriesOf(c).some(x => x.suppressed?.[i])) ? 1 : 0);
+  const supSpaces = supOf(CUTS.usecase, CUTS.sdk);
+  const supModels = supOf(CUTS.family);
+
+  totalsCache = { weeks, spaces, classified, models, coverage, supSpaces, supModels };
   return totalsCache;
 }
 
@@ -981,14 +990,19 @@ function denseWeeks(weeks) {
  * and the line breaks. Guessing either way round is the difference between
  * "nobody built one" and "we didn't look".
  */
-function prepareSeries(weeks, rows, { zeroFill = false } = {}) {
+function prepareSeries(weeks, rows, { zeroFill = false, isCount = false } = {}) {
   const dense = denseWeeks(weeks);
   const at = new Map(weeks.map((w, i) => [w, i]));
-  // Measured by this cut, or — when we are filling zeros — by anything at all
-  // that week. Judging on this cut's own rows alone turns "nobody published a
-  // model" into "we have no idea", which is the invented-unknown twin of the
-  // invented zero the null rule exists to prevent.
-  const ran = zeroFill ? weeksThatRan() : null;
+  // Measured by this cut, or — for a COUNT being zero-filled — by anything at
+  // all that week. Judging a count on its own rows alone turns "nobody
+  // published a model" into "we have no idea", the invented-unknown twin of
+  // the invented zero the null rule exists to prevent.
+  //
+  // A percentage gets no such help. "0%" is only a claim if there is a base to
+  // be nought out of, and a week where this cut wrote nothing has no base
+  // either — so there the question is genuinely unanswered and the line
+  // breaks, which is what it did before the global mask arrived.
+  const ran = zeroFill && isCount ? weeksThatRan() : null;
   const measured = dense.map(w => {
     const i = at.get(w);
     if (i !== undefined && rows.some(r => r.values[i] != null)) return true;
@@ -1642,7 +1656,8 @@ function trendTable(weeks, lines, unit = '') {
 function renderTrendInto(el, { rows, weeks, cut, unit = '', chartId, extraNote = '' }) {
   if (!weeks.length) { setHTML(el, noSeriesNote()); return; }
 
-  const prepared = prepareSeries(weeks, rows, { zeroFill: true });
+  const isCount = COUNT_CUTS.has(cut);
+  const prepared = prepareSeries(weeks, rows, { zeroFill: true, isCount });
   const w = prepared.weeks;
 
   // Rows can exist and still hold nothing across the weeks on screen — a
@@ -1654,7 +1669,6 @@ function renderTrendInto(el, { rows, weeks, cut, unit = '', chartId, extraNote =
     setHTML(el, `<p class="empty">Nothing in the last ${w.length} week${w.length === 1 ? '' : 's'} — try a longer window.</p>`);
     return;
   }
-  const isCount = COUNT_CUTS.has(cut);
   const read = (l) => {
     const values = applyReading(l.values, l.denominators, isCount);
     return { ...l, values, carried: carriedMask(l.values, values) };
@@ -1812,10 +1826,11 @@ function renderHeadline() {
   // the classified line, and the Spaces line beside it is the proof the week
   // was measured. Spaces itself can only be null when both cuts are missing,
   // in which case nothing fills either row.
+  const sup = windowed(t.weeks.slice(0, upto), [t.supSpaces.slice(0, upto)]).arrays[0];
   const prepared = prepareSeries(w.weeks, [
-    { dimension: 'spaces', values: w.arrays[0], denominators: w.arrays[0], suppressed: w.arrays[0].map(() => 0) },
-    { dimension: 'classified', values: w.arrays[1], denominators: w.arrays[0], suppressed: w.arrays[1].map(() => 0) },
-  ], { zeroFill: true });
+    { dimension: 'spaces', values: w.arrays[0], denominators: w.arrays[0], suppressed: sup },
+    { dimension: 'classified', values: w.arrays[1], denominators: w.arrays[0], suppressed: sup },
+  ], { zeroFill: true, isCount: true });
   const weeks = prepared.weeks;
   const lines = [
     { key: 'spaces', label: 'All new Spaces', color: 'var(--s1)' },
@@ -1884,12 +1899,17 @@ function renderTrendsTab() {
     const t = weeklyTotals();
     // Coverage is a percentage, so its "story so far" is an average weighted by
     // how many Spaces each week carried, not a sum.
-    const w = windowed(t.weeks, [t[track.source], t.spaces]);
+    const w = windowed(t.weeks, [t[track.source], t.spaces,
+      track.source === 'models' ? t.supModels : t.supSpaces]);
     const isCount = track.unit !== '%';
+    // A derived total is only as reportable as the rows it was summed from: a
+    // week whose base fell below the threshold is suppressed here too, not
+    // quietly promoted to a confident figure because the sum was taken on the
+    // client.
     const prepared = prepareSeries(w.weeks, [{
       dimension: track.id, values: w.arrays[0], denominators: w.arrays[1],
-      suppressed: w.arrays[0].map(() => 0),
-    }]);
+      suppressed: w.arrays[2],
+    }], { zeroFill: true, isCount });
     const weeks = prepared.weeks;
     const raw = prepared.rows[0].values;
     const readValues = applyReading(raw, prepared.rows[0].denominators, isCount);
@@ -2010,8 +2030,14 @@ async function renderMatrixTrend() {
   if (!matrixSeries) {
     setHTML(el, '<p class="empty">Loading the history for this view…</p>');
     try {
-      matrixSeries = await getJSON(`/api/series?cut=${encodeURIComponent(CUTS.matrix)}&weeks=52`);
+      // The promise is the lock. Every control on the toolbar re-renders, and
+      // while this payload — the largest the page ever asks for — is in
+      // flight, matrixSeries is still null: without this each of those renders
+      // would start its own copy of the same 52-week download.
+      matrixPending ||= getJSON(`/api/series?cut=${encodeURIComponent(CUTS.matrix)}&weeks=52`);
+      matrixSeries = await matrixPending;
     } catch {
+      matrixPending = null;
       if (stillHere()) setHTML(el, '<p class="empty">Could not load the history for this view.</p>');
       return;
     }
