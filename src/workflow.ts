@@ -91,22 +91,21 @@ const MAX_RULE_PAGES = 500;
  * Step budget.
  *
  * Cloudflare caps a Workflow instance at 1,024 steps on the Free plan and
- * 10,000 on Paid. The routine weekly run (backfillWeeks = 1) is the case that
- * has to fit inside 1,024, and measured against a real week it does:
+ * 10,000 on Paid. This account is on Paid, so 10,000 is the real ceiling and
+ * the routine weekly run (backfillWeeks = 1) sits far inside it:
  *
  *   ingest pages          ~100
- *   enrichment batches     130  (cap; ~82 used at 4,089 blind Spaces)
+ *   enrichment batches     250  (cap; covers a week plus the standing backlog)
  *   rule pages              18
  *   LLM batches            400  (cap; ~275 used at 5,500 unsettled Spaces)
  *   per-week + terminal     ~25
  *   -------------------------------
- *   worst case             ~673  of 1,024
+ *   worst case             ~793  of 10,000
  *
  * The caps are deliberately above measured demand — a week that runs hot
- * should absorb into headroom, not silently truncate. Deep backfills
- * (backfillWeeks > 1) exceed 1,024 by design and need the Paid plan; their
- * ceiling is ~1,800 ingest pages + 1,200 enrichment + 500 rule + 3,000
- * classification + ~60 terminal, inside the 10,000 limit.
+ * should absorb into headroom, not silently truncate. A 26-week backfill is
+ * the real ceiling test: ~1,800 ingest pages + 1,200 enrichment + 500 rule +
+ * 3,000 classification + ~60 terminal, still inside 10,000.
  *
  * Every stage reports `truncated` rather than quietly covering less.
  */
@@ -344,13 +343,20 @@ export class WeeklyPipeline extends WorkflowEntrypoint<Env, WeeklyPipelineParams
     );
 
     const BATCH_SIZE = 50;
-    // A measured week leaves 4,089 Spaces blind: ~82 steps at 50 a batch. The
-    // old cap of 100 sat 22% above that, which is inside the week-to-week
-    // variance we measured (29% spread), so a busy week would have truncated.
-    // 130 covers 6,500 blind Spaces and costs 48 steps we are not using.
+    // A measured week leaves 4,089 Spaces blind (~82 steps at 50 a batch), and
+    // there is a standing backlog on top: this queue is global, and 7,434
+    // Spaces are currently waiting. 130 covered the week but not the backlog,
+    // so it never drained — every run left more behind than it cleared.
+    //
+    // 250 covers a week plus the whole backlog in one pass. It is affordable
+    // because the account is on Workers Paid: 10,000 steps per instance, not
+    // the 1,024 the earlier caps were sized against. README fetches cost HTTP
+    // requests and no model tokens, so draining the queue is a latency
+    // decision, not a spend one.
+    //
     // Scaled by backfill depth because a flat cap silently covered a twelfth
     // of a 12-week backfill. See the step budget above.
-    const MAX_BATCHES = Math.min(130 * backfillWeeks, 1200);
+    const MAX_BATCHES = Math.min(250 * backfillWeeks, 1200);
 
     for (let batch = 0; batch < MAX_BATCHES; batch++) {
       const result = await step.do(`enrich-batch-${batch}`, PAGE_RETRY, async () =>
