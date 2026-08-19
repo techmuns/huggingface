@@ -76,6 +76,44 @@ export function chunk<T>(items: readonly T[], size: number): T[][] {
 }
 
 /**
+ * How many bytes a string takes as UTF-8, without building it.
+ *
+ * The obvious `new TextEncoder().encode(s).length` allocates the entire
+ * encoded buffer purely to read its length, and this is called once per
+ * record — a walk of 7,000 records threw away 7,000 buffers, some of them
+ * 20 KB, to learn seven thousand integers. A run that has to fit inside a CPU
+ * ceiling should not be paying for that, and the garbage it makes is charged
+ * to the same budget.
+ *
+ * Counting matches TextEncoder exactly, lone surrogates included: an unpaired
+ * surrogate encodes as U+FFFD, which is three bytes, not the four a complete
+ * pair would take. The tests check this function against TextEncoder rather
+ * than against a table, so the two cannot drift.
+ */
+export function utf8Bytes(s: string): number {
+  let bytes = 0;
+  for (let i = 0; i < s.length; i++) {
+    const c = s.charCodeAt(i);
+    if (c < 0x80) {
+      bytes += 1;
+    } else if (c < 0x800) {
+      bytes += 2;
+    } else if (c >= 0xd800 && c <= 0xdbff) {
+      const next = i + 1 < s.length ? s.charCodeAt(i + 1) : 0;
+      if (next >= 0xdc00 && next <= 0xdfff) {
+        bytes += 4;
+        i++;                 // the pair is one code point
+      } else {
+        bytes += 3;          // lone high surrogate -> U+FFFD
+      }
+    } else {
+      bytes += 3;            // includes lone low surrogates -> U+FFFD
+    }
+  }
+  return bytes;
+}
+
+/**
  * Groups records so each group's `JSON.stringify` stays under `maxBytes`.
  *
  * Measures the serialized length of each record rather than assuming a size,
@@ -102,7 +140,7 @@ export function chunkByBytes<T>(
   let currentBytes = 2;
 
   for (const item of items) {
-    const size = new TextEncoder().encode(JSON.stringify(item)).length;
+    const size = utf8Bytes(JSON.stringify(item));
 
     if (size > maxRecordBytes) {
       oversized.push(item);
