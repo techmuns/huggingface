@@ -229,6 +229,14 @@ export async function insertRawRecords(
  * rather than something bolted on after it hurts. Anything dropped here has
  * already been archived to GitHub as a published weekly snapshot, and replay
  * beyond the horizon reads that archive instead.
+ *
+ * WHICH MAKES THE ARCHIVE A PRECONDITION, not a nicety. A snapshot commit can
+ * fail on its own — an expired or under-scoped GITHUB_TOKEN returns 403 — and
+ * the run now records that as `snapshot.committed: false` and carries on,
+ * because the week's metrics are already written and the dashboard is already
+ * correct. Nothing calls this function yet; whatever eventually does MUST
+ * refuse to prune a week whose snapshot never landed, or this comment becomes
+ * the description of a data-loss bug rather than of a retention policy.
  */
 export async function pruneRawRecords(db: D1Database, olderThanIso: string): Promise<number> {
   const result = await db

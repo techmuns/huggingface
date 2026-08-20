@@ -225,6 +225,29 @@ jobs:
       # and leaves a git-visible record of every run. Written through the
       # Contents API rather than a checkout and push, so there is no working
       # tree to conflict and no branch to protect against.
+      # The archive is Phase 8 and the week is already written by Phase 7, so a
+      # failed archive no longer fails the run — see src/workflow.ts. It must
+      # still be impossible to miss: raw-record pruning is documented to assume
+      # the archive exists, so a quiet skip here is how that assumption would
+      # come to be untrue.
+      - name: Warn if the weekly archive did not land
+        if: success()
+        env:
+          BASE: ${{ steps.start.outputs.base }}
+          TOKEN: ${{ secrets.ADMIN_TOKEN }}
+          ID: ${{ steps.start.outputs.id }}
+        run: |
+          set -uo pipefail
+          OUT=$(curl -sS --max-time 30 "$BASE/api/admin/run/$ID" -H "Authorization: Bearer $TOKEN")
+          COMMITTED=$(echo "$OUT" | jq -r '.status.output.snapshot.committed // "absent"')
+          if [ "$COMMITTED" = "false" ]; then
+            echo "::warning::The week's figures are written and the dashboard is \
+          updated, but the GitHub archive did NOT commit: \
+          $(echo "$OUT" | jq -r '.status.output.snapshot.error // "no reason given"'). \
+          Raw-record retention assumes this archive exists — fix the Worker's \
+          GITHUB_TOKEN (it needs Contents: Read and write) before relying on it."
+          fi
+
       - name: Record the run, and keep the schedule alive
         if: always()
         env:
