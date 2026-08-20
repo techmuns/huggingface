@@ -30,6 +30,15 @@ export interface SnapshotSummary {
   path: string;
   committed: boolean;
   sha: string | null;
+  /**
+   * Why the archive did not land, when it did not.
+   *
+   * Present only on a failure. The run carries on regardless — the week's
+   * metrics are written in Phase 7 and the dashboard is already updated by the
+   * time this runs — but the reason has to travel with the run rather than
+   * only existing in a log line nobody reads.
+   */
+  error?: string;
 }
 
 export async function buildSnapshot(

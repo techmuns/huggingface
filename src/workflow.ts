@@ -329,11 +329,42 @@ export class WeeklyPipeline extends WorkflowEntrypoint<Env, WeeklyPipelineParams
       );
     });
 
+    // The archive is the last thing a run does, and by the time it runs the
+    // week is ALREADY DONE: Phase 7 wrote hf_weekly_metrics and the dashboard
+    // is serving the new figures. Letting this step fail the run therefore
+    // reports a week that landed as a week that did not.
+    //
+    // That is not hypothetical. A four-hour run — every stage of it correct —
+    // was marked failed here because the Worker's GITHUB_TOKEN had lost
+    // `contents:write`: "Resource not accessible by personal access token".
+    // A credential expiring should not be able to tell you your pipeline is
+    // broken, and it certainly should not be able to do so every week for as
+    // long as the token stays stale.
+    //
+    // So the failure is recorded rather than thrown. Loudly: the reason
+    // travels on the run, the CI job turns it into a warning, and the
+    // `committed` flag stays false — because raw-record pruning is documented
+    // to assume the archive exists, and a silent false success here is exactly
+    // how that assumption would come to be untrue.
     let snapshot: SnapshotSummary | undefined;
     if (!config.dryRun) {
       snapshot = await step.do("snapshot", PAGE_RETRY, async () => {
         const payload = await buildSnapshot(this.env.DB, config.weekStart, narrate.narrative);
-        return commitSnapshot(payload, this.env.GITHUB_REPO, this.env.GITHUB_TOKEN);
+        try {
+          return await commitSnapshot(payload, this.env.GITHUB_REPO, this.env.GITHUB_TOKEN);
+        } catch (err) {
+          const reason = err instanceof Error ? err.message : String(err);
+          console.error(`snapshot archive failed for ${config.weekStart}: ${reason}`);
+          // The payload's own label, not the week start: the real path is
+          // keyed by ISO week (2026-W33), so recording a date here would name
+          // a file that does not exist and never will.
+          return {
+            path: `data/weeks/${payload.weekLabel}.json`,
+            committed: false,
+            sha: null,
+            error: reason,
+          };
+        }
       });
     }
 
