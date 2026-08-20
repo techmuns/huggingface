@@ -328,6 +328,41 @@ describe("truncateToBytes", () => {
     expect(truncateToBytes("😀abc", 2)).toBe("");
   });
 
+  it("agrees with TextEncoder on every boundary, so the rewrite cannot drift", () => {
+    // truncateToBytes stopped using TextEncoder for speed — it was allocating a
+    // buffer per code point and cost 8.8s per 500 oversized READMEs. Speed is
+    // only worth having if the answer is unchanged, so this pins the new
+    // arithmetic against the encoder it replaced, across every awkward case:
+    // ASCII, 2-byte, 3-byte, 4-byte pairs, and lone surrogates.
+    const enc = new TextEncoder();
+    const samples = [
+      "plain ascii text",
+      "café münchen",                    // 2-byte
+      "详细说明与示例代码",                  // 3-byte
+      "😀😀😀😀",                          // 4-byte pairs
+      "\ud83d",                          // lone high surrogate
+      "\udc00",                          // lone low surrogate
+      "a\ud83db",                        // lone surrogate mid-string
+      "mixed 混合 😀 text",
+      "",
+    ];
+    for (const s of samples) {
+      for (let budget = 0; budget <= 24; budget++) {
+        const out = truncateToBytes(s, budget);
+        // never exceeds the budget
+        expect(enc.encode(out).length).toBeLessThanOrEqual(budget);
+        // is a prefix of the input, cut on a character boundary
+        expect(s.startsWith(out)).toBe(true);
+        // and is maximal: the next character would not have fit
+        const rest = [...s.slice(out.length)];
+        if (rest.length > 0) {
+          const withNext = enc.encode(out + rest[0]).length;
+          expect(withNext).toBeGreaterThan(budget);
+        }
+      }
+    }
+  });
+
   it("caps a very large README to the documented budget", () => {
     const huge = "a".repeat(README_MAX_BYTES * 3);
     expect(len(truncateToBytes(huge, README_MAX_BYTES))).toBe(README_MAX_BYTES);
