@@ -129,8 +129,9 @@ const LLM_RETRY = {
 const WORKING_STEPS = 700;
 
 const STEP_BUDGET = {
-  /** Per walk, and there are two — models and Spaces. 1,000 records a page,
-      so 150 pages is 150,000 records against a measured ~7,000 a week. */
+  /** Per walk, and there are two — models and Spaces. 400 records a page (see
+      MAX_PAGE_SIZE: 1,000 cost 7.8ms of a 10ms step budget), so 150 pages is
+      60,000 records; the deepest walk observed needed 103. */
   ingestPerWalk: 150,
   /** 150 READMEs a batch: 15,000 against a standing queue of ~14,300. */
   enrich: 100,

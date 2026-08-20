@@ -75,7 +75,33 @@ const ENDPOINT: Record<EntityKind, string> = {
 };
 
 /** Verified to be accepted by both endpoints. */
-export const MAX_PAGE_SIZE = 1000;
+/**
+ * Records fetched per listing request, and therefore per ingest step.
+ *
+ * Sized against CPU, not against the Hub. The Hub is happy to return 1,000 and
+ * did for months; what it costs is the problem. An ingest step serializes
+ * every record it fetches — once in chunkByBytes to measure it, once more at
+ * the bind — and on Workers Free a step gets **10 ms of CPU**. Measured on
+ * realistic model records with `config` expanded:
+ *
+ *     1,000 a page   7.8 ms   at the ceiling, nothing left for replay
+ *       500 a page   3.6 ms
+ *       400 a page   2.8 ms
+ *
+ * A run died at `ingest-model-page-41` with "Worker exceeded CPU time limit",
+ * six attempts, the fastest failing in 178 ms — a step that never got going,
+ * not a slow one.
+ *
+ * 400 leaves roughly three quarters of the budget for orchestration replay and
+ * for production being slower than a benchmark on a laptop. Total CPU across
+ * the walk barely moves (~292 ms either way) — the same work is simply spread
+ * over more, smaller steps, which is the only shape that fits.
+ *
+ * Cost in steps: the deepest walk observed was 41,000 records, which is 103
+ * pages here against STEP_BUDGET.ingestPerWalk of 150. Raising this back up
+ * without re-measuring is how the CPU ceiling gets hit again.
+ */
+export const MAX_PAGE_SIZE = 400;
 
 export class HfApiError extends Error {
   constructor(

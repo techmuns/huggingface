@@ -6,6 +6,7 @@ import {
   stepsFor,
 } from "../src/workflow";
 import { RULES_PAGE_SIZE } from "../src/lib/classify-rules";
+import { MAX_PAGE_SIZE } from "../src/lib/hf-api";
 
 /**
  * The step budget is the thing that decides whether an unattended dashboard
@@ -38,6 +39,25 @@ describe("the workflow step budget", () => {
     const single = WORST_CASE_STEPS - STEP_BUDGET.ingestPerWalk;
     expect(single).toBeLessThan(WORST_CASE_STEPS);
     expect(WORST_CASE_STEPS - single).toBe(STEP_BUDGET.ingestPerWalk);
+  });
+
+  it("keeps an ingest page inside the CPU a step is given", () => {
+    // A step gets 10ms of CPU on Workers Free, and an ingest step serializes
+    // every record it fetches. At 1,000 a page that measured 7.8ms — the whole
+    // budget, with nothing left for orchestration replay — and a run died at
+    // ingest-model-page-41 with "Worker exceeded CPU time limit", the fastest
+    // of six attempts failing in 178ms.
+    //
+    // This is a proxy, not a CPU measurement: it pins the page size that the
+    // measurement justified, so raising it silently is not possible.
+    expect(MAX_PAGE_SIZE).toBeLessThanOrEqual(400);
+
+    // And the smaller page must still cover the deepest walk seen (41,000
+    // records) inside the step budget, or the fix trades one ceiling for
+    // another.
+    const DEEPEST_WALK_RECORDS = 41_000;
+    const pagesNeeded = Math.ceil(DEEPEST_WALK_RECORDS / MAX_PAGE_SIZE);
+    expect(pagesNeeded).toBeLessThanOrEqual(STEP_BUDGET.ingestPerWalk);
   });
 
   it("gives the rules pass enough capacity for a whole week", () => {
