@@ -99,7 +99,8 @@ const LLM_RETRY = {
 /**
  * The step budget — enforced here, not described in a comment.
  *
- * Cloudflare caps a Workflow instance at 10,000 steps on the Paid plan, but
+ * Cloudflare caps a Workflow instance at 1,024 steps on Free and 10,000 on
+ * Paid — this account deploys on Free, so 1,024 is the hard ceiling — but
  * that is not the limit that bites. Workflows replays the orchestration from
  * the top at every step boundary, so a run's overhead grows with the NUMBER of
  * steps; the instance is killed with WorkflowFatalError ("exceeded CPU or

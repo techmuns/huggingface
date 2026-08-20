@@ -6,26 +6,28 @@
   "workers_dev": true,
 
   // ---------------------------------------------------------------------
-  // CPU budget per invocation.
+  // No "limits" block, and it is not an oversight.
   //
-  // The default is 30 seconds, and the pipeline was running on it because this
-  // block did not exist. That is not enough, for a reason that is not obvious:
-  // Workflows replays the orchestration from the top at EVERY step boundary,
-  // so the CPU each step costs grows with the number of steps taken before it.
-  // Deep into a run the replay alone exhausts the budget before the step body
-  // starts.
+  // `limits.cpu_ms` is a Workers PAID feature. Setting it on this account
+  // fails the deploy outright — not with a warning, with:
   //
-  // The signature is unmistakable once seen — enrich-batch-41 failed all five
-  // attempts with "Worker exceeded CPU time limit" in 202ms, 2.4s, 1.7s, 1.8s
-  // and 1.4s. A step doing real work does not fail in 202ms; a step that never
-  // got to run does. Earlier this looked like a slow external API, which it
-  // never was.
+  //     CPU limits are not supported for the Free plan  [code: 100328]
   //
-  // 300,000 ms is the Workers Paid maximum. Raising it does not cost anything
-  // by itself: Workers bill for CPU actually used, so a run that finishes in
-  // two seconds a step still bills two seconds a step.
+  // and a failed deploy blocks every other fix in the same push. That is how
+  // it was found: four unrelated fixes sat undeployed behind one line.
+  //
+  // It was added to raise the 30s default, because deep runs were dying with
+  // "Worker exceeded CPU time limit" — steps failing in 1-2s as the
+  // orchestration replay ate the budget before the step body ran. That
+  // problem is real and this was the wrong lever for it on this plan. The
+  // right lever is fewer, cheaper steps, which is what STEP_BUDGET in
+  // src/workflow.ts enforces and what the enrich/raw-store allocation fixes
+  // reduce.
+  //
+  // Re-add this ONLY after confirming the deploying account is on Workers
+  // Paid — the account that builds this Worker, which is not necessarily the
+  // one holding the D1 database.
   // ---------------------------------------------------------------------
-  "limits": { "cpu_ms": 300000 },
 
   // Which code is actually live. Deploys land minutes after a push, and with
   // nothing reporting the deployed version the only way to tell was to infer
