@@ -403,7 +403,22 @@ export interface ClassifyRulesSummary {
 const LOW_CONFIDENCE_THRESHOLD = 0.6;
 
 /** Rows examined per call. Bounds the statements issued in one invocation. */
-export const RULES_PAGE_SIZE = 120;
+/**
+ * Spaces examined per rule-classification step.
+ *
+ * 40 steps (STEP_BUDGET.rules) x 400 = 16,000 against a measured ~6,800 new
+ * Spaces a week. It was 120, giving 4,800 — so roughly 2,000 Spaces a week
+ * were never examined by either pass while still counting in the denominator,
+ * dragging coverage down every week and leaving those Spaces out of every
+ * chart. The budget comment beside STEP_BUDGET.rules already said "400 Spaces
+ * a page: 16,000"; the constant simply never matched it.
+ *
+ * Raised here rather than by adding steps, deliberately: step count is what
+ * exhausts the orchestration's CPU and killed several runs, and
+ * test/step-budget.spec.ts holds the ceiling. Measured cost of a page at this
+ * size is ~47ms against ~13ms at 120 — linear, and far below a step's budget.
+ */
+export const RULES_PAGE_SIZE = 400;
 
 export async function classifySpacesByRules(
   db: D1Database,

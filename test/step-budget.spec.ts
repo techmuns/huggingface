@@ -5,6 +5,7 @@ import {
   WORST_CASE_STEPS,
   stepsFor,
 } from "../src/workflow";
+import { RULES_PAGE_SIZE } from "../src/lib/classify-rules";
 
 /**
  * The step budget is the thing that decides whether an unattended dashboard
@@ -37,6 +38,16 @@ describe("the workflow step budget", () => {
     const single = WORST_CASE_STEPS - STEP_BUDGET.ingestPerWalk;
     expect(single).toBeLessThan(WORST_CASE_STEPS);
     expect(WORST_CASE_STEPS - single).toBe(STEP_BUDGET.ingestPerWalk);
+  });
+
+  it("gives the rules pass enough capacity for a whole week", () => {
+    // This drifted unnoticed because nothing asserted it: the budget comment
+    // described 400 Spaces a page while RULES_PAGE_SIZE was 120, so capacity
+    // was 4,800 against ~6,800 new Spaces a week and ~2,000 were never
+    // examined — counted in the denominator, absent from every chart. The
+    // equivalent assertions existed for `llm` and `enrich`, just not this one.
+    const SPACES_PER_WEEK = 6_800;
+    expect(STEP_BUDGET.rules * RULES_PAGE_SIZE).toBeGreaterThan(SPACES_PER_WEEK);
   });
 
   describe("stepsFor", () => {
