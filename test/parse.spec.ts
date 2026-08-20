@@ -5,6 +5,7 @@ import {
   extractBaseModelInfo,
   matchFamily,
   matchFamilyByName,
+  EMPTY_CURSORS,
   resolveModelFamilies,
 } from "../src/lib/model-family";
 import { parseRawModels, parseRawSpaces, upsertModels } from "../src/lib/parse";
@@ -592,6 +593,44 @@ describe("family resolution is bounded per call", () => {
       "select count(*) as n from hf_models where family = 'qwen'",
     ).first<{ n: number }>();
     expect(qwen?.n).toBe(50);
+  });
+
+  it("reaches resolvable rows that sit behind a wall of unresolvable ones", async () => {
+    // The bug this pins: paginateUnresolved began every call at cursor "" and
+    // discarded where it got to, and the workflow stopped as soon as a pass
+    // resolved nothing. So a run walked the head of the set, hit a stretch it
+    // could not place, and quit — leaving everything behind that stretch
+    // unexamined and published as "unknown" by COALESCE(family, 'unknown').
+    //
+    // "aaa..." sorts before "qwen...", so with a 200-row budget the first pass
+    // sees only unresolvable rows. Under the old code every later pass saw the
+    // same 200 and the qwen rows were never reached.
+    await seed(600, "aaaunknownvendor");
+    await seed(40, "qwen");
+
+    let cursors = EMPTY_CURSORS;
+    for (let pass = 0; pass < 20; pass++) {
+      const out = await resolveModelFamilies(DB, 200, cursors);
+      cursors = out.cursors;
+      if (out.done) break;
+    }
+
+    const qwen = await DB.prepare(
+      "select count(*) as n from hf_models where family = 'qwen'",
+    ).first<{ n: number }>();
+    expect(qwen?.n).toBe(40);
+  });
+
+  it("reports done only when every rung has walked its whole set", async () => {
+    // `done` must not mean "this pass resolved nothing" — a pass landing
+    // entirely on unresolvable rows resolves zero while plenty is still
+    // unexamined behind it. That conflation is the bug above.
+    await seed(500, "aaaunknownvendor");
+
+    const first = await resolveModelFamilies(DB, 100, EMPTY_CURSORS);
+    expect(first.total).toBe(0);          // resolved nothing...
+    expect(first.done).toBe(false);       // ...but is NOT finished
+    expect(first.cursors.name).not.toBe("");  // and it did move forward
   });
 
   it("terminates when nothing is resolvable", async () => {

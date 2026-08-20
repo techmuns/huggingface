@@ -19,7 +19,12 @@ import {
 } from "./lib/enrich";
 import { HfClient, type EntityKind } from "./lib/hf-api";
 import { MAX_PAGES_PER_WALK, ingestPage } from "./lib/ingest";
-import { type ResolveSummary, resolveModelFamilies } from "./lib/model-family";
+import {
+  EMPTY_CURSORS,
+  RESOLVE_PAGE,
+  type ResolveSummary,
+  resolveModelFamilies,
+} from "./lib/model-family";
 import { type NarrateSummary, narrateWeek } from "./lib/narrate";
 import { type ParseSummary, parseRawModels, parseRawSpaces } from "./lib/parse";
 import { type SnapshotSummary, buildSnapshot, commitSnapshot } from "./lib/snapshot";
@@ -236,11 +241,15 @@ export class WeeklyPipeline extends WorkflowEntrypoint<Env, WeeklyPipelineParams
     const MAX_RESOLVE_PASSES = 40;
     const resolve: ResolveSummary = {
       byTag: 0, byCardData: 0, byChain: 0, byModelType: 0, byName: 0,
-      byBase: 0, total: 0,
+      byBase: 0, total: 0, cursors: EMPTY_CURSORS, done: false,
     };
     for (let pass = 0; pass < MAX_RESOLVE_PASSES; pass++) {
+      // The cursors from the previous pass are what make this a walk rather
+      // than a repeated re-read of the same head. Step results are durable, so
+      // a retried step resumes from the same place instead of rewinding.
+      const from = resolve.cursors;
       const part = await step.do(`resolve-models-${pass}`, SQL_RETRY, async () =>
-        resolveModelFamilies(this.env.DB),
+        resolveModelFamilies(this.env.DB, RESOLVE_PAGE, from),
       );
       resolve.byTag += part.byTag;
       resolve.byCardData += part.byCardData;
@@ -249,7 +258,13 @@ export class WeeklyPipeline extends WorkflowEntrypoint<Env, WeeklyPipelineParams
       resolve.byName += part.byName;
       resolve.byBase += part.byBase;
       resolve.total += part.total;
-      if (part.total === 0) break;
+      resolve.cursors = part.cursors;
+      resolve.done = part.done;
+
+      // Stop when every rung has walked its whole set — not when a pass
+      // happens to resolve nothing. Those are different, and confusing them
+      // is what left most models unexamined and published as "unknown".
+      if (part.done) break;
     }
 
     // ── Phase 5: enrich blind Spaces + dedup ─────────────────────────────
