@@ -32,7 +32,21 @@ export interface HfListPage {
  *
  * `gguf` must never be bulk-expanded. It embeds the model's entire chat
  * template — hundreds of KB per record — and is fatal in a listing of 1,000.
- * Phase 4 fetches it per-repo, for unresolved records only.
+ *
+ * `config` is absent for the same reason, arrived at the hard way. It was
+ * added for `config.model_type` and it works, but it carries the whole config
+ * object: a quantized flagship's per-layer quantization block runs to 2.38 MB
+ * on one record, and 17 records in 12,000 (0.14%) exceed the 90,000-byte
+ * ceiling in `chunkByBytes` and are DISCARDED with a console warning. Those 17
+ * are exactly the models that would have resolved to a named family — the
+ * NVFP4 and GPTQ builds of Nemotron, DeepSeek, Qwen3-Coder — and they never
+ * reach the table at all.
+ *
+ * Dropping it costs nothing, because the Hub derives an architecture tag from
+ * the same field: measured over 12,000 models, `config.model_type` appears
+ * verbatim in `tags` in 4,786 of 4,786 cases, and there is not one model the
+ * config can place that the tags cannot. Mean record 4,507 -> 467 bytes,
+ * largest 2.38 MB -> 39.7 KB, records over the ceiling 17 -> 0.
  */
 const EXPAND: Record<EntityKind, readonly string[]> = {
   model: [
@@ -46,11 +60,6 @@ const EXPAND: Record<EntityKind, readonly string[]> = {
     "pipeline_tag",
     "library_name",
     "cardData",
-    // The canonical architecture field. Free — it rides the listing request we
-    // already make — and it resolves ~11.5% more models than declared lineage
-    // alone. Unlike the architecture *tags*, which are derived from it, this
-    // is what the model itself says it is.
-    "config",
   ],
   // Verified against the live API: `title` and `shortDescription` are NOT
   // expandable on Spaces — the endpoint rejects them and enumerates what it

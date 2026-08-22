@@ -248,6 +248,28 @@ jobs:
           GITHUB_TOKEN (it needs Contents: Read and write) before relying on it."
           fi
 
+      - name: Warn if family resolution did not finish its walk
+        if: success()
+        env:
+          BASE: ${{ steps.start.outputs.base }}
+          TOKEN: ${{ secrets.ADMIN_TOKEN }}
+          ID: ${{ steps.start.outputs.id }}
+        run: |
+          set -uo pipefail
+          OUT=$(curl -sS --max-time 30 "$BASE/api/admin/run/$ID" -H "Authorization: Bearer $TOKEN")
+          DONE=$(echo "$OUT" | jq -r '.status.output.resolve.done // "absent"')
+          if [ "$DONE" = "false" ]; then
+            echo "::warning::Model-family resolution ran out of passes before \
+          walking its whole set. Rungs still walking: \
+          $(echo "$OUT" | jq -r '.status.output.resolve.unfinished // [] | join(", ")'). \
+          Models past the point each cursor reached were never examined this \
+          run and are published as Unresolved, which is indistinguishable from \
+          a model that was checked and could not be placed. The resolve loop \
+          re-walks the whole accumulated corpus every week from an empty \
+          cursor, so this warning appears once the corpus outgrows \
+          MAX_RESOLVE_PASSES x RESOLVE_PAGE and does not go away on its own."
+          fi
+
       - name: Record the run, and keep the schedule alive
         if: always()
         env:

@@ -441,9 +441,9 @@ describe("upsertModels", () => {
   });
 });
 
-// ── config.model_type resolution ────────────────────────────────────────────
+// ── architecture resolution ─────────────────────────────────────────────────
 
-describe("resolveByModelType", () => {
+describe("resolveByArchitecture", () => {
   it("resolves a family from the model's own declared architecture", async () => {
     // ~11.5% of new models declare no base_model but do report a model_type.
     // It rides the listing request we already make, so it costs nothing.
@@ -496,6 +496,213 @@ describe("resolveByModelType", () => {
       .bind("someone/declared")
       .first<{ family: string; resolution_source: string }>();
     expect(row).toMatchObject({ family: "qwen", resolution_source: "base_model_tag" });
+  });
+
+  it("reads the architecture out of tags when no config was expanded", async () => {
+    // `config` is no longer in the model expand list — it carried whole
+    // per-layer quantization blocks and pushed 0.14% of records past the size
+    // ceiling, where they were dropped. The Hub derives a tag from the same
+    // field, and over 12,000 models it was present in 4,786 of 4,786 cases.
+    await upsertModels(
+      DB,
+      [{ id: "someone/no-config", createdAt: "2026-08-17T00:00:00.000Z",
+         tags: ["text-generation", "gemma3", "transformers"] }],
+      "2026-08-18T00:00:00.000Z",
+    );
+    await resolveModelFamilies(DB);
+
+    const row = await DB.prepare("SELECT family, model_type FROM hf_models WHERE repo_id = ?")
+      .bind("someone/no-config")
+      .first<{ family: string; model_type: string | null }>();
+    expect(row?.model_type).toBeNull();
+    expect(row?.family).toBe("gemma");
+  });
+
+  it("does not read a build tool as an architecture", async () => {
+    // `llama.cpp` on a GGUF says which converter produced the file. 74 models
+    // in 12,000 carry a tag like this and are not the family it names.
+    await upsertModels(
+      DB,
+      [{ id: "someone/SmolLM2-135M-GGUF", createdAt: "2026-08-17T00:00:00.000Z",
+         tags: ["llama.cpp", "gguf", "text-generation"] }],
+      "2026-08-18T00:00:00.000Z",
+    );
+    await resolveModelFamilies(DB);
+
+    const row = await DB.prepare("SELECT family FROM hf_models WHERE repo_id = ?")
+      .bind("someone/SmolLM2-135M-GGUF")
+      .first<{ family: string | null }>();
+    expect(row?.family).toBeNull();
+  });
+
+  it("ignores namespaced tags, which are metadata rather than architectures", async () => {
+    await upsertModels(
+      DB,
+      [{ id: "someone/plain", createdAt: "2026-08-17T00:00:00.000Z",
+         tags: ["dataset:qwen-corpus", "arxiv:2401.llama", "license:apache-2.0"] }],
+      "2026-08-18T00:00:00.000Z",
+    );
+    await resolveModelFamilies(DB);
+
+    const row = await DB.prepare("SELECT family FROM hf_models WHERE repo_id = ?")
+      .bind("someone/plain")
+      .first<{ family: string | null }>();
+    expect(row?.family).toBeNull();
+  });
+
+  it("places a model whose declared parent could not be named", async () => {
+    // The rung used to carry `AND base_model IS NULL`, so a model with a
+    // parent nobody could place went straight to `other-open` while its own
+    // config named the family. 243 models in 12,000.
+    await upsertModels(
+      DB,
+      [{ id: "someone/has-parent", createdAt: "2026-08-17T00:00:00.000Z",
+         tags: ["base_model:finetune:private-org/internal-thing", "gemma3"] }],
+      "2026-08-18T00:00:00.000Z",
+    );
+    await resolveModelFamilies(DB);
+
+    const row = await DB.prepare("SELECT family, base_model FROM hf_models WHERE repo_id = ?")
+      .bind("someone/has-parent")
+      .first<{ family: string; base_model: string }>();
+    expect(row?.base_model).toBe("private-org/internal-thing");
+    expect(row?.family).toBe("gemma");
+  });
+
+  it("still lets a NAMED parent outrank the architecture", async () => {
+    // The ordering is the safety mechanism for the rule above. Speculative
+    // drafters are the case that proves it: a Nemotron built on a Qwen
+    // skeleton reports model_type qwen and is not a Qwen.
+    await upsertModels(
+      DB,
+      [{ id: "someone/drafter", createdAt: "2026-08-17T00:00:00.000Z",
+         tags: ["base_model:finetune:unsloth/Nemotron-3-Nano", "qwen3"] }],
+      "2026-08-18T00:00:00.000Z",
+    );
+    await resolveModelFamilies(DB);
+
+    const row = await DB.prepare("SELECT family FROM hf_models WHERE repo_id = ?")
+      .bind("someone/drafter")
+      .first<{ family: string }>();
+    expect(row?.family).toBe("nvidia-nemotron");
+  });
+
+  it("does not file a diffusion model under its text encoder", async () => {
+    await upsertModels(
+      DB,
+      [{ id: "someone/StableDiffusion-1.4-Pruned", createdAt: "2026-08-17T00:00:00.000Z",
+         tags: ["qwen3", "text-to-image"], pipeline_tag: "text-to-image",
+         library_name: "diffusers" }],
+      "2026-08-18T00:00:00.000Z",
+    );
+    await resolveModelFamilies(DB);
+
+    const row = await DB.prepare("SELECT family FROM hf_models WHERE repo_id = ?")
+      .bind("someone/StableDiffusion-1.4-Pruned")
+      .first<{ family: string | null }>();
+    expect(row?.family).toBeNull();
+  });
+
+  it("but does keep a family's own image model", async () => {
+    // The gate is narrow on purpose. An earlier draft rejected every non-text
+    // modality, which threw out Qwen's own ASR, TTS and image models — 30 rows
+    // in 12,000 that genuinely are the family their architecture names.
+    await upsertModels(
+      DB,
+      [{ id: "someone/Qwen-Image-2512", createdAt: "2026-08-17T00:00:00.000Z",
+         tags: ["qwen3", "text-to-image"], pipeline_tag: "text-to-image",
+         library_name: "diffusers" }],
+      "2026-08-18T00:00:00.000Z",
+    );
+    await resolveModelFamilies(DB);
+
+    const row = await DB.prepare("SELECT family FROM hf_models WHERE repo_id = ?")
+      .bind("someone/Qwen-Image-2512")
+      .first<{ family: string }>();
+    expect(row?.family).toBe("qwen");
+  });
+});
+
+// ── the declared parent's name, when its org says nothing ───────────────────
+
+describe("a re-hosted parent still names its family", () => {
+  it("follows the parent's name when the parent's org is not the family's", async () => {
+    // The ecosystem re-hosts through unsloth, bartowski, mradermacher and
+    // dozens of others. The 8-org list matched a small minority of declared
+    // lineage: 664 models in 12,000 were thrown away for the wrong prefix,
+    // `unsloth` alone accounting for 298.
+    await upsertModels(
+      DB,
+      [{ id: "someone/tuned", createdAt: "2026-08-17T00:00:00.000Z",
+         tags: ["base_model:finetune:unsloth/Qwen3-8B-Instruct-bnb-4bit"] }],
+      "2026-08-18T00:00:00.000Z",
+    );
+    await resolveModelFamilies(DB);
+
+    const row = await DB.prepare("SELECT family, base_model, resolution_source FROM hf_models WHERE repo_id = ?")
+      .bind("someone/tuned")
+      .first<{ family: string; base_model: string; resolution_source: string }>();
+    expect(row).toMatchObject({
+      family: "qwen",
+      base_model: "unsloth/Qwen3-8B-Instruct-bnb-4bit",
+      resolution_source: "base_model_tag",
+    });
+  });
+
+  it("does the same through cardData", async () => {
+    await upsertModels(
+      DB,
+      [{ id: "someone/card-tuned", createdAt: "2026-08-17T00:00:00.000Z", tags: [],
+         cardData: { base_model: "bartowski/Mistral-Small-3.2-GGUF" } }],
+      "2026-08-18T00:00:00.000Z",
+    );
+    await resolveModelFamilies(DB);
+
+    const row = await DB.prepare("SELECT family, resolution_source FROM hf_models WHERE repo_id = ?")
+      .bind("someone/card-tuned")
+      .first<{ family: string; resolution_source: string }>();
+    expect(row).toMatchObject({ family: "mistral", resolution_source: "card_data" });
+  });
+
+  it("claims no provenance for a parent it could not place", async () => {
+    // resolution_source used to be stamped 'card_data' alongside a NULL
+    // family, so a row that went on to be marked other-open carried a claim
+    // about how we knew something we did not know.
+    await upsertModels(
+      DB,
+      [{ id: "someone/card-mystery", createdAt: "2026-08-17T00:00:00.000Z", tags: [],
+         cardData: { base_model: "private-org/internal-thing" } }],
+      "2026-08-18T00:00:00.000Z",
+    );
+    await resolveModelFamilies(DB);
+
+    const row = await DB.prepare("SELECT family, base_model, resolution_source FROM hf_models WHERE repo_id = ?")
+      .bind("someone/card-mystery")
+      .first<{ family: string; base_model: string; resolution_source: string | null }>();
+    expect(row?.base_model).toBe("private-org/internal-thing");
+    expect(row?.family).toBe("other-open");
+    expect(row?.resolution_source).toBeNull();
+  });
+});
+
+// ── repo names separated by underscores ─────────────────────────────────────
+
+describe("matchFamilyByName reads underscores as separators", () => {
+  it.each([
+    ["TeamUNIVA/qwen3_asr_1.7b_ko_beta", "qwen"],
+    ["PsiPi/MIDI-LLM_Llama-3.2-1B-Q8_0-GGUF", "llama"],
+    ["sam01ghsh/experiments_gemma-2-2b_jump_relu_fps", "gemma"],
+    ["stevel7/ondevice_gemma_litertlm", "gemma"],
+  ])("%s -> %s", (repoId, expected) => {
+    // `_` is a word character, so \b never fired between "qwen3" and "_asr".
+    // 145 models in 12,000 whose names say plainly what they are went
+    // unresolved because of it.
+    expect(matchFamilyByName(repoId)).toBe(expected);
+  });
+
+  it("still refuses a family name buried inside a longer word", () => {
+    expect(matchFamilyByName("someone/llamaesque")).toBeNull();
+    expect(matchFamilyByName("someone/gemmatron")).toBeNull();
   });
 });
 

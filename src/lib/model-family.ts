@@ -8,7 +8,9 @@
  * Fallback order:
  *   1. base_model:<relation>:<target> tags  (highest confidence)
  *   2. cardData.base_model from the raw payload
- *   3. repo-name pattern match              (lowest confidence)
+ *   3. the declared architecture             (config.model_type, or the tag
+ *                                             the Hub derives from it)
+ *   4. repo-name pattern match              (lowest confidence)
  *
  * After each extraction pass, chain-following inherits from already-resolved
  * parents so that a quantized fine-tune of a Llama is still a Llama.
@@ -24,7 +26,7 @@ export interface ResolveSummary {
   byTag: number;
   byCardData: number;
   byChain: number;
-  byModelType: number;
+  byArchitecture: number;
   byName: number;
   /** Repos with no declared parent, labelled `base`. */
   byBase: number;
@@ -39,18 +41,26 @@ export interface ResolveSummary {
   cursors: ResolveCursors;
   /** True once every resolver has walked its whole set. */
   done: boolean;
+  /**
+   * The rungs that had NOT finished walking when this pass returned.
+   *
+   * `done: false` on its own says a run ran out of passes without saying what
+   * it ran out of them on, which is the difference between a report someone
+   * can act on and a flag nobody looks at.
+   */
+  unfinished: string[];
 }
 
 /** One cursor per resolver: they walk different filtered sets. */
 export interface ResolveCursors {
   tags: string;
   cardData: string;
-  modelType: string;
+  architecture: string;
   name: string;
 }
 
 export const EMPTY_CURSORS: ResolveCursors = {
-  tags: "", cardData: "", modelType: "", name: "",
+  tags: "", cardData: "", architecture: "", name: "",
 };
 
 // ── Tag parsing ──────────────────────────────────────────────────────────────
@@ -95,15 +105,32 @@ const FAMILY_BY_ORG: ReadonlyArray<[RegExp, string]> = [
   [/^nvidia\/[Nn]emotron/i, "nvidia-nemotron"],
 ];
 
+/**
+ * `\b` is the wrong boundary for a repo name.
+ *
+ * An underscore is a word character, so in `qwen3_asr_1.7b` the boundary
+ * between "3" and "_" is between two word characters and `/\bqwen\d*\b/`
+ * never matches — nor does it in `experiments_gemma-2-2b` or
+ * `MIDI-LLM_Llama-3.2-1B`. Underscores are one of the two things people
+ * separate repo names with, so this was not an edge case: it left 145 models
+ * in 12,000 unresolved whose names say plainly what they are.
+ *
+ * The replacement asks for "not preceded by a letter or digit, not followed by
+ * a letter", which treats `_`, `-`, `.` and `/` alike and still refuses to
+ * match a family name buried inside a longer word.
+ */
+const NL = "(?<![a-z0-9])", NR = "(?![a-z])";
+const named = (...alts: string[]) => new RegExp(alts.map(a => `${NL}${a}${NR}`).join("|"), "i");
+
 const FAMILY_BY_NAME: ReadonlyArray<[RegExp, string]> = [
-  [/\bqwen\d*\b|\bqwq\b/i, "qwen"],
-  [/\bllama\b|\bllava\b/i, "llama"],
-  [/\bdeepseek\b/i, "deepseek"],
-  [/\bgemma\b/i, "gemma"],
-  [/\bmistral\b|\bmixtral\b/i, "mistral"],
-  [/\bchatglm\b|\bglm-?\d/i, "glm-zhipu"],
-  [/\bmoonshot\b|\bkimi\b/i, "kimi-moonshot"],
-  [/\bnemotron\b/i, "nvidia-nemotron"],
+  [named("qwen\\d*", "qwq"), "qwen"],
+  [named("llama", "llava"), "llama"],
+  [named("deepseek"), "deepseek"],
+  [named("gemma\\d*"), "gemma"],
+  [named("mistral", "mixtral"), "mistral"],
+  [new RegExp(`${NL}chatglm${NR}|${NL}glm-?\\d`, "i"), "glm-zhipu"],
+  [named("moonshot", "kimi"), "kimi-moonshot"],
+  [named("nemotron"), "nvidia-nemotron"],
 ];
 
 export function matchFamily(target: string): string | null {
@@ -118,6 +145,25 @@ export function matchFamilyByName(repoId: string): string | null {
     if (re.test(repoId)) return family;
   }
   return null;
+}
+
+/**
+ * The family a DECLARED PARENT belongs to.
+ *
+ * The org prefix is the reliable signal — `Qwen/Qwen3-8B` is a Qwen — but most
+ * declared parents are not published by the org that made the family. The
+ * ecosystem re-hosts through `unsloth/`, `bartowski/`, `mradermacher/` and
+ * dozens of others, and every one of those was dropped on the floor for having
+ * the wrong prefix: 664 models in 12,000, `unsloth` alone accounting for 298.
+ *
+ * Falling back to the parent's NAME is safe in a way that name-matching a
+ * repo's own id is not. The string being read is a repo the author pointed at
+ * as their parent, not a title they chose for themselves. Measured over the
+ * same 12,000: where both rules fire, they agree 1,058 times and contradict
+ * each other 0 times.
+ */
+export function matchFamilyOfParent(target: string): string | null {
+  return matchFamily(target) ?? matchFamilyByName(target);
 }
 
 // ── Resolution pipeline ──────────────────────────────────────────────────────
@@ -225,7 +271,7 @@ async function resolveFromTags(
     const info = extractBaseModelInfo(tags);
     if (!info) continue;
 
-    const family = matchFamily(info.target);
+    const family = matchFamilyOfParent(info.target);
     if (family) {
       stmts.push(
         db
@@ -288,16 +334,28 @@ async function resolveFromCardData(
     }
     if (typeof target !== "string" || !target) continue;
 
-    const family = matchFamily(target);
+    // resolution_source is stamped only when a family was actually resolved.
+    // It used to be written unconditionally alongside a NULL family, so a row
+    // that went on to be marked `other-open` carried a provenance it never
+    // earned — a claim about how we know something we did not know.
+    const family = matchFamilyOfParent(target);
     stmts.push(
-      db
-        .prepare(
-          `UPDATE hf_models
-             SET base_model = ?1, derivative_type = 'finetune',
-                 family = ?2, resolution_source = 'card_data'
-           WHERE repo_id = ?3`,
-        )
-        .bind(target, family, row.repo_id),
+      family
+        ? db
+            .prepare(
+              `UPDATE hf_models
+                 SET base_model = ?1, derivative_type = 'finetune',
+                     family = ?2, resolution_source = 'card_data'
+               WHERE repo_id = ?3`,
+            )
+            .bind(target, family, row.repo_id)
+        : db
+            .prepare(
+              `UPDATE hf_models
+                 SET base_model = ?1, derivative_type = 'finetune'
+               WHERE repo_id = ?2`,
+            )
+            .bind(target, row.repo_id),
     );
     if (family) resolved++;
   }
@@ -345,7 +403,7 @@ async function resolveByChain(db: D1Database, limit: number): Promise<number> {
 
 
 /**
- * Architecture -> family, from config.model_type.
+ * Architecture -> family.
  *
  * The Hub reports what the model says it is: "llama", "qwen3_5_moe",
  * "gemma3", "chatglm". Prefix-anchored so a family name never matches inside
@@ -372,45 +430,157 @@ export function matchFamilyByModelType(modelType: string | null): string | null 
   return null;
 }
 
-async function resolveByModelType(
+/**
+ * Tags that read like an architecture and are a build tool.
+ *
+ * `llama.cpp` on a SmolLM2 GGUF says which converter produced the file, not
+ * what the model is; `mistral-common` is a tokeniser library that rides along
+ * on models from every family. 74 models in 12,000 carry one of these and
+ * would otherwise be filed under a family they have nothing to do with.
+ *
+ * Treat this list as permanently incomplete. It is a blocklist over an open
+ * vocabulary that anyone can add to, so it will always be one release behind;
+ * that is a reason to keep it, not a reason to trust it alone.
+ */
+const TOOLING_TAGS: ReadonlySet<string> = new Set([
+  "llama.cpp", "llama-cpp", "llamacpp", "llama_cpp", "llamacpp server",
+  "llamafile", "llama-factory", "llamafactory", "llama_index", "llamaindex",
+  "mistral-common", "mistral_common", "mistral-inference", "qwen-agent",
+]);
+
+/**
+ * Stacks where an LLM architecture in the config is the TEXT ENCODER.
+ *
+ * A diffusion pipeline embeds a language model to read the prompt, and the
+ * Hub reports that encoder's architecture as the repo's. `StableDiffusion-1.4-
+ * Pruned-openvino` tagged `qwen3` is the clearest case: the tag is true of a
+ * component and false of the model.
+ *
+ * Deliberately narrow. An earlier draft gated every non-language modality,
+ * which also threw out Qwen's own ASR, TTS and image models — 30 rows in
+ * 12,000 that genuinely are the family their architecture names. A speech
+ * model fine-tuned from Gemma IS a developer building on Gemma, and the
+ * question this cut answers is which families people build on.
+ */
+const DIFFUSION_STACK: ReadonlySet<string> = new Set([
+  "diffusers", "comfyui", "pruna-ai", "open_clip", "k-diffusion",
+]);
+const GENERATIVE_PIPELINES: ReadonlySet<string> = new Set([
+  "text-to-image", "image-to-image", "text-to-video", "image-to-video",
+  "unconditional-image-generation", "text-to-3d", "image-to-3d",
+]);
+
+/** True when the architecture is describing a component, not the model. */
+export function isTextEncoderOnly(
+  repoId: string,
+  family: string,
+  pipelineTag: string | null,
+  libraryName: string | null,
+): boolean {
+  const stack = DIFFUSION_STACK.has((libraryName ?? "").toLowerCase())
+    || GENERATIVE_PIPELINES.has((pipelineTag ?? "").toLowerCase());
+  // The repo's own name is the tie-breaker: `Qwen-Image` is a Qwen model that
+  // makes images, `StableDiffusion-1.4-Pruned` is not.
+  return stack && matchFamilyByName(repoId) !== family;
+}
+
+/**
+ * The architecture family, from `config.model_type` or from the tag the Hub
+ * derives from it.
+ *
+ * Both are read because the two sources are not interchangeable over time:
+ * `model_type` is only present on records ingested while `config` was being
+ * expanded, and the tag is present on all of them. Measured over 12,000
+ * models: `model_type` appears verbatim as a tag in 4,786 of 4,786 cases, and
+ * there is not one model the config can place that the tags cannot.
+ */
+export function matchFamilyByArchitecture(
+  modelType: string | null,
+  tags: readonly string[],
+): string | null {
+  const fromConfig = matchFamilyByModelType(modelType);
+  if (fromConfig) return fromConfig;
+  for (const tag of tags) {
+    if (typeof tag !== "string") continue;
+    // Namespaced tags (`base_model:`, `license:`, `dataset:`, `arxiv:`) are
+    // metadata, not architectures, and some of them contain family names.
+    if (tag.includes(":")) continue;
+    const lower = tag.toLowerCase();
+    if (TOOLING_TAGS.has(lower)) continue;
+    const family = matchFamilyByModelType(lower);
+    if (family) return family;
+  }
+  return null;
+}
+
+interface ArchRow {
+  repo_id: string;
+  model_type: string | null;
+  tags: string;
+  pipeline_tag: string | null;
+  library_name: string | null;
+}
+
+async function resolveByArchitecture(
   db: D1Database,
   limit: number,
   startCursor: string,
 ): Promise<{ resolved: number; cursor: string; exhausted: boolean }> {
-  const { resolved, cursor, exhausted } = await paginateUnresolved<{ repo_id: string; model_type: string }>(
+  const { resolved, cursor, exhausted } = await paginateUnresolved<ArchRow>(
     db,
+    // No `base_model IS NULL` guard. A model that declares a parent we could
+    // not place is not a model whose own architecture is unknowable, and
+    // withholding this rung from it is what put 243 models in 12,000 into
+    // `other-open` while the config sitting in the same row named the family.
+    //
+    // This rung must run AFTER the lineage rungs, and that ordering is the
+    // safety mechanism rather than a preference: a declared parent outranks a
+    // declared architecture whenever the two disagree, which they do for 0.64%
+    // of models — speculative-decoding drafters, mostly, where a Nemotron or a
+    // Kimi is built on a Llama or a Qwen skeleton. Running architecture first
+    // labels those by their skeleton. Running it second never sees them,
+    // because `family IS NULL` is already false.
     (c, l) =>
-      `SELECT repo_id, model_type FROM hf_models
-       WHERE family IS NULL AND base_model IS NULL AND model_type IS NOT NULL
-         AND repo_id > ${c}
+      `SELECT repo_id, model_type, tags, pipeline_tag, library_name
+       FROM hf_models
+       WHERE family IS NULL AND repo_id > ${c}
        ORDER BY repo_id LIMIT ${l}`,
     limit,
     startCursor,
     (batch) => {
-  const stmts: D1PreparedStatement[] = [];
-  let resolved = 0;
-  for (const row of batch) {
-    const family = matchFamilyByModelType(row.model_type);
-    if (!family) continue;
-    resolved++;
-    // resolution_source is left NULL rather than set to 'config_model_type'.
-    // The CHECK on that column does not permit the value, and widening it
-    // means rebuilding a ~75,000-row table to constrain something written in
-    // five places and read in none — no metric, endpoint or dashboard element
-    // queries it. NULL is the honest record here: the family is known, its
-    // provenance is simply not in the current vocabulary. Give the column a
-    // reader first, then widen the CHECK deliberately.
-    stmts.push(
-      db
-        .prepare(
-          `UPDATE hf_models
-             SET family = ?1, resolution_source = NULL
-           WHERE repo_id = ?2`,
-        )
-        .bind(family, row.repo_id),
-    );
-  }
-  return { stmts, resolved };
+      const stmts: D1PreparedStatement[] = [];
+      let resolved = 0;
+      for (const row of batch) {
+        let tags: string[] = [];
+        try {
+          const parsed: unknown = JSON.parse(row.tags);
+          if (Array.isArray(parsed)) tags = parsed as string[];
+        } catch {
+          // A malformed tags column is a parse-time problem, not a reason to
+          // abandon the whole page; the config path can still answer.
+        }
+        const family = matchFamilyByArchitecture(row.model_type, tags);
+        if (!family) continue;
+        if (isTextEncoderOnly(row.repo_id, family, row.pipeline_tag, row.library_name)) continue;
+        resolved++;
+        // resolution_source is left NULL rather than set to 'architecture'.
+        // The CHECK on that column does not permit the value, and widening it
+        // means rebuilding a ~75,000-row table to constrain something written
+        // in five places and read in none — no metric, endpoint or dashboard
+        // element queries it. NULL is the honest record here: the family is
+        // known, its provenance is simply not in the current vocabulary. Give
+        // the column a reader first, then widen the CHECK deliberately.
+        stmts.push(
+          db
+            .prepare(
+              `UPDATE hf_models
+                 SET family = ?1, resolution_source = NULL
+               WHERE repo_id = ?2`,
+            )
+            .bind(family, row.repo_id),
+        );
+      }
+      return { stmts, resolved };
     },
   );
   return { resolved, cursor, exhausted };
@@ -468,13 +638,14 @@ export async function resolveModelFamilies(
   const byChain = await resolveByChain(db, limit);
   // Between a declared parent and a guess from the title: the model's own
   // declared architecture. Stronger than the name, weaker than a stated
-  // base_model, and recorded as such.
-  const modelType = await resolveByModelType(db, limit, cursors.modelType);
+  // base_model, and it must run here rather than earlier for exactly that
+  // reason — see the note on its SELECT.
+  const architecture = await resolveByArchitecture(db, limit, cursors.architecture);
   const name = await resolveByNamePattern(db, limit, cursors.name);
 
   const byTag = tags.resolved;
   const byCardData = cardData.resolved;
-  const byModelType = modelType.resolved;
+  const byArchitecture = architecture.resolved;
   const byName = name.resolved;
 
   // Anything with a declared lineage that still couldn't be placed
@@ -496,22 +667,30 @@ export async function resolveModelFamilies(
     )
     .run();
 
-  const total = byTag + byCardData + byChain + byModelType + byName;
+  const total = byTag + byCardData + byChain + byArchitecture + byName;
 
   // Done means every cursor-walking rung reached the end of its own set —
   // NOT that this pass happened to resolve nothing. Those differ precisely
   // when it matters: a pass landing entirely on unmatchable rows resolves
   // zero while a great deal is still unexamined behind it.
   const done = tags.exhausted && cardData.exhausted
-    && modelType.exhausted && name.exhausted;
+    && architecture.exhausted && name.exhausted;
 
   return {
-    byTag, byCardData, byChain, byModelType, byName,
+    byTag, byCardData, byChain, byArchitecture, byName,
     byBase: base.meta?.changes ?? 0, total,
+    // Which rungs finished, so a run that ran out of passes can say WHICH set
+    // it was still walking rather than only that it did not finish.
+    unfinished: [
+      tags.exhausted ? null : "tags",
+      cardData.exhausted ? null : "cardData",
+      architecture.exhausted ? null : "architecture",
+      name.exhausted ? null : "name",
+    ].filter((x): x is string => x !== null),
     cursors: {
       tags: tags.cursor,
       cardData: cardData.cursor,
-      modelType: modelType.cursor,
+      architecture: architecture.cursor,
       name: name.cursor,
     },
     done,

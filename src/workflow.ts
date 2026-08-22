@@ -242,8 +242,8 @@ export class WeeklyPipeline extends WorkflowEntrypoint<Env, WeeklyPipelineParams
     // on its own; the cap is a backstop, and hitting it is reported.
     const MAX_RESOLVE_PASSES = 40;
     const resolve: ResolveSummary = {
-      byTag: 0, byCardData: 0, byChain: 0, byModelType: 0, byName: 0,
-      byBase: 0, total: 0, cursors: EMPTY_CURSORS, done: false,
+      byTag: 0, byCardData: 0, byChain: 0, byArchitecture: 0, byName: 0,
+      byBase: 0, total: 0, cursors: EMPTY_CURSORS, done: false, unfinished: [],
     };
     for (let pass = 0; pass < MAX_RESOLVE_PASSES; pass++) {
       // The cursors from the previous pass are what make this a walk rather
@@ -256,12 +256,13 @@ export class WeeklyPipeline extends WorkflowEntrypoint<Env, WeeklyPipelineParams
       resolve.byTag += part.byTag;
       resolve.byCardData += part.byCardData;
       resolve.byChain += part.byChain;
-      resolve.byModelType += part.byModelType;
+      resolve.byArchitecture += part.byArchitecture;
       resolve.byName += part.byName;
       resolve.byBase += part.byBase;
       resolve.total += part.total;
       resolve.cursors = part.cursors;
       resolve.done = part.done;
+      resolve.unfinished = part.unfinished;
 
       // Stop when every rung has walked its whole set — not when a pass
       // happens to resolve nothing. Those are different, and confusing them
