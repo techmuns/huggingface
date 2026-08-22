@@ -2434,7 +2434,7 @@ function columnTotals(rows, periods) {
  * shape of the mix without reading a single figure. The key dot ties each row
  * to its band in the chart above.
  */
-function rankedBars(cols, { unit = '', chartId = '', whole = false, drill = false } = {}) {
+function rankedBars(cols, { unit = '', chartId = '', whole = false, drill = false, cut = null } = {}) {
   const { rows, periods, kind, like = null } = cols;
   const idx = pickedIndexes(periods);
   if (!rows.length || !idx.length) return '<p class="empty">Nothing to show for this selection.</p>';
@@ -2498,14 +2498,21 @@ function rankedBars(cols, { unit = '', chartId = '', whole = false, drill = fals
     const residual = RESIDUAL.has(r.dimension) ? ' residual' : '';
     const hue = off.has(r.dimension) || !hues.has(r.dimension)
       ? 'var(--axis)' : SLOTS[hues.get(r.dimension)];
-    // The printed percentage divides by the sum of the rows listed; the base
-    // from the cut's denominator is a different number on spaces_by_use_case,
-    // which stores all cluster-primary Spaces so it can carry `coverage`. The
-    // tooltip said "365 of 2,632" beside a printed 16.4%, which is 365 of
-    // 2,221. Name the base the figure beside it actually used.
-    const tip = `${titleCase(r.dimension)}: ${exact(r.value, unit)}`
-      + (whole && total > 0 ? ` of ${num(total)} classified`
-        : r.base ? ` of ${num(r.base)}` : '')
+    // The printed percentage divides by the sum of the rows listed. On
+    // spaces_by_use_case that is NOT the cut's denominator — it stores all
+    // cluster-primary Spaces so it can carry `coverage` — so the tooltip read
+    // "365 of 2,632" beside a printed 16.4%, which is 365 of 2,221.
+    //
+    // Only that cut. On the others the two agree, and "classified" is the
+    // wrong word for what they count: the SDK cut counts every new Space and
+    // the family cut counts MODELS, so an earlier draft of this fix produced
+    // "3,244 of 10,892 classified" over model repos. A percent cut is worse
+    // still — its rows sum to 100, giving "16.4% of 100 classified".
+    const base = cut === CUTS.usecase && whole && total > 0
+      ? ` of ${num(total)} classified`
+      : kind === 'percent' ? ''
+      : r.base ? ` of ${num(r.base)}` : '';
+    const tip = `${titleCase(r.dimension)}: ${exact(r.value, unit)}` + base
       + (r.suppressed ? ' — base too small to call it a trend' : '');
     // A row is a button only where there is something behind it to open.
     // Everywhere else it stays a div, because a control that looks clickable
@@ -2903,7 +2910,7 @@ function renderCutPanel(elId, cut, { unit = '', chartId, extraNote = '', rows = 
   list.innerHTML = `<div class="ranked-head">
       <h3>${esc(name)}</h3>
       <span class="scope">${scopeLabel(cols.periods, cols.kind)}</span>
-    </div>${rankedBars(cols, { unit, chartId, whole, drill })}${drill
+    </div>${rankedBars(cols, { unit, chartId, whole, drill, cut })}${drill
       ? '<p class="hint" style="margin-top:10px">Click a use case to see the new Spaces behind it.</p>'
       : ''}`;
   el.appendChild(list);
