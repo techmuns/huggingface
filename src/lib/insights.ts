@@ -140,6 +140,43 @@ function combine(
   return { value: sum, denominator: den };
 }
 
+/**
+ * The coverage of one period, as a PERCENTAGE, pooled by the Spaces it covers.
+ *
+ * Three things this has to get right, and the first one is why it exists.
+ *
+ * `aggregate.ts` stores coverage as a RATIO — `classified / denominator`, so
+ * 1 for a fully classified week and 0.2168 for the week of 3 Aug. Every
+ * threshold here is a percentage. Comparing the two directly meant
+ * `coverage >= 40` could never be true for a real pipeline row, so every
+ * classification-derived fact was omitted from every pack, and the one fact
+ * that did survive reported a 100% week as "1.0%". The unit conversion happens
+ * here, once, at the boundary where the stored value is read.
+ *
+ * A month holds several weeks, and every row of a week repeats that week's
+ * coverage. Averaging the rows therefore weights each week by how many use
+ * cases it happened to see, not by how many Spaces it had. Pooling by the
+ * denominator is the same rule the rest of the dashboard uses.
+ *
+ * A week where nothing was classified writes no `spaces_by_use_case` rows at
+ * all, so it vanishes from an average taken over them — and a vanished zero
+ * flatters the month it belonged to. The denominators come from the SDK cut,
+ * which has a row for every new Space whatever the classifier did.
+ */
+function pooledCoverage(rows: readonly MetricRow[], weeks: readonly string[]): number | null {
+  let num = 0, den = 0;
+  for (const week of weeks) {
+    const sdk = rows.filter((r) => r.metric_cut === "sdk_distribution" && r.week_start === week);
+    const spaces = sdk.reduce((sum, r) => sum + r.value, 0);
+    if (spaces <= 0) continue;                       // the week did not run at all
+    const cov = rows.find((r) => r.metric_cut === "spaces_by_use_case" && r.week_start === week);
+    // Present but unclassified is a real zero and must not disappear.
+    num += (cov?.coverage ?? 0) * 100 * spaces;
+    den += spaces;
+  }
+  return den > 0 ? num / den : null;
+}
+
 /* ── Building the pack ───────────────────────────────────────────────────── */
 
 const KIND_OF: Record<string, "count" | "percent" | "level"> = {
@@ -219,20 +256,24 @@ export async function buildFactPack(db: D1Database, opts: BuildPackOptions): Pro
   }
 
   /* Coverage first, because it decides what else is allowed in. */
-  const covRows = rows.filter((r) => r.metric_cut === "spaces_by_use_case" && inNow(r));
-  const coverage = covRows.length
-    ? covRows.reduce((s, r) => s + (r.coverage ?? 0), 0) / covRows.length
-    : null;
-  const totalSpaces = covRows.reduce((s, r) => s + r.value, 0);
+  const coverage = pooledCoverage(rows, opts.weeks);
+  const prevCoverage = pooledCoverage(rows, opts.previousWeeks);
   const classifiable = coverage != null && coverage >= MIN_COVERAGE;
 
-  // The same figure for the period being compared against. Reporting and
-  // comparing are two questions and only the first was being asked.
-  const prevCovRows = rows.filter((r) => r.metric_cut === "spaces_by_use_case" && inPrev(r));
-  const prevCoverage = prevCovRows.length
-    ? prevCovRows.reduce((s, r) => s + (r.coverage ?? 0), 0) / prevCovRows.length
-    : null;
-  const comparable = classifiable && prevCoverage != null
+  // The denominator of "the share we could classify" is every new Space, not
+  // the classified ones. The SDK cut has a row for each.
+  const totalSpaces = rows
+    .filter((r) => r.metric_cut === "sdk_distribution" && inNow(r))
+    .reduce((s, r) => s + r.value, 0);
+
+  // Reporting and comparing are two questions and only the first was asked.
+  // The earlier period must clear the floor in its own right — a 5-point gap
+  // between 40% and 35% is a small gap between one figure this module trusts
+  // and one it does not — and the two must then be close enough that a ratio
+  // between them is a ratio of the Hub rather than of the classifier.
+  const comparable = classifiable
+    && prevCoverage != null
+    && prevCoverage >= MIN_COVERAGE
     && Math.abs(coverage! - prevCoverage) <= MAX_COVERAGE_GAP;
 
   add({
