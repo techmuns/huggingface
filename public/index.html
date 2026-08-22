@@ -1131,6 +1131,7 @@ function rollup(weeks, rows, periods, kind) {
     const values = [], denominators = [], suppressed = [];
     for (const b of periods) {
       let sum = null, wnum = 0, wden = 0, lastV = null, lastD = null;
+      let closedV = null, closedD = null;
       let seen = 0, allSuppressed = true;
       for (const w of b.weeks) {
         const i = at.get(w);
@@ -1142,6 +1143,7 @@ function rollup(weeks, rows, periods, kind) {
         sum = (sum ?? 0) + v;
         if (d != null && d > 0) { wnum += v * d; wden += d; }
         lastV = v; lastD = d ?? null;
+        if (!inProgress(w)) { closedV = v; closedD = d ?? null; }
         if (!r.suppressed?.[i]) allSuppressed = false;
       }
       if (!seen) { values.push(null); denominators.push(null); suppressed.push(0); continue; }
@@ -1151,8 +1153,18 @@ function rollup(weeks, rows, periods, kind) {
         values.push(wden > 0 ? wnum / wden : null);
         denominators.push(wden || null);
       } else if (kind === 'level') {
-        values.push(lastV);
-        denominators.push(lastD);
+        // A level is the last measurement, so it has to be the last FINISHED
+        // one. The open week holds two days of a seven-day figure, and under
+        // All time that made Engagement report 344,451 model downloads for a
+        // span whose every completed week ran to eight figures — a number
+        // smaller than any column it claimed to summarise.
+        //
+        // Where the open week is all the period has (the week view of it, and
+        // only that) there is nothing else to report and it stands. The column
+        // is already marked partial and drawn hollow, which is the honest
+        // reading of a figure that is still filling.
+        values.push(closedV != null ? closedV : lastV);
+        denominators.push(closedV != null ? closedD : lastD);
       } else {
         values.push(sum);
         denominators.push(wden || null);
@@ -2919,7 +2931,7 @@ function renderEngagement(el) {
        <h3>${esc(titleCase(r.dimension))}</h3>
        <div class="engage-plot"></div>
      </div>`).join('') +
-    `<p class="chart-note" id="engagement-note">Each ${esc(word)} shows its last measured week, not a sum:
+    `<p class="chart-note" id="engagement-note">Each ${esc(word)} shows its last finished week, not a sum:
       downloads already count a rolling 30 days and likes are a running total, so adding the weeks
       together would count the same downloads many times.${open
         ? ` ○ beside a label marks a ${esc(word)} that is not finished yet.` : ''}
