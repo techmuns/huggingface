@@ -368,6 +368,13 @@ tbody tr:last-child td { border-bottom: 0; }
 .pmatrix tr.total td:first-child { color: var(--ink); }
 .pmatrix td.selcol { background: color-mix(in srgb, var(--series) 6%, transparent); }
 .pmatrix tbody tr.residual td:first-child { color: var(--ink-muted); }
+/* The benchmark column. Set apart with a rule rather than a fill, because it
+   is not a period and must not read as the newest one. */
+.pmatrix th.avg, .pmatrix td.avg {
+  border-left: 1px solid var(--grid); background: var(--plane);
+  font-variant-numeric: tabular-nums; color: var(--ink-2);
+}
+.pmatrix th.avg { text-transform: none; letter-spacing: 0; font-size: 11.5px; }
 
 /* ── Charts ───────────────────────────────────────────────────────────── */
 .chart-legend { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 14px; }
@@ -2406,6 +2413,51 @@ function periodTable(cols, { unit = '', name = 'Value', whole = false } = {}) {
   const totals = whole ? columnTotals(rows, periods) : null;
   const isCount = kind === 'count';
 
+  /**
+   * The benchmark column: what a normal period looks like, so the newest one
+   * can be read as high or low rather than just as a number.
+   *
+   * Over FINISHED periods only. A period still filling would drag the
+   * benchmark down by however many days have not happened yet, which would
+   * make the current column look good against an average it had itself
+   * depressed. Fewer than two finished periods and there is nothing to average,
+   * so the column goes away rather than printing a copy of the one column
+   * there is.
+   *
+   * It does not respond to the reader's selection. Picking a month and
+   * watching the benchmark move to match it would leave nothing to compare
+   * against — the average is the fixed thing the selection is measured
+   * against.
+   */
+  const avgIdx = periods.map((p, i) => (p.partial ? -1 : i)).filter(i => i >= 0);
+  const showAvg = kind !== 'level' && avgIdx.length >= 2;
+  const avgHead = showAvg
+    ? `<th class="avg" title="The average across the ${avgIdx.length} finished ${
+        esc(PERIOD_WORD[state.period])}s on record. ${isCount
+          ? 'Counts are averaged per ' + esc(PERIOD_WORD[state.period]) + '.'
+          : 'Shares are pooled by each period\u2019s own base, not averaged flat.'
+        } Periods still filling are left out of it.">Average</th>`
+    : '';
+
+  /* Counts average per period; shares pool by base, because the flat mean of
+     six shares over six periods of different sizes is not a share of anything.
+     Voice / speech reads 6.4% pooled and 9.2% averaged flat — a 42% overstatement
+     of a figure a reader would take at face value. */
+  const avgOf = (values, denominators) => {
+    if (kind === 'percent') return combine(values, denominators, avgIdx, 'percent');
+    let sum = null, n = 0;
+    for (const i of avgIdx) {
+      const v = values[i];
+      if (v == null) continue;
+      sum = (sum ?? 0) + v;
+      n++;
+    }
+    return n ? sum / n : null;
+  };
+  const avgCell = (v, sup = false) => showAvg
+    ? `<td class="avg${sup ? ' suppressed' : ''}">${esc(exact(v, unit))}</td>` : '';
+  const avgBlank = showAvg ? '<td class="avg"></td>' : '';
+
   const head = `<tr><th>${esc(name)}</th>${periods.map((p, i) => {
     const on = state.picked.has(p.key);
     // Two different reasons a period is unfinished, and they read differently:
@@ -2417,7 +2469,7 @@ function periodTable(cols, { unit = '', name = 'Value', whole = false } = {}) {
     return `<th class="${on ? 'sel' : ''}"><button type="button" data-col="${i}"
       title="${esc(p.full)}${p.partial ? ' — not finished yet' : ''}. Click to pick this ${esc(PERIOD_WORD[state.period])}.">${
       esc(p.label)}${tag}</button></th>`;
-  }).join('')}</tr>`;
+  }).join('')}${avgHead}</tr>`;
 
   const cls = (i, extra) => {
     const c = [state.picked.has(periods[i].key) ? 'selcol' : '', extra ? 'suppressed' : ''].filter(Boolean);
@@ -2428,10 +2480,12 @@ function periodTable(cols, { unit = '', name = 'Value', whole = false } = {}) {
     <td>${esc(titleCase(r.dimension))}</td>
     ${periods.map((p, i) => `<td${cls(i, r.suppressed?.[i])}>${
       esc(exact(r.values[i], unit))}${r.suppressed?.[i] ? '*' : ''}</td>`).join('')}
+    ${avgCell(avgOf(r.values, r.denominators), avgIdx.every(i => r.suppressed?.[i]))}
   </tr>`).join('');
 
   const totalRow = totals ? `<tr class="total">
     <td>Total</td>${totals.map((v, i) => `<td${cls(i)}>${esc(exact(v, unit))}</td>`).join('')}
+    ${avgCell(avgOf(totals, null))}
   </tr>` : '';
 
   // Spread across real cells rather than one colspan: a cell as wide as the
@@ -2439,7 +2493,7 @@ function periodTable(cols, { unit = '', name = 'Value', whole = false } = {}) {
   // edge the moment the table was scrolled to its newest column — which is
   // where it opens.
   const groupRow = (label) => `<tr class="grp"><td>${esc(label)}</td>${
-    periods.map(() => '<td></td>').join('')}</tr>`;
+    periods.map(() => '<td></td>').join('')}${avgBlank}</tr>`;
 
   const shareRows = whole ? groupRow('Share of the total') +
     ranked.map(r => `<tr${RESIDUAL.has(r.dimension) ? ' class="residual"' : ''}>
@@ -2449,6 +2503,16 @@ function periodTable(cols, { unit = '', name = 'Value', whole = false } = {}) {
         const v = r.values[i];
         return `<td${cls(i)}>${t > 0 && v != null ? (v / t * 100).toFixed(1) + '%' : '—'}</td>`;
       }).join('')}
+      ${showAvg ? (() => {
+        // Pooled over the finished periods: the share the category held across
+        // all of them together, not the mean of their individual shares.
+        let num = 0, den = 0, seen = false;
+        for (const i of avgIdx) {
+          const t = totals[i], v = r.values[i];
+          if (t > 0 && v != null) { num += v; den += t; seen = true; }
+        }
+        return `<td class="avg">${seen && den > 0 ? (num / den * 100).toFixed(1) + '%' : '—'}</td>`;
+      })() : ''}
     </tr>`).join('') : '';
 
   const growthRows = ranked.map((r, k) => {
@@ -2456,6 +2520,7 @@ function periodTable(cols, { unit = '', name = 'Value', whole = false } = {}) {
     return `<tr${RESIDUAL.has(r.dimension) ? ' class="residual"' : ''}>
       <td>${esc(titleCase(r.dimension))}</td>
       ${g.map((x, i) => `<td${cls(i)}>${delta(x.value, x)}</td>`).join('')}
+      ${avgBlank}
     </tr>`;
   }).join('');
 
@@ -2469,8 +2534,11 @@ function periodTable(cols, { unit = '', name = 'Value', whole = false } = {}) {
         })
       : null;
     const g = periodGrowth(totals, periods, isCount, likeTotal);
+    // No average of the growth column. The mean of a run of period-on-period
+    // percentages is not the growth over that run — it over-weights small
+    // bases and it is not a figure anyone can act on.
     return `<tr class="total"><td>Total</td>${
-      g.map((x, i) => `<td${cls(i)}>${delta(x.value, x)}</td>`).join('')}</tr>`;
+      g.map((x, i) => `<td${cls(i)}>${delta(x.value, x)}</td>`).join('')}${avgBlank}</tr>`;
   })() : '';
 
   const anySuppressed = rows.some(r => (r.suppressed || []).some(Boolean));
@@ -2487,7 +2555,13 @@ function periodTable(cols, { unit = '', name = 'Value', whole = false } = {}) {
     </tbody>
   </table></div>
   <p class="hint" style="margin-top:12px">Click a column heading to look at just that ${
-    esc(PERIOD_WORD[state.period])}.${anyPart
+    esc(PERIOD_WORD[state.period])}.${showAvg
+      ? ` <b>Average</b> is what a normal ${esc(PERIOD_WORD[state.period])} looks like, across the ${
+          avgIdx.length} finished ones on record &mdash; ${isCount
+            ? 'counts averaged per ' + esc(PERIOD_WORD[state.period])
+            : 'shares pooled by each one&rsquo;s own base rather than averaged flat'
+          }. A ${esc(PERIOD_WORD[state.period])} still filling is left out of it, and it does not move when you pick a column.`
+      : ''}${anyPart
       ? ` A heading marked <b>so far</b> is a ${esc(PERIOD_WORD[state.period])} still in progress, and one marked <b>3/4w</b> is one the pipeline is missing weeks from &mdash; either way its figures are not final. Growth into such a ${esc(PERIOD_WORD[state.period])} is measured against the same span of the one before it, and the cell says <b>so far</b>; where that span cannot be assembled it reads &ldquo;part period&rdquo; instead of a fall that is really just days that have not happened yet.`
       : ''}${anySuppressed
       ? ' <b>*</b> too few behind this figure to call it a trend &mdash; shown for completeness.' : ''}</p>`;
