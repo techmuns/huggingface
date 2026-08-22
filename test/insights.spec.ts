@@ -768,3 +768,29 @@ describe("the original narrator is gated too", () => {
     expect(periodIsOpen("week", "2026-08-10", Date.parse("2026-08-17T00:30:00Z"))).toBe(false);
   });
 });
+
+describe("the open-period gate is pinned to one instant", () => {
+  it("answers the same however long the run takes", () => {
+    // A run takes hours. One that starts Sunday evening and reaches Phase 8
+    // after midnight would see the week as closed on a Date.now() gate and
+    // write prose about a week whose ingest happened while it was still open.
+    const started = Date.parse("2026-08-16T20:00:00Z");   // Sunday, week still open
+    const afterMidnight = Date.parse("2026-08-17T00:30:00Z"); // week has closed
+    expect(periodIsOpen("week", "2026-08-10", started)).toBe(true);
+    expect(periodIsOpen("week", "2026-08-10", afterMidnight)).toBe(false);
+    // The run must use the first of those, so both gates agree with each other
+    // and with themselves on every replay.
+    expect(insightPeriodsFor("2026-08-10", started)).toEqual([]);
+  });
+
+  it("is a pure function of the instant it is given", () => {
+    // Workflows replays the orchestration from the top at every step boundary.
+    // A gate that reads the clock answers differently on different replays; one
+    // that reads a number written down inside a step cannot.
+    const at = Date.parse("2026-08-17T00:30:00Z");
+    const a = insightPeriodsFor("2026-08-10", at);
+    const b = insightPeriodsFor("2026-08-10", at);
+    expect(a).toEqual(b);
+    expect(a.map((p) => p.kind)).toEqual(["week"]);
+  });
+});

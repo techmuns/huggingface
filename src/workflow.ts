@@ -224,6 +224,25 @@ export class WeeklyPipeline extends WorkflowEntrypoint<Env, WeeklyPipelineParams
         runId: event.instanceId,
         weekStart: week,
         backfillWeeks,
+        /**
+         * When this run started, decided once and made durable.
+         *
+         * Everything that asks "has this period finished?" has to ask about
+         * the same instant, and Date.now() is the wrong instant twice over.
+         *
+         * A run takes hours. One that starts on Sunday evening and reaches
+         * Phase 8 after midnight would see the week as closed and write prose
+         * about it — a week whose ingest happened while it was still open and
+         * therefore missed its last records.
+         *
+         * Worse, Workflows REPLAYS the orchestration from the top at every step
+         * boundary, so a Date.now() outside a step is re-evaluated on every
+         * replay and can answer differently each time. A branch that flips
+         * mid-run is how a summary gets written twice, or not at all, with
+         * nothing in the log to explain either. This value comes out of a
+         * step, so every replay sees the number the first pass wrote down.
+         */
+        startedAt: event.timestamp.getTime(),
         // Inclusive lower bound of the ingest window. A backfill of N weeks
         // reaches back N-1 weeks before the week being processed, so the
         // trailing 4W and 12W comparisons have data to compare against.
@@ -392,7 +411,7 @@ export class WeeklyPipeline extends WorkflowEntrypoint<Env, WeeklyPipelineParams
     // Aggregating an open week is NOT the problem and is deliberately left
     // alone: the dashboard shows the current week on purpose and marks it "so
     // far". Writing PROSE about a week two days old is the problem.
-    const narrate = periodIsOpen("week", config.weekStart)
+    const narrate = periodIsOpen("week", config.weekStart, config.startedAt)
       ? { narrative: "", inputTokens: 0, outputTokens: 0 }
       : await step.do("narrate", PAGE_RETRY, async () => {
           return narrateWeek(
@@ -412,7 +431,7 @@ export class WeeklyPipeline extends WorkflowEntrypoint<Env, WeeklyPipelineParams
     // detected by the week just processed being the last Monday of its month.
     // Writing it every week would mean each week's run overwrote the last with
     // a "month" that was two weeks long.
-    const insightPeriods = insightPeriodsFor(config.weekStart);
+    const insightPeriods = insightPeriodsFor(config.weekStart, config.startedAt);
     if (insightPeriods.length === 0) {
       // Recorded, not silent: a run that wrote no summary should say why, or
       // the next person to look assumes the feature is broken.
