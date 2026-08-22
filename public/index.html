@@ -301,6 +301,53 @@ select:hover, .btn:hover { border-color: var(--axis); }
 /* A residual bucket is not a category — it sits last and is drawn recessive,
    so a long "Other" bar at the foot of a descending list reads as deliberate
    rather than as a sorting bug. */
+/* An openable row is a button, so it has to be talked out of looking like one. */
+button.bar-row {
+  font: inherit; color: inherit; border: 0; background: transparent;
+  width: 100%; text-align: left; cursor: pointer;
+}
+button.bar-row:focus-visible { outline: 2px solid var(--series); outline-offset: 2px; }
+.bar-row.open { background: color-mix(in srgb, var(--series) 10%, transparent); }
+.bar-row.open .bar-label { font-weight: 600; }
+
+.insight-cols { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(380px, 100%), 1fr)); gap: 18px; }
+.insight-body p { margin: 0 0 12px; max-width: 74ch; line-height: 1.62; }
+.insight-body p:last-child { margin-bottom: 0; }
+.insight-meta { font-size: 12px; color: var(--ink-muted); margin-top: 14px; }
+.insight-facts { margin-top: 10px; }
+.insight-facts summary { cursor: pointer; font-size: 12.5px; color: var(--ink-2); }
+.insight-facts summary:hover { text-decoration: underline; }
+.insight-facts table { margin-top: 10px; font-size: 12px; }
+/* The fact table sits inside a half-width card, so `what` has to be allowed to
+   wrap. Left alone it inherits the page's nowrap table rules and pushes the
+   change column off the right edge of the card it is explaining. */
+.insight-facts th, .insight-facts td { padding: 4px 0 4px 10px; vertical-align: top; }
+.insight-facts th:first-child, .insight-facts td:first-child { padding-left: 0; }
+.insight-facts th:nth-child(2), .insight-facts td:nth-child(2) {
+  white-space: normal; text-align: left; width: 99%; padding: 4px 10px 4px 8px;
+}
+.insight-facts td:first-child { color: var(--ink-muted); width: 1%; }
+.insight-facts .fnum { font-variant-numeric: tabular-nums; white-space: nowrap; padding-left: 10px; width: 1%; }
+.insight-item { padding: 14px 0; border-top: 1px solid var(--grid); }
+.insight-item:first-child { border-top: 0; padding-top: 0; }
+.insight-item h3 { font-size: 13px; font-weight: 600; margin: 0 0 8px; }
+.insight-none { color: var(--ink-muted); font-size: 13.5px; line-height: 1.6; max-width: 74ch; }
+
+.drill-list { display: grid; gap: 2px; }
+.drill-row {
+  display: grid; grid-template-columns: 56px 1fr; gap: 12px; align-items: baseline;
+  padding: 8px 10px; text-decoration: none; color: inherit; border-radius: 3px;
+}
+.drill-row:hover { background: color-mix(in srgb, var(--series) 7%, transparent); }
+.drill-row:focus-visible { outline: 2px solid var(--series); outline-offset: -2px; }
+.drill-likes {
+  font-variant-numeric: tabular-nums; text-align: right; font-weight: 600;
+  color: var(--series);
+}
+.drill-likes::after { content: ' \2665'; font-weight: 400; opacity: .55; font-size: 11px; }
+.drill-name b { font-weight: 600; }
+.drill-meta { display: block; font-size: 12px; color: var(--ink-muted); margin-top: 1px; }
+
 .bar-row.residual { margin-top: 5px; padding-top: 7px; border-top: 1px solid var(--grid); }
 .bar-row.residual .bar-fill { background: var(--series-soft); }
 .bar-row.residual .bar-label { color: var(--ink-muted); }
@@ -368,6 +415,18 @@ tbody tr:last-child td { border-bottom: 0; }
 .pmatrix tr.total td:first-child { color: var(--ink); }
 .pmatrix td.selcol { background: color-mix(in srgb, var(--series) 6%, transparent); }
 .pmatrix tbody tr.residual td:first-child { color: var(--ink-muted); }
+/* The benchmark column. Set apart with a rule rather than a fill, because it
+   is not a period and must not read as the newest one. */
+.pmatrix th.avg, .pmatrix td.avg {
+  border-left: 1px solid var(--grid); background: var(--plane);
+  font-variant-numeric: tabular-nums; color: var(--ink-2);
+}
+.pmatrix th.avg { text-transform: none; letter-spacing: 0; font-size: 11.5px; }
+/* The technique change table: no period columns to scroll through, so the
+   first column is a plain header rather than a pinned one. */
+.pmatrix.change th { text-transform: none; letter-spacing: 0; font-size: 12px; }
+.pmatrix.change td:first-child, .pmatrix.change th:first-child { box-shadow: none; }
+.pmatrix.change tbody td { padding-top: 7px; padding-bottom: 7px; }
 
 /* ── Charts ───────────────────────────────────────────────────────────── */
 .chart-legend { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 14px; }
@@ -519,9 +578,11 @@ details.method li { margin-bottom: 7px; max-width: 82ch; }
 
   <nav class="tabs" role="tablist" aria-label="Dashboard sections">
     <button role="tab" id="tab-overview"   data-tab="overview"   aria-selected="true"  aria-controls="panel-overview">Overview</button>
+    <button role="tab" id="tab-insights"   data-tab="insights"   aria-selected="false" aria-controls="panel-insights"   tabindex="-1">Insights</button>
     <button role="tab" id="tab-trends"     data-tab="trends"     aria-selected="false" aria-controls="panel-trends"     tabindex="-1">Trends</button>
     <button role="tab" id="tab-build"      data-tab="build"      aria-selected="false" aria-controls="panel-build"      tabindex="-1">What they build</button>
     <button role="tab" id="tab-tech"       data-tab="tech"       aria-selected="false" aria-controls="panel-tech"       tabindex="-1">How they build</button>
+    <button role="tab" id="tab-techniques" data-tab="techniques" aria-selected="false" aria-controls="panel-techniques" tabindex="-1">Techniques used</button>
     <button role="tab" id="tab-engagement" data-tab="engagement" aria-selected="false" aria-controls="panel-engagement" tabindex="-1">Engagement</button>
   </nav>
 
@@ -612,7 +673,7 @@ details.method li { margin-bottom: 7px; max-width: 82ch; }
           <li><a href="#tab=build&sub=usecase">What developers are building</a> <span>What they build &rsaquo; Use case</span></li>
           <li><a href="#tab=build&sub=vertical">Where they're building it</a> <span>What they build &rsaquo; Industry</span></li>
           <li><a href="#tab=tech&sub=family">What they're building on</a> <span>How they build &rsaquo; Model family</span></li>
-          <li><a href="#tab=tech&sub=tech">How they're building it</a> <span>How they build &rsaquo; Technique</span></li>
+          <li><a href="#tab=techniques">How they're building it</a> <span>Techniques used</span></li>
           <li><a href="#tab=tech&sub=sdk">New Spaces by SDK</a> <span>How they build &rsaquo; SDK</span></li>
           <li><a href="#tab=tech&sub=matrix">Model family by use case</a> <span>How they build &rsaquo; Family by use case</span></li>
           <li><a href="#tab=engagement">Engagement</a> <span>Its own tab</span></li>
@@ -632,6 +693,41 @@ details.method li { margin-bottom: 7px; max-width: 82ch; }
           <dt>Share of the mix</dt><dd>Out of everything counted in that period, the slice this category took.</dd>
         </dl>
       </details>
+    </section>
+
+    <!-- ── Insights ─────────────────────────────────────────────────── -->
+    <section role="tabpanel" id="panel-insights" aria-labelledby="tab-insights" tabindex="-1" hidden>
+      <p class="panel-intro">What changed, in words. Written each week from the same figures the rest of
+        this dashboard draws &mdash; and written in a way that makes inventing one impossible: the model
+        is given a numbered list of facts and writes about them by reference, never by typing a number.
+        Every figure below was substituted in afterwards, and you can open the facts under any summary
+        to see exactly which one each came from.</p>
+
+      <div class="insight-cols">
+        <section class="card">
+          <header>
+            <h2>This week</h2>
+            <p class="hint" id="insight-week-hint">The most recent week the pipeline finished.</p>
+          </header>
+          <div id="c-insight-week"></div>
+        </section>
+
+        <section class="card">
+          <header>
+            <h2>This month</h2>
+            <p class="hint" id="insight-month-hint">Written once a month closes, never part-way through it.</p>
+          </header>
+          <div id="c-insight-month"></div>
+        </section>
+      </div>
+
+      <section class="card">
+        <header>
+          <h2>Earlier</h2>
+          <p class="hint">Every summary still on record, newest first.</p>
+        </header>
+        <div id="c-insight-history"></div>
+      </section>
     </section>
 
     <!-- ── Trends ───────────────────────────────────────────────────── -->
@@ -664,6 +760,15 @@ details.method li { margin-bottom: 7px; max-width: 82ch; }
         <div id="c-usecase"></div>
       </section>
 
+      <section class="card" id="usecase-drill-card" hidden>
+        <header>
+          <h2 id="drill-title">The Spaces behind it</h2>
+          <p class="hint">Ranked by the likes a Space had when the pipeline first saw it,
+            which is the only traction figure the Hub reports for Spaces at all.</p>
+        </header>
+        <div id="c-usecase-drill"></div>
+      </section>
+
       <section class="card" role="tabpanel" id="sub-vertical" aria-labelledby="subtab-vertical" tabindex="-1" hidden>
         <header>
           <h2>Where they're building it</h2>
@@ -677,7 +782,6 @@ details.method li { margin-bottom: 7px; max-width: 82ch; }
     <section role="tabpanel" id="panel-tech" aria-labelledby="tab-tech" tabindex="-1" hidden>
       <div class="subtabs" role="tablist" aria-label="How they build">
         <button role="tab" id="subtab-family" data-sub="family" aria-selected="true"  aria-controls="sub-family" title="What they're building on">Model family</button>
-        <button role="tab" id="subtab-tech" data-sub="tech"   aria-selected="false" aria-controls="sub-tech"   tabindex="-1" title="How they're building it">Technique</button>
         <button role="tab" id="subtab-sdk" data-sub="sdk"    aria-selected="false" aria-controls="sub-sdk"    tabindex="-1" title="New Spaces by SDK">SDK</button>
         <button role="tab" id="subtab-matrix" data-sub="matrix" aria-selected="false" aria-controls="sub-matrix" tabindex="-1">Family by use case</button>
       </div>
@@ -686,18 +790,12 @@ details.method li { margin-bottom: 7px; max-width: 82ch; }
       <section class="card" role="tabpanel" id="sub-family" aria-labelledby="subtab-family" tabindex="-1">
         <header>
           <h2>What they're building on</h2>
-          <p class="hint">The model family behind each new model, read from the model it says it came from.</p>
+          <p class="hint">The model family behind each new model, read from the parent it declares, the
+            architecture it reports, or its own name &mdash; in that order.
+            <b>Other open</b> is a model that told us one of those and is none of the eight named
+            families; <b>Unresolved</b> is a model that told us none of them.</p>
         </header>
         <div id="c-family"></div>
-      </section>
-
-      <section class="card" role="tabpanel" id="sub-tech" aria-labelledby="subtab-tech" tabindex="-1" hidden>
-        <header>
-          <h2>How they're building it</h2>
-          <p class="hint">Methods used inside a Space. One Space can use several, so these do not add up to 100%.
-            The toolkit it ships with is on the SDK tab.</p>
-        </header>
-        <div id="c-tech"></div>
       </section>
 
       <section class="card" role="tabpanel" id="sub-sdk" aria-labelledby="subtab-sdk" tabindex="-1" hidden>
@@ -711,9 +809,34 @@ details.method li { margin-bottom: 7px; max-width: 82ch; }
       <section class="card" role="tabpanel" id="sub-matrix" aria-labelledby="subtab-matrix" tabindex="-1" hidden>
         <header>
           <h2>Model family by use case</h2>
-          <p class="hint">Within each use case, the share of Spaces built on a given model family.</p>
+          <p class="hint">Within each use case, how the model families those Spaces name divide up.
+            A Space that names two families counts in both, and a Space that names none is outside the base.</p>
         </header>
         <div class="matrix-scroll" id="c-matrix"></div>
+      </section>
+    </section>
+
+    <!-- ── Techniques used ──────────────────────────────────────────── -->
+    <section role="tabpanel" id="panel-techniques" aria-labelledby="tab-techniques" tabindex="-1" hidden>
+      <p class="panel-intro">The methods used inside new Spaces &mdash; how far each has spread, and what moved.
+        One Space can use several, so these do not add up to 100%. The toolkit a Space ships with is
+        on <a href="#tab=tech&amp;sub=sdk">How they build &rsaquo; SDK</a>.</p>
+
+      <section class="card">
+        <header>
+          <h2>What moved</h2>
+          <p class="hint" id="tech-change-hint">Every technique, week on week and month on month.</p>
+        </header>
+        <div id="c-tech-change"></div>
+      </section>
+
+      <section class="card">
+        <header>
+          <h2>How they're building it</h2>
+          <p class="hint">The share of new Spaces using each technique, over every period on record.
+            Change the time period above to group the weeks into months, quarters or one all-time total.</p>
+        </header>
+        <div id="c-tech"></div>
       </section>
     </section>
 
@@ -752,7 +875,7 @@ details.method li { margin-bottom: 7px; max-width: 82ch; }
       <li><b>What developers are building.</b> Primary use case &mdash; one per Space, so shares total 100%.</li>
       <li><b>Where they're building it.</b> Vertical &mdash; multi-label, so these do not total 100%.</li>
       <li><b>What they're building on.</b> Model family, from declared <code>base_model</code> lineage.</li>
-      <li><b>How they're building it.</b> Technique &mdash; multi-label. The build SDK is separate, on its own sub-tab.</li>
+      <li><b>How they're building it.</b> Technique &mdash; multi-label, on its own tab. The build SDK is separate, under How they build.</li>
       <li><b>Model family by use case.</b> Share of each use case's Spaces built on a given family.</li>
       <li><b>Engagement.</b> Downloads are a rolling 30-day rate; likes are cumulative.</li>
       <li><b>The matrix asterisk.</b> Base below the reporting threshold &mdash; shown for completeness, not as a trend.</li>
@@ -869,6 +992,21 @@ const titleCase = s => LABELS[s] ?? String(s).replace(/[-_]/g, ' ')
 
 /* "Other" is a residual, not a rank — it sits last however large it is. */
 const RESIDUAL = new Set(['other', 'other-open', 'unknown', 'unresolved']);
+
+/* What each residual actually means. They are not interchangeable: "Other
+   open" is a POSITIVE result — the model told us something, it just was not
+   one of the eight named families — while "Unresolved" told us nothing at all.
+   A tile that names one without saying which is which invites the reader to
+   read both as failures. */
+const RESIDUAL_NOTE = {
+  'other-open': 'Other open — an open model that is none of the eight named families: it declared a parent we could not name, or an architecture we do not track',
+  unknown: 'Unresolved — the model declared no parent, no architecture and nothing in its name',
+  unresolved: 'Unresolved — the model declared no parent, no architecture and nothing in its name',
+  other: 'Other — everything outside the named categories',
+};
+
+const joinWords = (xs) => xs.length < 2 ? (xs[0] ?? '')
+  : `${xs.slice(0, -1).join(', ')} and ${xs[xs.length - 1]}`;
 const byValueOtherLast = (a, b) =>
   (RESIDUAL.has(a.dimension) ? 1 : 0) - (RESIDUAL.has(b.dimension) ? 1 : 0) ||
   b.value - a.value;
@@ -917,6 +1055,7 @@ const state = {
   table: false,        // the numbers behind whichever view is on screen
   track: 'spaces_total',
   matrixUseCase: null, // which use case the family-by-use-case view follows
+  drill: null,         // which use case the Spaces list underneath is open on
   /** Periods the reader picked out of the chart. Empty means all of them. */
   picked: new Set(),
   /** Series switched off from a legend, keyed by chart id. Colour follows the
@@ -1115,6 +1254,7 @@ function rollup(weeks, rows, periods, kind) {
     const values = [], denominators = [], suppressed = [];
     for (const b of periods) {
       let sum = null, wnum = 0, wden = 0, lastV = null, lastD = null;
+      let closedV = null, closedD = null;
       let seen = 0, allSuppressed = true;
       for (const w of b.weeks) {
         const i = at.get(w);
@@ -1126,6 +1266,7 @@ function rollup(weeks, rows, periods, kind) {
         sum = (sum ?? 0) + v;
         if (d != null && d > 0) { wnum += v * d; wden += d; }
         lastV = v; lastD = d ?? null;
+        if (!inProgress(w)) { closedV = v; closedD = d ?? null; }
         if (!r.suppressed?.[i]) allSuppressed = false;
       }
       if (!seen) { values.push(null); denominators.push(null); suppressed.push(0); continue; }
@@ -1135,8 +1276,18 @@ function rollup(weeks, rows, periods, kind) {
         values.push(wden > 0 ? wnum / wden : null);
         denominators.push(wden || null);
       } else if (kind === 'level') {
-        values.push(lastV);
-        denominators.push(lastD);
+        // A level is the last measurement, so it has to be the last FINISHED
+        // one. The open week holds two days of a seven-day figure, and under
+        // All time that made Engagement report 344,451 model downloads for a
+        // span whose every completed week ran to eight figures — a number
+        // smaller than any column it claimed to summarise.
+        //
+        // Where the open week is all the period has (the week view of it, and
+        // only that) there is nothing else to report and it stands. The column
+        // is already marked partial and drawn hollow, which is the honest
+        // reading of a figure that is still filling.
+        values.push(closedV != null ? closedV : lastV);
+        denominators.push(closedV != null ? closedD : lastD);
       } else {
         values.push(sum);
         denominators.push(wden || null);
@@ -1454,12 +1605,15 @@ function prepareSeries(weeks, rows, { zeroFill = false, isCount = false, payload
  * Every panel goes through here, so the chart, the ranked list and the table
  * are three readings of one array and cannot disagree with each other.
  */
-function cutColumns(cut, { rows = null, payload = seriesRaw } = {}) {
+function cutColumns(cut, { rows = null, payload = seriesRaw, period = state.period } = {}) {
   const weeks = payload?.weeks || [];
   const kind = KIND[cut] || 'count';
   const src = rows || seriesOf(cut, payload);
   const prepared = prepareSeries(weeks, src, { zeroFill: true, isCount: kind === 'count', payload });
-  const periods = buildPeriods(prepared.weeks, state.period, payload);
+  // The period is a parameter rather than a read of `state`, because one panel
+  // — the technique change table — reports weeks and months side by side and
+  // must not be at the mercy of whichever one the toolbar happens to be on.
+  const periods = buildPeriods(prepared.weeks, period, payload);
   const behind = weeksBehind(prepared.weeks, prepared.rows, periods);
   const withBehind = periods.map((p, i) => ({ ...p, behind: behind[i] }));
   return {
@@ -1489,8 +1643,53 @@ function pickedIndexes(periods) {
   return hit.length ? hit : [periods.length - 1];
 }
 
-/** How the ranked list under a chart describes what it is counting. */
-function scopeLabel(periods) {
+/**
+ * How a part-period comparison describes itself.
+ *
+ * `behind[i]` measured weeks of column i are matched against the FIRST
+ * `behind[i]` weeks of column i-1. Where the earlier column holds no more
+ * measured weeks than that — always the case at week granularity — "the first
+ * 1 week of 10 Aug" IS the whole of 10 Aug, and wording it as a trim invents a
+ * restriction that never happened. Three places print this sentence; they all
+ * come through here so they cannot drift apart.
+ */
+function likeSpan(periods, i) {
+  const n = periods[i]?.behind ?? 0;
+  const prev = periods[i - 1];
+  if (!n || !prev) return null;
+  return { n, label: prev.label, whole: n >= (prev.behind ?? Infinity) };
+}
+
+/** The short form, for a figure that sits beside its own comparison. */
+function likeSuffix(periods, i) {
+  const s = likeSpan(periods, i);
+  if (!s) return null;
+  return s.whole
+    ? `against the whole of ${s.label}, so far`
+    : `against the first ${s.n} week${s.n === 1 ? '' : 's'} of ${s.label}, so far`;
+}
+
+/** The long form, for a footnote under a card. */
+function likeFootnote(periods, i, word) {
+  const s = likeSpan(periods, i);
+  if (!s) return '';
+  return s.whole
+    ? `This ${word} is still filling, so it is measured against the whole of ${s.label}.`
+    : `This ${word} is not finished, so it is measured against the first ${s.n} week${
+        s.n === 1 ? '' : 's'} of ${s.label} rather than against the whole of it.`;
+}
+
+/**
+ * How the ranked list under a chart describes what it is counting.
+ *
+ * The suffix names the arithmetic, not just the span: counts across several
+ * columns are added up, percentages are pooled by each column's own base, and
+ * a level reports the last one measured. Saying "added up" over a pooled share
+ * is the one wording that would make a reader mistrust a correct figure.
+ */
+const COMBINE_WORD = { count: 'added up', percent: 'pooled by size', level: 'last measured week' };
+
+function scopeLabel(periods, kind = null) {
   const idx = pickedIndexes(periods);
   if (!idx.length) return '';
   if (idx.length === 1) {
@@ -1501,7 +1700,8 @@ function scopeLabel(periods) {
       (state.picked.size || only ? ''
         : ` <span class="suppressed">&mdash; the latest ${esc(PERIOD_WORD[state.period])}</span>`);
   }
-  return esc(`${periods[idx[0]].label} to ${periods[idx[idx.length - 1]].label}, added up`);
+  const how = kind ? COMBINE_WORD[kind] : null;
+  return esc(`${periods[idx[0]].label} to ${periods[idx[idx.length - 1]].label}${how ? `, ${how}` : ''}`);
 }
 
 /* ── Sparkline ────────────────────────────────────────────────────────── */
@@ -2226,7 +2426,7 @@ function columnTotals(rows, periods) {
  * shape of the mix without reading a single figure. The key dot ties each row
  * to its band in the chart above.
  */
-function rankedBars(cols, { unit = '', chartId = '', whole = false } = {}) {
+function rankedBars(cols, { unit = '', chartId = '', whole = false, drill = false } = {}) {
   const { rows, periods, kind, like = null } = cols;
   const idx = pickedIndexes(periods);
   if (!rows.length || !idx.length) return '<p class="empty">Nothing to show for this selection.</p>';
@@ -2250,9 +2450,7 @@ function rankedBars(cols, { unit = '', chartId = '', whole = false } = {}) {
   // the only one. Repeating "no earlier period" down every row of the list
   // says the same thing fourteen times; the column simply goes away.
   const noComparison = !comparable && !prior.length;
-  const note = likeMode
-    ? `against the first ${periods[single].behind} week${periods[single].behind === 1 ? '' : 's'} of ${periods[single - 1].label}, so far`
-    : null;
+  const note = likeMode ? likeSuffix(periods, single) : null;
 
   const items = rows.map((r, k) => {
     const value = combine(r.values, r.denominators, idx, kind);
@@ -2295,7 +2493,19 @@ function rankedBars(cols, { unit = '', chartId = '', whole = false } = {}) {
     const tip = `${titleCase(r.dimension)}: ${exact(r.value, unit)}`
       + (r.base ? ` of ${num(r.base)}` : '')
       + (r.suppressed ? ' — base too small to call it a trend' : '');
-    return `<div class="bar-row${residual}" title="${esc(tip)}">
+    // A row is a button only where there is something behind it to open.
+    // Everywhere else it stays a div, because a control that looks clickable
+    // and does nothing is worse than one that never offered.
+    const openable = drill && !RESIDUAL.has(r.dimension);
+    const tag = openable ? 'button' : 'div';
+    const attrs = openable
+      ? ` type="button" data-drill="${esc(r.dimension)}" aria-expanded="${
+          state.drill === r.dimension ? 'true' : 'false'}"`
+      : '';
+    const label = openable
+      ? `${esc(tip)}. Click to see the Spaces behind it.` : esc(tip);
+    return `<${tag} class="bar-row${residual}${openable ? ' openable' : ''}${
+      state.drill === r.dimension ? ' open' : ''}"${attrs} title="${label}">
       <span class="bar-label"><span class="key-dot" style="background:${
         RESIDUAL.has(r.dimension) ? 'var(--ink-muted)' : hue}"></span>${esc(titleCase(r.dimension))}</span>
       <span class="bar-track"><span class="bar-fill" style="width:${Math.min(100, r.value / max * 100).toFixed(1)}%"></span></span>
@@ -2303,8 +2513,113 @@ function rankedBars(cols, { unit = '', chartId = '', whole = false } = {}) {
       ${noComparison ? '<span class="bar-delta"></span>' : `<span class="bar-delta">${r.suppressed
         ? '<span class="delta flat">too few</span>'
         : delta(r.growth, { reason: whyNot, note })}</span>`}
-    </div>`;
+    </${tag}>`;
   }).join('')}</div>`;
+}
+
+/* ── The Spaces behind a use case ─────────────────────────────────────── */
+
+let drillSeq = 0;
+const drillCache = new Map();
+
+/** The half-open window a selection covers, as the API wants it. */
+function drillWindow(periods) {
+  const idx = pickedIndexes(periods);
+  if (!idx.length) return null;
+  const weeks = idx.flatMap(i => periods[i].weeks);
+  if (!weeks.length) return null;
+  const sorted = [...weeks].sort();
+  const last = new Date(`${sorted[sorted.length - 1]}T00:00:00.000Z`);
+  return {
+    from: sorted[0],
+    // Exclusive, and the Monday AFTER the last week — a period's own bounds,
+    // handed over without arithmetic at the other end.
+    to: new Date(last.getTime() + 7 * 86400000).toISOString().slice(0, 10),
+  };
+}
+
+function openDrill(useCase, periods) {
+  state.drill = useCase;
+  writeHash();
+  // The rows carry their own open/closed state, so the list is repainted
+  // rather than patched: one source of truth for which one is open.
+  renderAll();
+}
+
+async function renderDrill(cols) {
+  const host = document.getElementById('c-usecase-drill');
+  const card = document.getElementById('usecase-drill-card');
+  if (!host || !card) return;
+  if (!state.drill) { card.hidden = true; return; }
+
+  // A link can name a use case the payload does not have. Closing the card is
+  // the honest answer; leaving it open on a request that will 400 is not.
+  if (!cols.rows.some(r => r.dimension === state.drill)) {
+    card.hidden = true;
+    state.drill = null;
+    writeHash();
+    return;
+  }
+
+  const win = drillWindow(cols.periods);
+  if (!win) { card.hidden = true; return; }
+
+  card.hidden = false;
+  document.getElementById('drill-title').textContent =
+    `${titleCase(state.drill)} — the Spaces behind it`;
+
+  const key = `${state.drill}|${win.from}|${win.to}`;
+  const seq = ++drillSeq;
+  if (!drillCache.has(key)) {
+    setHTML(host, '<p class="empty">Loading…</p>');
+    try {
+      drillCache.set(key, await getJSON(
+        `/api/use-case-spaces?useCase=${encodeURIComponent(state.drill)}` +
+        `&from=${win.from}&to=${win.to}&limit=20`));
+    } catch {
+      if (seq === drillSeq) setHTML(host, '<p class="empty">That list could not be loaded just now.</p>');
+      return;
+    }
+  }
+  if (seq !== drillSeq) return;   // a later click already won
+  const data = drillCache.get(key);
+
+  const share = data.total > 0 ? (data.withTraction / data.total) * 100 : null;
+
+  // The denominator leads, deliberately. A top twenty with nothing beside it
+  // reads as "the twenty biggest"; what it actually is, on this data, is every
+  // Space in the period that anyone noticed at all.
+  const preamble = `<p class="hint" style="margin-bottom:14px">
+    <b>${num(data.withTraction)}</b> of <b>${num(data.total)}</b> new
+    ${esc(titleCase(state.drill))} Spaces in this selection have a single like${
+      share == null ? '' : ` — ${share.toFixed(1)}%`}.
+    Likes are recorded when we first see a Space, in the hours after it is created, so this is
+    which ones got noticed fastest rather than which are most popular today.
+    <a href="https://huggingface.co/spaces" target="_blank" rel="noopener">The Hub</a> has no
+    download figure for Spaces at all.</p>`;
+
+  if (!data.spaces.length) {
+    setHTML(host, preamble + `<p class="empty">Not one of the ${
+      num(data.total)} had a like when we saw it.</p>`);
+    return;
+  }
+
+  setHTML(host, preamble + `<div class="drill-list">${data.spaces.map(s => {
+    const name = s.title || s.spaceId.split('/')[1] || s.spaceId;
+    return `<a class="drill-row" href="https://huggingface.co/spaces/${
+      esc(s.spaceId)}" target="_blank" rel="noopener"
+      title="${esc(s.description || s.spaceId)}">
+      <span class="drill-likes">${num(s.likes)}</span>
+      <span class="drill-name">
+        <b>${esc(name)}</b>
+        <span class="drill-meta">${esc(s.author || '')}${s.sdk ? ' &middot; ' + esc(titleCase(s.sdk)) : ''} &middot; ${
+          esc(shortWeek(s.createdAt.slice(0, 10)))}${s.lowConfidence ? ' &middot; use case uncertain' : ''}</span>
+      </span>
+    </a>`;
+  }).join('')}</div>${data.withTraction > data.spaces.length
+    ? `<p class="hint" style="margin-top:12px">The ${data.spaces.length} most-liked of ${
+        num(data.withTraction)}.</p>`
+    : ''}`);
 }
 
 /* ── The period matrix ────────────────────────────────────────────────── */
@@ -2331,6 +2646,51 @@ function periodTable(cols, { unit = '', name = 'Value', whole = false } = {}) {
   const totals = whole ? columnTotals(rows, periods) : null;
   const isCount = kind === 'count';
 
+  /**
+   * The benchmark column: what a normal period looks like, so the newest one
+   * can be read as high or low rather than just as a number.
+   *
+   * Over FINISHED periods only. A period still filling would drag the
+   * benchmark down by however many days have not happened yet, which would
+   * make the current column look good against an average it had itself
+   * depressed. Fewer than two finished periods and there is nothing to average,
+   * so the column goes away rather than printing a copy of the one column
+   * there is.
+   *
+   * It does not respond to the reader's selection. Picking a month and
+   * watching the benchmark move to match it would leave nothing to compare
+   * against — the average is the fixed thing the selection is measured
+   * against.
+   */
+  const avgIdx = periods.map((p, i) => (p.partial ? -1 : i)).filter(i => i >= 0);
+  const showAvg = kind !== 'level' && avgIdx.length >= 2;
+  const avgHead = showAvg
+    ? `<th class="avg" title="The average across the ${avgIdx.length} finished ${
+        esc(PERIOD_WORD[state.period])}s on record. ${isCount
+          ? 'Counts are averaged per ' + esc(PERIOD_WORD[state.period]) + '.'
+          : 'Shares are pooled by each period\u2019s own base, not averaged flat.'
+        } Periods still filling are left out of it.">Average</th>`
+    : '';
+
+  /* Counts average per period; shares pool by base, because the flat mean of
+     six shares over six periods of different sizes is not a share of anything.
+     Voice / speech reads 6.4% pooled and 9.2% averaged flat — a 42% overstatement
+     of a figure a reader would take at face value. */
+  const avgOf = (values, denominators) => {
+    if (kind === 'percent') return combine(values, denominators, avgIdx, 'percent');
+    let sum = null, n = 0;
+    for (const i of avgIdx) {
+      const v = values[i];
+      if (v == null) continue;
+      sum = (sum ?? 0) + v;
+      n++;
+    }
+    return n ? sum / n : null;
+  };
+  const avgCell = (v, sup = false) => showAvg
+    ? `<td class="avg${sup ? ' suppressed' : ''}">${esc(exact(v, unit))}</td>` : '';
+  const avgBlank = showAvg ? '<td class="avg"></td>' : '';
+
   const head = `<tr><th>${esc(name)}</th>${periods.map((p, i) => {
     const on = state.picked.has(p.key);
     // Two different reasons a period is unfinished, and they read differently:
@@ -2342,7 +2702,7 @@ function periodTable(cols, { unit = '', name = 'Value', whole = false } = {}) {
     return `<th class="${on ? 'sel' : ''}"><button type="button" data-col="${i}"
       title="${esc(p.full)}${p.partial ? ' — not finished yet' : ''}. Click to pick this ${esc(PERIOD_WORD[state.period])}.">${
       esc(p.label)}${tag}</button></th>`;
-  }).join('')}</tr>`;
+  }).join('')}${avgHead}</tr>`;
 
   const cls = (i, extra) => {
     const c = [state.picked.has(periods[i].key) ? 'selcol' : '', extra ? 'suppressed' : ''].filter(Boolean);
@@ -2353,10 +2713,12 @@ function periodTable(cols, { unit = '', name = 'Value', whole = false } = {}) {
     <td>${esc(titleCase(r.dimension))}</td>
     ${periods.map((p, i) => `<td${cls(i, r.suppressed?.[i])}>${
       esc(exact(r.values[i], unit))}${r.suppressed?.[i] ? '*' : ''}</td>`).join('')}
+    ${avgCell(avgOf(r.values, r.denominators), avgIdx.every(i => r.suppressed?.[i]))}
   </tr>`).join('');
 
   const totalRow = totals ? `<tr class="total">
     <td>Total</td>${totals.map((v, i) => `<td${cls(i)}>${esc(exact(v, unit))}</td>`).join('')}
+    ${avgCell(avgOf(totals, null))}
   </tr>` : '';
 
   // Spread across real cells rather than one colspan: a cell as wide as the
@@ -2364,7 +2726,7 @@ function periodTable(cols, { unit = '', name = 'Value', whole = false } = {}) {
   // edge the moment the table was scrolled to its newest column — which is
   // where it opens.
   const groupRow = (label) => `<tr class="grp"><td>${esc(label)}</td>${
-    periods.map(() => '<td></td>').join('')}</tr>`;
+    periods.map(() => '<td></td>').join('')}${avgBlank}</tr>`;
 
   const shareRows = whole ? groupRow('Share of the total') +
     ranked.map(r => `<tr${RESIDUAL.has(r.dimension) ? ' class="residual"' : ''}>
@@ -2374,6 +2736,16 @@ function periodTable(cols, { unit = '', name = 'Value', whole = false } = {}) {
         const v = r.values[i];
         return `<td${cls(i)}>${t > 0 && v != null ? (v / t * 100).toFixed(1) + '%' : '—'}</td>`;
       }).join('')}
+      ${showAvg ? (() => {
+        // Pooled over the finished periods: the share the category held across
+        // all of them together, not the mean of their individual shares.
+        let num = 0, den = 0, seen = false;
+        for (const i of avgIdx) {
+          const t = totals[i], v = r.values[i];
+          if (t > 0 && v != null) { num += v; den += t; seen = true; }
+        }
+        return `<td class="avg">${seen && den > 0 ? (num / den * 100).toFixed(1) + '%' : '—'}</td>`;
+      })() : ''}
     </tr>`).join('') : '';
 
   const growthRows = ranked.map((r, k) => {
@@ -2381,6 +2753,7 @@ function periodTable(cols, { unit = '', name = 'Value', whole = false } = {}) {
     return `<tr${RESIDUAL.has(r.dimension) ? ' class="residual"' : ''}>
       <td>${esc(titleCase(r.dimension))}</td>
       ${g.map((x, i) => `<td${cls(i)}>${delta(x.value, x)}</td>`).join('')}
+      ${avgBlank}
     </tr>`;
   }).join('');
 
@@ -2394,8 +2767,11 @@ function periodTable(cols, { unit = '', name = 'Value', whole = false } = {}) {
         })
       : null;
     const g = periodGrowth(totals, periods, isCount, likeTotal);
+    // No average of the growth column. The mean of a run of period-on-period
+    // percentages is not the growth over that run — it over-weights small
+    // bases and it is not a figure anyone can act on.
     return `<tr class="total"><td>Total</td>${
-      g.map((x, i) => `<td${cls(i)}>${delta(x.value, x)}</td>`).join('')}</tr>`;
+      g.map((x, i) => `<td${cls(i)}>${delta(x.value, x)}</td>`).join('')}${avgBlank}</tr>`;
   })() : '';
 
   const anySuppressed = rows.some(r => (r.suppressed || []).some(Boolean));
@@ -2412,7 +2788,13 @@ function periodTable(cols, { unit = '', name = 'Value', whole = false } = {}) {
     </tbody>
   </table></div>
   <p class="hint" style="margin-top:12px">Click a column heading to look at just that ${
-    esc(PERIOD_WORD[state.period])}.${anyPart
+    esc(PERIOD_WORD[state.period])}.${showAvg
+      ? ` <b>Average</b> is what a normal ${esc(PERIOD_WORD[state.period])} looks like, across the ${
+          avgIdx.length} finished ones on record &mdash; ${isCount
+            ? 'counts averaged per ' + esc(PERIOD_WORD[state.period])
+            : 'shares pooled by each one&rsquo;s own base rather than averaged flat'
+          }. A ${esc(PERIOD_WORD[state.period])} still filling is left out of it, and it does not move when you pick a column.`
+      : ''}${anyPart
       ? ` A heading marked <b>so far</b> is a ${esc(PERIOD_WORD[state.period])} still in progress, and one marked <b>3/4w</b> is one the pipeline is missing weeks from &mdash; either way its figures are not final. Growth into such a ${esc(PERIOD_WORD[state.period])} is measured against the same span of the one before it, and the cell says <b>so far</b>; where that span cannot be assembled it reads &ldquo;part period&rdquo; instead of a fall that is really just days that have not happened yet.`
       : ''}${anySuppressed
       ? ' <b>*</b> too few behind this figure to call it a trend &mdash; shown for completeness.' : ''}</p>`;
@@ -2451,7 +2833,13 @@ function renderCutPanel(elId, cut, { unit = '', chartId, extraNote = '', rows = 
   const form = formFor(whole, cols.periods);
   const notes = [];
   if (cols.hasGaps) notes.push(`A ${PERIOD_WORD[state.period]} nothing was measured in is a gap, not a zero.`);
-  if (!whole) {
+  // Two different reasons a cut is not stacked, and they must not be given the
+  // same sentence. Penetration rates (vertical, technique) share no total at
+  // all, so stacking them would invent one. The family-by-use-case cut does
+  // have a common base — every family named inside one use case — and its lines
+  // really do add to 100%; it stays unstacked because the reader is following
+  // one use case through time, not reading a composition.
+  if (!whole && cut !== CUTS.matrix) {
     notes.push(`One Space can be in several of these at once, so they are drawn ${
       form === 'group' ? 'side by side' : 'as separate lines'} rather than stacked — a stack would add up to a total that does not exist.`);
   }
@@ -2469,13 +2857,30 @@ function renderCutPanel(elId, cut, { unit = '', chartId, extraNote = '', rows = 
     unit, chartId, note: notes.join(' '),
   });
 
+  // Only the use-case cut has anything behind a category: the drill-down reads
+  // hf_spaces, and a Space carries exactly one primary use case. There is no
+  // equivalent list behind a technique or an industry, both of which are
+  // multi-label, and no list at all behind a model family — those are model
+  // repos, not Spaces.
+  const drill = cut === CUTS.usecase;
+
   const list = document.createElement('div');
   list.className = 'ranked';
   list.innerHTML = `<div class="ranked-head">
       <h3>${esc(name)}</h3>
-      <span class="scope">${scopeLabel(cols.periods)}</span>
-    </div>${rankedBars(cols, { unit, chartId, whole })}`;
+      <span class="scope">${scopeLabel(cols.periods, cols.kind)}</span>
+    </div>${rankedBars(cols, { unit, chartId, whole, drill })}${drill
+      ? '<p class="hint" style="margin-top:10px">Click a use case to see the new Spaces behind it.</p>'
+      : ''}`;
   el.appendChild(list);
+
+  if (drill) {
+    list.querySelectorAll('button[data-drill]').forEach(b => {
+      b.addEventListener('click', () => openDrill(
+        b.dataset.drill === state.drill ? null : b.dataset.drill, cols.periods));
+    });
+    renderDrill(cols);
+  }
 }
 
 /** What the figures in a cut ARE, in words, for the table and the list header. */
@@ -2486,7 +2891,7 @@ const CUT_NAMES = {
   [CUTS.share]:    'Share of new Spaces',
   [CUTS.vertical]: 'Share of Spaces serving it',
   [CUTS.tech]:     'Share of Spaces using it',
-  [CUTS.matrix]:   'Share of the use case',
+  [CUTS.matrix]:   'Share of the families named',
   [CUTS.engage]:   'Engagement',
 };
 
@@ -2529,9 +2934,14 @@ function renderTiles() {
   // the panel below draws, so the tile and the chart cannot disagree.
   const uc = cutColumns(CUTS.usecase);
   const ucIdx = pickedIndexes(uc.periods);
+  // No `?? 0`: a category that was never measured is not a category that saw
+  // zero. Coercing null to 0 ties every row and the sort hands back row 0, so
+  // the tile would name a leader for a column the pipeline never ran while its
+  // three siblings correctly print an em dash.
   const leadRow = uc.rows
     .filter(r => !RESIDUAL.has(r.dimension))
-    .map(r => ({ dimension: r.dimension, value: combine(r.values, r.denominators, ucIdx, 'count') ?? 0 }))
+    .map(r => ({ dimension: r.dimension, value: combine(r.values, r.denominators, ucIdx, 'count') }))
+    .filter(r => r.value != null && r.value > 0)
     .sort((a, b) => b.value - a.value)[0];
   const lead = (() => {
     if (!leadRow) return { value: null, note: null };
@@ -2540,8 +2950,7 @@ function renderTiles() {
     let before = null, note = null;
     if (one > 0 && uc.periods[one].partial) {
       before = uc.like?.[k]?.[one] ?? null;
-      note = before == null ? null
-        : `against the first ${uc.periods[one].behind} week${uc.periods[one].behind === 1 ? '' : 's'} of ${uc.periods[one - 1].label}, so far`;
+      note = before == null ? null : likeSuffix(uc.periods, one);
     } else {
       const prior = priorBlock(ucIdx, uc.periods);
       if (prior.length && ![...prior, ...ucIdx].some(i => uc.periods[i].partial)) {
@@ -2554,9 +2963,17 @@ function renderTiles() {
   // Families that actually appear in the selection, not every family the
   // taxonomy knows about: "34 families" under a week that saw four is a count
   // of the taxonomy, not of the week.
+  //
+  // Residuals are excluded from the count for the same reason every chart and
+  // ranked list on the page excludes them: "Unresolved" is the absence of a
+  // family, and counting it as one turned 8 into 10 in every period. They are
+  // named underneath instead of dropped, because a bare 8 would silently write
+  // off the 16,774 models sitting in "Other open".
   const fam = cutColumns(CUTS.family);
   const famIdx = pickedIndexes(fam.periods);
-  const famCount = fam.rows.filter(r => (combine(r.values, r.denominators, famIdx, 'count') ?? 0) > 0).length;
+  const famSeen = fam.rows.filter(r => (combine(r.values, r.denominators, famIdx, 'count') ?? 0) > 0);
+  const famCount = famSeen.filter(r => !RESIDUAL.has(r.dimension)).length;
+  const famRest = famSeen.filter(r => RESIDUAL.has(r.dimension)).map(r => r.dimension);
 
   const openTail = periods.length && periods[periods.length - 1].partial;
   const spark = (row) => sparkline(row.values, { provisional: openTail });
@@ -2566,6 +2983,15 @@ function renderTiles() {
   const idxNow = pickedIndexes(periods);
   const scope = idxNow.length === 1 ? periods[idxNow[0]].label
     : `${periods[idxNow[0]].label}–${periods[idxNow[idxNow.length - 1]].label}`;
+
+  // /api/coverage is per-week and always describes the newest week on screen.
+  // Printed under a quarter's numerator it read "70% · 613 by rule · 1,608 by
+  // LLM" — 2,221 rows, one week, beneath 14,715. There is no multi-week
+  // substitute to splice in, so the split only appears where it is true of the
+  // figure above it: one week, and that week.
+  const bySourceFits = !!coverage && idxNow.length === 1 &&
+    (periods[idxNow[0]].weeks || []).length === 1 &&
+    periods[idxNow[0]].weeks[0] === coverageWeek;
 
   document.getElementById('tiles').innerHTML = `
     <div class="tile">
@@ -2577,7 +3003,11 @@ function renderTiles() {
     <div class="tile">
       <div class="label">New Models</div>
       <div class="value">${num(models)}</div>
-      <div class="sub">${famCount} famil${famCount === 1 ? 'y' : 'ies'} &middot; ${esc(scope)}</div>
+      <div class="sub">${famCount} named famil${famCount === 1 ? 'y' : 'ies'} &middot; ${esc(scope)}</div>
+      ${famRest.length
+        ? `<div class="sub" title="${esc(famRest.map(d => RESIDUAL_NOTE[d] ?? titleCase(d)).join('. '))}">plus ${
+            esc(joinWords(famRest.map(titleCase)))}</div>`
+        : ''}
       ${spark(rolled[2])}
     </div>
     <div class="tile">
@@ -2591,7 +3021,7 @@ function renderTiles() {
     <div class="tile">
       <div class="label">Coverage</div>
       <div class="value">${cover == null ? '—' : Math.round(cover) + '%'}</div>
-      <div class="sub">${coverage
+      <div class="sub">${bySourceFits
         ? `${num(coverage.bySource?.rule ?? 0)} by rule &middot; ${num(coverage.bySource?.model ?? 0)} by LLM`
         : 'of new Spaces classified'}</div>
       ${sparkline(periods.map((_, i) => {
@@ -2705,9 +3135,7 @@ function renderMovers() {
     <div><h3>Grew</h3>${list(up, 'Nothing grew.')}</div>
     <div><h3>Shrank</h3>${list(down, 'Nothing shrank.')}</div>
   </div>${likeMode
-    ? `<p class="chart-note">○ This ${esc(word)} is not finished, so it is measured against the first ${
-        esc(String(cols.periods[one].behind))} week${cols.periods[one].behind === 1 ? '' : 's'} of ${
-        esc(cols.periods[one - 1].label)} rather than against the whole of it.</p>`
+    ? `<p class="chart-note">○ ${esc(likeFootnote(cols.periods, one, word))}</p>`
     : ''}`;
 }
 
@@ -2830,7 +3258,7 @@ function renderEngagement(el) {
        <h3>${esc(titleCase(r.dimension))}</h3>
        <div class="engage-plot"></div>
      </div>`).join('') +
-    `<p class="chart-note" id="engagement-note">Each ${esc(word)} shows its last measured week, not a sum:
+    `<p class="chart-note" id="engagement-note">Each ${esc(word)} shows its last finished week, not a sum:
       downloads already count a rolling 30 days and likes are a running total, so adding the weeks
       together would count the same downloads many times.${open
         ? ` ○ beside a label marks a ${esc(word)} that is not finished yet.` : ''}
@@ -2909,7 +3337,13 @@ async function renderMatrix() {
   // weeks from the main one if the two were fetched either side of a run.
   renderCutPanel('c-matrix', CUTS.matrix, {
     unit: '%', chartId: 'matrix', rows, payload: matrixSeries,
-    extraNote: `Each line is the share of ${titleCase(uc)} Spaces built on that family.`,
+    // The pipeline divides by the family MENTIONS inside a use case, not by
+    // the Spaces in it (aggregate.ts, familyShareByUseCase): model_families is
+    // multi-label, so a Space naming two families adds two to the base, and a
+    // Space naming none adds nothing. "Share of Chat / assistant Spaces" read
+    // as 365 when the real base was 186.
+    extraNote: `Each line is that family's share of every family named by ${titleCase(uc)} Spaces. ` +
+      `A Space naming two families counts in both; one naming none is not in the base.`,
   });
 }
 
@@ -2945,7 +3379,7 @@ function renderMatrixGrid(el) {
   const grid = ucs.map(uc => fams.map(f => cell(uc, f)));
   const max = Math.max(...grid.flat().filter(Boolean).map(m => m.value), 0) || 1;
 
-  setHTML(el, `<p class="hint" style="margin-bottom:12px">${scopeLabel(periods)}.</p>
+  setHTML(el, `<p class="hint" style="margin-bottom:12px">${scopeLabel(periods, 'percent')}.</p>
     <table>
     <thead><tr><th>Use case</th>${fams.map(f => `<th>${esc(titleCase(f))}</th>`).join('')}</tr></thead>
     <tbody>${ucs.map((uc, r) => `<tr><td>${esc(titleCase(uc))}</td>${fams.map((f, c) => {
@@ -2955,8 +3389,8 @@ function renderMatrixGrid(el) {
       const a = 0.10 + (m.value / max) * 0.62;
       const label = m.suppressed ? `${Math.round(m.value)}%*` : `${Math.round(m.value)}%`;
       return `<td><span class="cell" style="background:color-mix(in srgb, var(--series) ${(a * 100).toFixed(0)}%, transparent)"
-        title="${esc(titleCase(uc))} · ${esc(titleCase(f))}: ${m.value.toFixed(1)}% of ${num(m.denominator)}${
-        m.suppressed ? ' — base too small' : ''}">${label}</span></td>`;
+        title="${esc(titleCase(uc))} · ${esc(titleCase(f))}: ${m.value.toFixed(1)}% of ${
+        num(m.denominator)} families named${m.suppressed ? ' — base too small' : ''}">${label}</span></td>`;
     }).join('')}</tr>`).join('')}</tbody></table>
     <p class="hint" style="margin-top:12px">* too few Spaces behind this figure to call it a trend &mdash; shown for completeness.</p>`);
 }
@@ -3025,6 +3459,7 @@ function renderAll() {
     renderMovers();
     return;
   }
+  if (state.tab === 'insights') { renderInsights(); return; }
   if (state.tab === 'trends') { renderTrendsTab(); return; }
 
   if (state.tab === 'build') {
@@ -3036,11 +3471,12 @@ function renderAll() {
   if (state.tab === 'tech') {
     const sub = state.sub.tech;
     if (sub === 'family') renderCutPanel('c-family', CUTS.family, { chartId: 'family' });
-    else if (sub === 'tech') renderCutPanel('c-tech', CUTS.tech, { unit: '%', chartId: 'tech' });
     else if (sub === 'sdk') renderCutPanel('c-sdk', CUTS.sdk, { chartId: 'sdk' });
     else renderMatrix();
     return;
   }
+
+  if (state.tab === 'techniques') { renderTechniques(); return; }
 
   if (state.tab === 'engagement') renderEngagement(document.getElementById('c-engagement'));
 }
@@ -3054,13 +3490,14 @@ function renderAll() {
  */
 function renderEveryPanel() {
   renderTiles();
+  renderInsights();
   renderHeadline();
   renderMovers();
   renderTrendsTab();
   renderCutPanel('c-usecase', CUTS.usecase, { chartId: 'usecase' });
   renderCutPanel('c-vertical', CUTS.vertical, { unit: '%', chartId: 'vertical' });
   renderCutPanel('c-family', CUTS.family, { chartId: 'family' });
-  renderCutPanel('c-tech', CUTS.tech, { unit: '%', chartId: 'tech' });
+  renderTechniques();
   renderCutPanel('c-sdk', CUTS.sdk, { chartId: 'sdk' });
   // The cross-tab's history is fetched on demand, and beforeprint cannot wait
   // for it: printing before it has ever been opened would capture the loading
@@ -3069,17 +3506,287 @@ function renderEveryPanel() {
   renderEngagement(document.getElementById('c-engagement'));
 }
 
+/* ── Insights ─────────────────────────────────────────────────────────── */
+
+let insightData = null;
+let insightPending = null;
+let insightFailed = false;
+
+const PERIOD_NAME = (kind, key) => {
+  if (kind === 'month') {
+    const [y, m] = key.split('-');
+    return `${MONTHS_LONG[Number(m) - 1]} ${y}`;
+  }
+  return longWeek(key);
+};
+
+/** Why a period has no summary, in the reader's terms rather than a status code. */
+const WHY_NONE = {
+  ungrounded: 'The summary for this period was withheld. The model would not keep every figure tied to the data it was given, and a summary that is quietly wrong is worse than none.',
+  insufficient: 'There was not enough measured in this period to write about. That is usually a run that did not finish, rather than a quiet week.',
+  error: 'The summary could not be generated for this period.',
+};
+
+function insightCard(entry, { heading = true } = {}) {
+  if (!entry) {
+    return `<p class="insight-none">Nothing written for this period yet.</p>`;
+  }
+  const title = heading
+    ? `<h3>${esc(PERIOD_NAME(entry.kind, entry.periodKey))}</h3>` : '';
+  if (entry.status !== 'ok' || !entry.narrative) {
+    return `${title}<p class="insight-none">${esc(WHY_NONE[entry.status] || WHY_NONE.error)}${
+      entry.detail ? ` (${esc(entry.detail)})` : ''}</p>`;
+  }
+
+  const facts = Array.isArray(entry.facts) ? entry.facts : [];
+  const fmt = (f, v) => v == null ? '—'
+    : f.unit === 'percent' ? `${v.toFixed(1)}%` : num(Math.round(v));
+
+  // The facts are the point, not a footnote: they are what makes a sentence in
+  // the paragraph above checkable rather than merely plausible.
+  // Every slot the prose was allowed to cite gets a column. A figure that
+  // appears in a paragraph and nowhere in this table would be exactly the
+  // unverifiable number the whole design exists to prevent — "+1.1 points" was
+  // in the prose and missing here until a test went looking for it.
+  const anyPts = facts.some(f => f.changePts != null);
+  const anyDen = facts.some(f => f.denominator != null);
+  const factTable = facts.length ? `<details class="insight-facts">
+    <summary>The ${facts.length} facts this was written from &mdash; every figure above is one of these</summary>
+    <div class="table-scroll"><table>
+      <thead><tr><th>Fact</th><th>What</th><th>Figure</th><th>Before</th><th>Change</th>${
+        anyPts ? '<th>In points</th>' : ''}${anyDen ? '<th>Out of</th>' : ''}</tr></thead>
+      <tbody>${facts.map(f => `<tr>
+        <td>${esc(f.id)}</td>
+        <td>${esc(f.what)}</td>
+        <td class="fnum">${esc(fmt(f, f.value))}</td>
+        <td class="fnum">${esc(fmt(f, f.prev))}</td>
+        <td class="fnum">${f.changePct == null ? '—' : delta(f.changePct)}</td>
+        ${anyPts ? `<td class="fnum">${f.changePts == null ? '—'
+          : esc(`${f.changePts >= 0 ? '+' : '\u2212'}${Math.abs(f.changePts).toFixed(1)} points`)}</td>` : ''}
+        ${anyDen ? `<td class="fnum">${f.denominator == null ? '—' : num(Math.round(f.denominator))}</td>` : ''}
+      </tr>`).join('')}</tbody>
+    </table></div>
+  </details>` : '';
+
+  return `${title}
+    <div class="insight-body">${entry.narrative.split(/\n\n+/)
+      .map(p => `<p>${esc(p.trim())}</p>`).join('')}</div>
+    <p class="insight-meta">Written ${esc(shortWeek(entry.generatedAt.slice(0, 10)))}${
+      entry.model ? ` by ${esc(prettyModel(entry.model))}` : ''}, from figures it could not alter.</p>
+    ${factTable}`;
+}
+
+async function renderInsights() {
+  const weekEl = document.getElementById('c-insight-week');
+  const monthEl = document.getElementById('c-insight-month');
+  const histEl = document.getElementById('c-insight-history');
+  if (!weekEl) return;
+
+  if (!insightData && !insightFailed) {
+    setHTML(weekEl, '<p class="empty">Loading…</p>');
+    setHTML(monthEl, '');
+    setHTML(histEl, '');
+    try {
+      // Shared, like the cross-tab's payload: three renders of this tab before
+      // the first response lands would otherwise fire three requests.
+      insightPending ||= getJSON('/api/insights?limit=12');
+      insightData = await insightPending;
+    } catch {
+      insightFailed = true;
+    } finally {
+      insightPending = null;
+    }
+    if (state.tab !== 'insights' && !printing) return;
+  }
+
+  if (insightFailed) {
+    setHTML(weekEl, '<p class="empty">The summaries could not be loaded just now. Reload to try again.</p>');
+    setHTML(monthEl, '');
+    setHTML(histEl, '');
+    return;
+  }
+
+  // A deployment whose migration has not been applied answers 200 with empty
+  // lists. Saying so is the whole lesson of the summary card that spent weeks
+  // hiding itself: an empty list and no explanation is indistinguishable from
+  // a feature nobody has built.
+  if (insightData?.unavailable) {
+    setHTML(weekEl, `<p class="empty">${esc(insightData.unavailable)}</p>`);
+    setHTML(monthEl, '');
+    setHTML(histEl, '');
+    return;
+  }
+
+  const weeks = insightData?.week || [];
+  const months = insightData?.month || [];
+
+  document.getElementById('insight-week-hint').textContent = weeks.length
+    ? PERIOD_NAME('week', weeks[0].periodKey)
+    : 'No week has been summarised yet.';
+  document.getElementById('insight-month-hint').textContent = months.length
+    ? PERIOD_NAME('month', months[0].periodKey)
+    : 'Written once a month closes, never part-way through it.';
+
+  setHTML(weekEl, insightCard(weeks[0], { heading: false }));
+  setHTML(monthEl, months.length
+    ? insightCard(months[0], { heading: false })
+    : `<p class="insight-none">No month has closed since the pipeline started keeping these.
+       A month is written on the last Monday of it, so that August is never compared with July on
+       two weeks of evidence.</p>`);
+
+  // Everything but the two above, newest first, weeks and months interleaved.
+  const rest = [...weeks.slice(1), ...months.slice(1)]
+    .sort((a, b) => (a.periodKey < b.periodKey ? 1 : -1));
+  setHTML(histEl, rest.length
+    ? rest.map(e => `<div class="insight-item">${insightCard(e)}</div>`).join('')
+    : '<p class="insight-none">Nothing earlier yet.</p>');
+}
+
+/* ── Techniques ───────────────────────────────────────────────────────── */
+
+/**
+ * The last two FINISHED periods of a cut, if they sit next to each other.
+ *
+ * "What moved this week" has to be two whole weeks. The newest column is
+ * usually two days old, and reporting its share as this week's is how a
+ * technique appears to have halved overnight. Adjacency is required too: with
+ * a period missing in between, the change would silently span a gap the reader
+ * cannot see on screen.
+ */
+function lastTwoFinished(periods) {
+  const done = periods.map((p, i) => (p.partial ? -1 : i)).filter(i => i >= 0);
+  if (done.length < 2) return null;
+  const now = done[done.length - 1], before = done[done.length - 2];
+  return now - before === 1 ? { now, before } : null;
+}
+
+/** One period's figure and its change from the one before, per category. */
+function changeAgainstPrevious(cut, period) {
+  const cols = cutColumns(cut, { period });
+  const pair = lastTwoFinished(cols.periods);
+  if (!pair) {
+    return {
+      ok: false,
+      why: cols.periods.length < 2
+        ? `there is only one ${PERIOD_WORD[period]} on record`
+        : `no two finished ${PERIOD_WORD[period]}s sit next to each other yet`,
+      periods: cols.periods,
+    };
+  }
+  const { now, before } = pair;
+  const rows = cols.rows.map(r => {
+    const value = combine(r.values, r.denominators, [now], cols.kind);
+    const prev = combine(r.values, r.denominators, [before], cols.kind);
+    return {
+      dimension: r.dimension,
+      value,
+      prev,
+      // Points, not just a ratio: 5% to 6% is +20% and +1.0 points, and only
+      // one of those two numbers tells a reader how much of the mix moved.
+      points: value != null && prev != null ? value - prev : null,
+      growth: value != null && prev ? ((value - prev) / prev) * 100 : null,
+      suppressed: !!(r.suppressed?.[now] && r.suppressed?.[before]),
+    };
+  });
+  return {
+    ok: true, rows, cols,
+    nowLabel: cols.periods[now].full,
+    beforeLabel: cols.periods[before].full,
+  };
+}
+
+/**
+ * Techniques, week on week and month on month, side by side.
+ *
+ * Two time grains at once is the whole point of this table, so neither of them
+ * may read `state.period` — the toolbar still drives the chart underneath, and
+ * a reader who groups that chart by quarter should not find this table has
+ * quietly become a quarterly one.
+ */
+function renderTechChange() {
+  const el = document.getElementById('c-tech-change');
+  if (!el) return;
+  if (!seriesRaw || !(seriesRaw.weeks || []).length) { setHTML(el, noSeriesNote()); return; }
+
+  const week = changeAgainstPrevious(CUTS.tech, 'week');
+  const month = changeAgainstPrevious(CUTS.tech, 'month');
+
+  if (!week.ok && !month.ok) {
+    setHTML(el, `<p class="empty">Nothing to compare yet &mdash; ${esc(week.why)}.</p>`);
+    document.getElementById('tech-change-hint').textContent =
+      'Two finished weeks are needed before a change can be reported.';
+    return;
+  }
+
+  const order = (week.ok ? week.rows : month.rows)
+    .filter(r => !RESIDUAL.has(r.dimension))
+    .sort((a, b) => (b.value ?? -1) - (a.value ?? -1))
+    .map(r => r.dimension);
+  const at = (res, dim) => (res.ok ? res.rows.find(r => r.dimension === dim) : null);
+
+  document.getElementById('tech-change-hint').textContent = week.ok && month.ok
+    ? `${week.nowLabel} against ${week.beforeLabel}, and ${month.nowLabel} against ${month.beforeLabel}.`
+    : week.ok
+      ? `${week.nowLabel} against ${week.beforeLabel}. Month on month is withheld: ${month.why}.`
+      : `${month.nowLabel} against ${month.beforeLabel}. Week on week is withheld: ${week.why}.`;
+
+  // A cell prints the share, the change in points, and the change as a
+  // percentage of itself — because "3.3% to 4.4%" is a third more RAG and a
+  // one-point move, and a reader asking "what moved" wants both.
+  const cell = (r) => {
+    if (!r || r.value == null) return '<td>&mdash;</td><td>&mdash;</td>';
+    // Suppressed where it rounds to nothing: "▼ 0.7%  −0.0 pts" reads as a
+    // typo, and a tenth of a point is not the part of that row worth printing.
+    const pts = r.points == null || Math.abs(r.points) < 0.05 ? '' :
+      `<span class="suppressed" style="font-size:12px">${
+        r.points >= 0 ? '+' : '\u2212'}${Math.abs(r.points).toFixed(1)} pts</span>`;
+    return `<td>${esc(exact(r.value, '%'))}${r.suppressed ? '*' : ''}</td>
+      <td>${delta(r.growth, { reason: 'no earlier period' })} ${pts}</td>`;
+  };
+
+  // Named, not "this week": the newest week on screen is usually still
+  // filling, and this table is deliberately reporting the one before it.
+  const shortOf = (res) => res.cols.periods[
+    lastTwoFinished(res.cols.periods).now].label;
+  const head = `<tr>
+    <th>Technique</th>
+    ${week.ok ? `<th>${esc(shortOf(week))}</th><th>vs the week before</th>` : ''}
+    ${month.ok ? `<th>${esc(shortOf(month))}</th><th>vs the month before</th>` : ''}
+  </tr>`;
+
+  const body = order.map(dim => `<tr>
+    <td>${esc(titleCase(dim))}</td>
+    ${week.ok ? cell(at(week, dim)) : ''}
+    ${month.ok ? cell(at(month, dim)) : ''}
+  </tr>`).join('');
+
+  const anySup = order.some(d => at(week, d)?.suppressed || at(month, d)?.suppressed);
+  setHTML(el, `<div class="table-scroll"><table class="pmatrix change">
+    <thead>${head}</thead><tbody>${body}</tbody></table></div>
+    <p class="hint" style="margin-top:12px">Each figure is the share of new Spaces using that
+    technique in a <b>finished</b> period, against the finished period before it &mdash; a week two days
+    old would read as a collapse rather than as a week that has not happened yet.${
+      month.ok ? '' : ` Month on month needs two finished months, and ${esc(month.why)}.`}${
+      anySup ? ' <b>*</b> too few behind this figure to call it a trend.' : ''}</p>`);
+}
+
+function renderTechniques() {
+  renderTechChange();
+  renderCutPanel('c-tech', CUTS.tech, { unit: '%', chartId: 'tech' });
+}
+
 /* ── Tabs, toolbar and routing ────────────────────────────────────────── */
 
 const PANELS = {
-  overview: 'panel-overview', trends: 'panel-trends', build: 'panel-build',
-  tech: 'panel-tech', engagement: 'panel-engagement',
+  overview: 'panel-overview', insights: 'panel-insights', trends: 'panel-trends',
+  build: 'panel-build', tech: 'panel-tech', techniques: 'panel-techniques',
+  engagement: 'panel-engagement',
 };
 
 /** The sub-tabs each panel actually has, so a hash cannot name one that isn't there. */
 const SUBS = {
   build: ['usecase', 'vertical'],
-  tech: ['family', 'tech', 'sdk', 'matrix'],
+  tech: ['family', 'sdk', 'matrix'],
 };
 
 function showTab(tab, { push = false, land = false } = {}) {
@@ -3117,6 +3824,9 @@ function applySubTabs() {
 /** Whether what is on screen is a composition — a whole made of its parts. */
 function panelIsWhole() {
   if (state.tab === 'build') return state.sub.build === 'usecase';
+  // CUTS.tech is deliberately not here. Thirteen multi-label techniques over
+  // one week of Spaces add up to somewhere between 32% and 40%, never 100, so
+  // a stack of them would be a whole made of parts of something else.
   if (state.tab === 'tech') return state.sub.tech === 'family' || state.sub.tech === 'sdk';
   if (state.tab === 'trends') {
     const t = TRACKS.find(t => t.id === state.track);
@@ -3135,11 +3845,16 @@ function syncToolbar() {
   const show = (id, on) => { document.getElementById(id).style.display = on ? '' : 'none'; };
   const onMatrixGrid = state.tab === 'tech' && state.sub.tech === 'matrix' && state.table;
 
-  show('tool-period', true);
+  // Insights is prose about periods the pipeline chose, not a view of the
+  // series: none of the time controls reach it, so none of them appear. A
+  // greyed-out row of controls is noise; one that silently does nothing is
+  // worse.
+  const timeless = state.tab === 'insights';
+  show('tool-period', !timeless);
   // The share toggle only changes a stacked chart. In the table both readings
   // are printed one above the other, so there is nothing left for it to do.
   show('tool-mode', panelIsWhole() && !state.table);
-  show('tool-table', true);
+  show('tool-table', !timeless);
   show('tool-track', state.tab === 'trends');
   show('tool-usecase', state.tab === 'tech' && state.sub.tech === 'matrix' && !state.table);
 
@@ -3179,8 +3894,9 @@ function activeChartId() {
   }
   if (state.tab === 'build') return state.sub.build === 'vertical' ? 'vertical' : 'usecase';
   if (state.tab === 'tech') {
-    return { family: 'family', tech: 'tech', sdk: 'sdk', matrix: 'matrix' }[state.sub.tech] || null;
+    return { family: 'family', sdk: 'sdk', matrix: 'matrix' }[state.sub.tech] || null;
   }
+  if (state.tab === 'techniques') return 'tech';
   return null;
 }
 
@@ -3194,6 +3910,9 @@ function writeHash(push = false) {
   if (state.tab === 'trends') p.set('track', state.track);
   if (state.tab === 'tech' && state.sub.tech === 'matrix' && state.matrixUseCase) {
     p.set('uc', state.matrixUseCase);
+  }
+  if (state.tab === 'build' && state.sub.build === 'usecase' && state.drill) {
+    p.set('drill', state.drill);
   }
   if (state.picked.size) p.set('sel', [...state.picked].join(','));
 
@@ -3226,9 +3945,14 @@ function readHash() {
   const p = new URLSearchParams(location.hash.replace(/^#/, ''));
 
   const tab = p.get('tab');
+  const sub = p.get('sub');
   state.tab = tab && PANELS[tab] ? tab : 'overview';
 
-  const sub = p.get('sub');
+  // Technique used to be a sub-tab of How they build. Every link written
+  // before it moved still names it that way, so those links land where they
+  // always did rather than on the panel's first sub-tab.
+  if (state.tab === 'tech' && sub === 'tech') state.tab = 'techniques';
+
   if (state.tab === 'build') state.sub.build = SUBS.build.includes(sub) ? sub : 'usecase';
   if (state.tab === 'tech') state.sub.tech = SUBS.tech.includes(sub) ? sub : 'family';
 
@@ -3244,6 +3968,12 @@ function readHash() {
   // against the cross-tab's own use cases once that payload arrives;
   // fillUseCasePicker falls back to the first if this names one that is gone.
   state.matrixUseCase = p.get('uc') || null;
+
+  // Shape-checked here and checked against the data in renderDrill, which is
+  // the only place that knows which use cases the payload actually has. A link
+  // naming one that is gone closes the card rather than leaving it loading.
+  const drill = p.get('drill');
+  state.drill = drill && /^[a-z0-9-]{1,40}$/.test(drill) && !RESIDUAL.has(drill) ? drill : null;
 
   // Keys not in the data are simply dropped: a link written under Month and
   // opened under Week would otherwise leave a selection nothing can clear.

@@ -26,9 +26,16 @@ import {
   resolveModelFamilies,
 } from "./lib/model-family";
 import { type NarrateSummary, narrateWeek } from "./lib/narrate";
+import {
+  buildFactPack,
+  generateInsight,
+  type InsightKind,
+  type InsightResult,
+  saveInsight,
+} from "./lib/insights";
 import { type ParseSummary, parseRawModels, parseRawSpaces } from "./lib/parse";
 import { type SnapshotSummary, buildSnapshot, commitSnapshot } from "./lib/snapshot";
-import { addWeeks, weekStart, weekStartIso } from "./lib/time";
+import { addWeeks, toIsoDate, weekStart, weekStartIso } from "./lib/time";
 
 /** Parameters accepted when starting a pipeline run. */
 export interface WeeklyPipelineParams {
@@ -69,6 +76,7 @@ export interface WeeklyPipelineResult {
   classifyLlm?: ClassifyLlmSummary;
   aggregate?: AggregateSummary;
   narrate?: NarrateSummary;
+  insights?: Array<{ kind: InsightKind; periodKey: string; status: string; detail: string | null }>;
   snapshot?: SnapshotSummary;
 }
 
@@ -242,8 +250,8 @@ export class WeeklyPipeline extends WorkflowEntrypoint<Env, WeeklyPipelineParams
     // on its own; the cap is a backstop, and hitting it is reported.
     const MAX_RESOLVE_PASSES = 40;
     const resolve: ResolveSummary = {
-      byTag: 0, byCardData: 0, byChain: 0, byModelType: 0, byName: 0,
-      byBase: 0, total: 0, cursors: EMPTY_CURSORS, done: false,
+      byTag: 0, byCardData: 0, byChain: 0, byArchitecture: 0, byName: 0,
+      byBase: 0, total: 0, cursors: EMPTY_CURSORS, done: false, unfinished: [],
     };
     for (let pass = 0; pass < MAX_RESOLVE_PASSES; pass++) {
       // The cursors from the previous pass are what make this a walk rather
@@ -256,12 +264,13 @@ export class WeeklyPipeline extends WorkflowEntrypoint<Env, WeeklyPipelineParams
       resolve.byTag += part.byTag;
       resolve.byCardData += part.byCardData;
       resolve.byChain += part.byChain;
-      resolve.byModelType += part.byModelType;
+      resolve.byArchitecture += part.byArchitecture;
       resolve.byName += part.byName;
       resolve.byBase += part.byBase;
       resolve.total += part.total;
       resolve.cursors = part.cursors;
       resolve.done = part.done;
+      resolve.unfinished = part.unfinished;
 
       // Stop when every rung has walked its whole set — not when a pass
       // happens to resolve nothing. Those are different, and confusing them
@@ -346,6 +355,47 @@ export class WeeklyPipeline extends WorkflowEntrypoint<Env, WeeklyPipelineParams
       );
     });
 
+    // The written insight, stored in D1 rather than only in the GitHub
+    // archive. The archive is an archive; a read path the dashboard depends on
+    // should not require a credential to have been valid at the moment a
+    // four-hour run finished. See migrations/0006.
+    //
+    // The monthly one is written only when a month has actually closed —
+    // detected by the week just processed being the last Monday of its month.
+    // Writing it every week would mean each week's run overwrote the last with
+    // a "month" that was two weeks long.
+    const insightPeriods = insightPeriodsFor(config.weekStart);
+    const insights: Array<{ kind: InsightKind; periodKey: string; status: string; detail: string | null }> = [];
+    for (const period of insightPeriods) {
+      const written = await step.do(`insight-${period.kind}-${period.periodKey}`, PAGE_RETRY, async () => {
+        // Non-fatal, for the same reason the snapshot step is: by the time this
+        // runs the week is DONE — Phase 7 has written hf_weekly_metrics and the
+        // dashboard is already serving the new figures. A summary that could
+        // not be written is a missing paragraph, not a failed pipeline, and a
+        // pending migration must not be able to report four hours of correct
+        // work as a failure.
+        try {
+          const pack = await buildFactPack(this.env.DB, period);
+          const result: InsightResult = await generateInsight(
+            bedrockNarrate,
+            this.env.BEDROCK_NARRATE_MODEL_ID,
+            pack,
+          );
+          await saveInsight(this.env.DB, result, {
+            weekStart: period.kind === "week" ? config.weekStart : null,
+            modelId: this.env.BEDROCK_NARRATE_MODEL_ID,
+            generatedAt: new Date().toISOString(),
+          });
+          return { kind: result.kind, periodKey: result.periodKey, status: result.status, detail: result.detail };
+        } catch (err) {
+          const reason = err instanceof Error ? err.message : String(err);
+          console.error(`insight ${period.kind} ${period.periodKey} failed: ${reason}`);
+          return { kind: period.kind, periodKey: period.periodKey, status: "error", detail: reason };
+        }
+      });
+      insights.push(written);
+    }
+
     // The archive is the last thing a run does, and by the time it runs the
     // week is ALREADY DONE: Phase 7 wrote hf_weekly_metrics and the dashboard
     // is serving the new figures. Letting this step fail the run therefore
@@ -398,6 +448,7 @@ export class WeeklyPipeline extends WorkflowEntrypoint<Env, WeeklyPipelineParams
       classifyLlm,
       aggregate,
       narrate,
+      insights,
       snapshot,
     };
   }
@@ -601,4 +652,81 @@ export class WeeklyPipeline extends WorkflowEntrypoint<Env, WeeklyPipelineParams
     totals.truncated = true;
     return totals;
   }
+}
+
+/**
+ * Which insights this run should write.
+ *
+ * Always the week just processed. Also the month, but only when that week was
+ * the last Monday of its month — otherwise every run would overwrite the
+ * previous one with a "month" that had only reached the middle of itself, and
+ * a reader opening the tab mid-month would see August compared with July on
+ * two weeks of evidence.
+ *
+ * Both periods carry the weeks BEFORE them as well, because a fact with
+ * nothing to compare it against is a figure rather than an insight.
+ */
+export function insightPeriodsFor(weekStart: string): Array<{
+  kind: InsightKind;
+  periodKey: string;
+  periodLabel: string;
+  previousLabel: string | null;
+  weeks: string[];
+  previousWeeks: string[];
+}> {
+  const monday = new Date(`${weekStart}T00:00:00.000Z`);
+  const prev = weekStartIso(addWeeks(monday, -1));
+  const MONTHS = ["January", "February", "March", "April", "May", "June",
+                  "July", "August", "September", "October", "November", "December"];
+  const longWeek = (iso: string) => {
+    const d = new Date(`${iso}T00:00:00.000Z`);
+    return `the week of ${d.getUTCDate()} ${MONTHS[d.getUTCMonth()]?.slice(0, 3)} ${d.getUTCFullYear()}`;
+  };
+
+  const out: ReturnType<typeof insightPeriodsFor> = [{
+    kind: "week",
+    periodKey: weekStart,
+    periodLabel: longWeek(weekStart),
+    previousLabel: longWeek(prev),
+    weeks: [weekStart],
+    previousWeeks: [prev],
+  }];
+
+  // A week belongs to the month its Monday falls in — the same rule the
+  // dashboard buckets by, so the prose and the chart agree on which weeks
+  // August had. The month is closed once the next Monday is in a new one.
+  const monthOf = (d: Date) => `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}`;
+  const thisMonth = monthOf(monday);
+  const nextMonday = addWeeks(monday, 1);
+  if (monthOf(nextMonday) === thisMonth) return out;
+
+  const mondaysOf = (key: string): string[] => {
+    const [y, m] = key.split("-").map(Number);
+    const weeks: string[] = [];
+    // Walk from the first day of the month to the first Monday, then step.
+    const first = new Date(Date.UTC(y!, m! - 1, 1));
+    const cursor = new Date(first);
+    while (cursor.getUTCDay() !== 1) cursor.setUTCDate(cursor.getUTCDate() + 1);
+    while (monthOf(cursor) === key) {
+      weeks.push(toIsoDate(cursor));
+      cursor.setUTCDate(cursor.getUTCDate() + 7);
+    }
+    return weeks;
+  };
+  const prevMonthKey = monthOf(new Date(Date.UTC(
+    monday.getUTCFullYear(), monday.getUTCMonth() - 1, 1)));
+  const named = (key: string) => {
+    const [y, m] = key.split("-");
+    return `${MONTHS[Number(m) - 1]} ${y}`;
+  };
+
+  out.push({
+    kind: "month",
+    periodKey: thisMonth,
+    periodLabel: named(thisMonth),
+    previousLabel: named(prevMonthKey),
+    weeks: mondaysOf(thisMonth),
+    previousWeeks: mondaysOf(prevMonthKey),
+  });
+  return out;
 }

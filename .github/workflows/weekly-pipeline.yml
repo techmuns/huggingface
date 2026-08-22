@@ -103,6 +103,15 @@ jobs:
           Apply the pending migration in migrations/ before this run."
             exit 1
           fi
+          # Schema the code uses but does not need. A missing narrative table
+          # costs one paragraph; it must not stop ingest, classification and
+          # aggregation, which are the four hours that matter.
+          DEG=$(echo "$S" | jq -r '.schema.degraded // [] | join(", ")')
+          if [ -n "$DEG" ]; then
+            echo "::warning::Database is missing optional schema: $DEG. \
+          The feature behind it is switched off and says so; the run continues. \
+          Apply the pending migration in migrations/ to switch it on."
+          fi
 
       - name: Check the deployed Worker is not older than this commit
         env:
@@ -246,6 +255,28 @@ jobs:
           $(echo "$OUT" | jq -r '.status.output.snapshot.error // "no reason given"'). \
           Raw-record retention assumes this archive exists — fix the Worker's \
           GITHUB_TOKEN (it needs Contents: Read and write) before relying on it."
+          fi
+
+      - name: Warn if family resolution did not finish its walk
+        if: success()
+        env:
+          BASE: ${{ steps.start.outputs.base }}
+          TOKEN: ${{ secrets.ADMIN_TOKEN }}
+          ID: ${{ steps.start.outputs.id }}
+        run: |
+          set -uo pipefail
+          OUT=$(curl -sS --max-time 30 "$BASE/api/admin/run/$ID" -H "Authorization: Bearer $TOKEN")
+          DONE=$(echo "$OUT" | jq -r '.status.output.resolve.done // "absent"')
+          if [ "$DONE" = "false" ]; then
+            echo "::warning::Model-family resolution ran out of passes before \
+          walking its whole set. Rungs still walking: \
+          $(echo "$OUT" | jq -r '.status.output.resolve.unfinished // [] | join(", ")'). \
+          Models past the point each cursor reached were never examined this \
+          run and are published as Unresolved, which is indistinguishable from \
+          a model that was checked and could not be placed. The resolve loop \
+          re-walks the whole accumulated corpus every week from an empty \
+          cursor, so this warning appears once the corpus outgrows \
+          MAX_RESOLVE_PASSES x RESOLVE_PAGE and does not go away on its own."
           fi
 
       - name: Record the run, and keep the schedule alive
