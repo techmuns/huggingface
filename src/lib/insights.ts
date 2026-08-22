@@ -511,6 +511,31 @@ export function mondaysOfMonth(key: string): string[] {
 }
 
 /**
+ * Whether a period is still running, by the same clock the dashboard uses.
+ *
+ * A period is finished when its LAST WEEK has finished — not when the calendar
+ * month ends. A week whose Monday is 31 August belongs to August and runs into
+ * September, so August is not done until that week is, and a summary written a
+ * day earlier would describe a month it had only partly seen.
+ *
+ * This exists because the endpoint and the cron path had different answers.
+ * The cron path never asks about an open period; the endpoint takes whatever it
+ * is given, and the tab prints "Written once a month closes, never part-way
+ * through it" directly above the result. A promise on the page that the data
+ * can contradict is the defect this whole feature was built to avoid.
+ */
+export function periodIsOpen(
+  kind: InsightKind,
+  periodKey: string,
+  now: number = Date.now(),
+): boolean {
+  const lastWeek = kind === "week" ? periodKey : mondaysOfMonth(periodKey).at(-1);
+  if (!lastWeek) return true;
+  const ends = Date.parse(`${lastWeek}T00:00:00.000Z`) + 7 * 86_400_000;
+  return !Number.isFinite(ends) || now < ends;
+}
+
+/**
  * The weeks a summary covers, and the weeks it is measured against.
  *
  * One definition, used by the weekly run and by the repair endpoint, so a
@@ -522,7 +547,14 @@ export function periodSpec(kind: InsightKind, periodKey: string): BuildPackOptio
   if (kind === "week") {
     if (!/^\d{4}-\d{2}-\d{2}$/.test(periodKey)) return null;
     const monday = new Date(`${periodKey}T00:00:00.000Z`);
-    if (!Number.isFinite(monday.getTime()) || monday.getUTCDay() !== 1) return null;
+    if (!Number.isFinite(monday.getTime())) return null;
+    // V8 rolls a date that does not exist forward instead of rejecting it:
+    // "2026-02-30" parses to Monday 2 March. The weekday test alone therefore
+    // passes, and the row would be stored under a key no metric exists for and
+    // no calendar contains — visible in /api/insights for good. Round-tripping
+    // the parsed date back to a string is what catches it.
+    if (isoOf(monday) !== periodKey) return null;
+    if (monday.getUTCDay() !== 1) return null;
     const prev = isoOf(new Date(monday.getTime() - 7 * 86_400_000));
     const longWeek = (iso: string) => {
       const d = new Date(`${iso}T00:00:00.000Z`);
