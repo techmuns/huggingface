@@ -27,10 +27,14 @@ import {
 } from "./lib/model-family";
 import { type NarrateSummary, narrateWeek } from "./lib/narrate";
 import {
+  type BuildPackOptions,
   buildFactPack,
   generateInsight,
+  INSIGHTS_INDEX_SQL,
+  INSIGHTS_TABLE_SQL,
   type InsightKind,
   type InsightResult,
+  periodSpec,
   saveInsight,
 } from "./lib/insights";
 import { type ParseSummary, parseRawModels, parseRawSpaces } from "./lib/parse";
@@ -233,6 +237,37 @@ export class WeeklyPipeline extends WorkflowEntrypoint<Env, WeeklyPipelineParams
     for (const kind of ["model", "space"] as const) {
       ingest.push(await this.walk(step, client, kind, config.runId, config.since));
     }
+
+    // Schema this deployment adds and can safely add itself: two idempotent
+    // CREATEs over tables it already owns, no ALTER and no data movement.
+    //
+    // D1 has no migrate-on-deploy — `git push` ships the Worker and a human
+    // runs `wrangler d1 migrations apply` — and this repo has paid for that gap
+    // twice already. Anything that alters an existing table still belongs in
+    // migrations/ and is still gated before this run starts; this is only the
+    // additive tail that would otherwise leave a feature dark or a query
+    // unindexed until someone remembered.
+    //
+    // Non-fatal on purpose: an index that failed to build is a slower
+    // drill-down, not a failed pipeline.
+    await step.do("ensure-derived-schema", SQL_RETRY, async () => {
+      const made: string[] = [];
+      for (const [name, sql] of [
+        ["idx_spaces_traction", `CREATE INDEX IF NOT EXISTS idx_spaces_traction
+  ON hf_spaces (likes DESC, created_at DESC, space_id)
+  WHERE likes > 0 AND is_cluster_primary = 1;`],
+        ["hf_insights", INSIGHTS_TABLE_SQL],
+        ["idx_insights_recent", INSIGHTS_INDEX_SQL],
+      ] as const) {
+        try {
+          await this.env.DB.prepare(sql).run();
+          made.push(name);
+        } catch (err) {
+          console.error(`ensure ${name} failed: ${err instanceof Error ? err.message : String(err)}`);
+        }
+      }
+      return { ensured: made };
+    });
 
     // ── Phase 4: parse raw → typed, then resolve model families ──────────
     const parse = await step.do("parse", SQL_RETRY, async () => {
@@ -663,70 +698,24 @@ export class WeeklyPipeline extends WorkflowEntrypoint<Env, WeeklyPipelineParams
  * a reader opening the tab mid-month would see August compared with July on
  * two weeks of evidence.
  *
- * Both periods carry the weeks BEFORE them as well, because a fact with
- * nothing to compare it against is a figure rather than an insight.
+ * The spans themselves come from periodSpec, shared with the repair endpoint,
+ * so a summary written by hand covers exactly the same weeks as one written by
+ * cron.
  */
-export function insightPeriodsFor(weekStart: string): Array<{
-  kind: InsightKind;
-  periodKey: string;
-  periodLabel: string;
-  previousLabel: string | null;
-  weeks: string[];
-  previousWeeks: string[];
-}> {
-  const monday = new Date(`${weekStart}T00:00:00.000Z`);
-  const prev = weekStartIso(addWeeks(monday, -1));
-  const MONTHS = ["January", "February", "March", "April", "May", "June",
-                  "July", "August", "September", "October", "November", "December"];
-  const longWeek = (iso: string) => {
-    const d = new Date(`${iso}T00:00:00.000Z`);
-    return `the week of ${d.getUTCDate()} ${MONTHS[d.getUTCMonth()]?.slice(0, 3)} ${d.getUTCFullYear()}`;
-  };
-
-  const out: ReturnType<typeof insightPeriodsFor> = [{
-    kind: "week",
-    periodKey: weekStart,
-    periodLabel: longWeek(weekStart),
-    previousLabel: longWeek(prev),
-    weeks: [weekStart],
-    previousWeeks: [prev],
-  }];
+export function insightPeriodsFor(weekStart: string): BuildPackOptions[] {
+  const week = periodSpec("week", weekStart);
+  if (!week) return [];
+  const out: BuildPackOptions[] = [week];
 
   // A week belongs to the month its Monday falls in — the same rule the
-  // dashboard buckets by, so the prose and the chart agree on which weeks
-  // August had. The month is closed once the next Monday is in a new one.
+  // dashboard buckets by. The month is closed once the next Monday is in a
+  // new one.
+  const monday = new Date(`${weekStart}T00:00:00.000Z`);
   const monthOf = (d: Date) => `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}`;
   const thisMonth = monthOf(monday);
-  const nextMonday = addWeeks(monday, 1);
-  if (monthOf(nextMonday) === thisMonth) return out;
+  if (monthOf(addWeeks(monday, 1)) === thisMonth) return out;
 
-  const mondaysOf = (key: string): string[] => {
-    const [y, m] = key.split("-").map(Number);
-    const weeks: string[] = [];
-    // Walk from the first day of the month to the first Monday, then step.
-    const first = new Date(Date.UTC(y!, m! - 1, 1));
-    const cursor = new Date(first);
-    while (cursor.getUTCDay() !== 1) cursor.setUTCDate(cursor.getUTCDate() + 1);
-    while (monthOf(cursor) === key) {
-      weeks.push(toIsoDate(cursor));
-      cursor.setUTCDate(cursor.getUTCDate() + 7);
-    }
-    return weeks;
-  };
-  const prevMonthKey = monthOf(new Date(Date.UTC(
-    monday.getUTCFullYear(), monday.getUTCMonth() - 1, 1)));
-  const named = (key: string) => {
-    const [y, m] = key.split("-");
-    return `${MONTHS[Number(m) - 1]} ${y}`;
-  };
-
-  out.push({
-    kind: "month",
-    periodKey: thisMonth,
-    periodLabel: named(thisMonth),
-    previousLabel: named(prevMonthKey),
-    weeks: mondaysOf(thisMonth),
-    previousWeeks: mondaysOf(prevMonthKey),
-  });
+  const month = periodSpec("month", thisMonth);
+  if (month) out.push(month);
   return out;
 }
