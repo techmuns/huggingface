@@ -34,6 +34,7 @@ import {
   INSIGHTS_TABLE_SQL,
   type InsightKind,
   type InsightResult,
+  periodIsOpen,
   periodSpec,
   saveInsight,
 } from "./lib/insights";
@@ -400,6 +401,13 @@ export class WeeklyPipeline extends WorkflowEntrypoint<Env, WeeklyPipelineParams
     // Writing it every week would mean each week's run overwrote the last with
     // a "month" that was two weeks long.
     const insightPeriods = insightPeriodsFor(config.weekStart);
+    if (insightPeriods.length === 0) {
+      // Recorded, not silent: a run that wrote no summary should say why, or
+      // the next person to look assumes the feature is broken.
+      console.warn(
+        `no insight written for ${config.weekStart}: the period has not finished yet`,
+      );
+    }
     const insights: Array<{ kind: InsightKind; periodKey: string; status: string; detail: string | null }> = [];
     for (const period of insightPeriods) {
       const written = await step.do(`insight-${period.kind}-${period.periodKey}`, PAGE_RETRY, async () => {
@@ -702,10 +710,15 @@ export class WeeklyPipeline extends WorkflowEntrypoint<Env, WeeklyPipelineParams
  * so a summary written by hand covers exactly the same weeks as one written by
  * cron.
  */
-export function insightPeriodsFor(weekStart: string): BuildPackOptions[] {
+export function insightPeriodsFor(weekStart: string, now: number = Date.now()): BuildPackOptions[] {
   const week = periodSpec("week", weekStart);
   if (!week) return [];
-  const out: BuildPackOptions[] = [week];
+  // The rule is one rule, and this is the other place that asks. The weekly
+  // cron always processes a week that has closed, so this is a no-op there —
+  // but a run started by hand takes the CURRENT week when it is given no
+  // parameters, and would otherwise write a summary of a week that is two days
+  // old and present it as the week's.
+  const out: BuildPackOptions[] = periodIsOpen("week", weekStart, now) ? [] : [week];
 
   // A week belongs to the month its Monday falls in — the same rule the
   // dashboard buckets by. The month is closed once the next Monday is in a
@@ -716,6 +729,6 @@ export function insightPeriodsFor(weekStart: string): BuildPackOptions[] {
   if (monthOf(addWeeks(monday, 1)) === thisMonth) return out;
 
   const month = periodSpec("month", thisMonth);
-  if (month) out.push(month);
+  if (month && !periodIsOpen("month", thisMonth, now)) out.push(month);
   return out;
 }
