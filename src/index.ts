@@ -1,5 +1,14 @@
 import { aggregateWeeklyMetrics } from "./lib/aggregate";
 import { isAuthorized } from "./lib/auth";
+import {
+  buildFactPack,
+  generateInsight,
+  isMissingInsightsTable,
+  periodSpec,
+  saveInsight,
+  withInsightsSchema,
+} from "./lib/insights";
+import { BedrockClient } from "./lib/bedrock";
 import { decodeBase64Utf8 } from "./lib/snapshot";
 import { TAXONOMY_VERSION, USE_CASES } from "./lib/taxonomy";
 import { isoWeekLabel, weekStartIso } from "./lib/time";
@@ -74,6 +83,10 @@ export default {
 
     if (url.pathname === "/api/admin/stats") {
       return handleStats(request, env);
+    }
+
+    if (url.pathname === "/api/admin/insight") {
+      return handleWriteInsight(request, env, url);
     }
 
     if (url.pathname === "/api/review-queue") {
@@ -486,13 +499,13 @@ async function handleNarrative(request: Request, env: Env, url: URL): Promise<Re
   // hides itself on not_found, so a broken feature looked exactly like one
   // that was never built. The archive is still written; it is no longer the
   // only copy.
-  const stored = await env.DB.prepare(
+  const stored = await withInsightsSchema(env.DB, () => env.DB.prepare(
     `SELECT narrative FROM hf_insights
       WHERE kind = 'week' AND period_key = ?1 AND taxonomy_version = ?2
         AND status = 'ok' AND narrative <> ''`,
   )
     .bind(weekStart, TAXONOMY_VERSION)
-    .first<{ narrative: string }>()
+    .first<{ narrative: string }>())
     .catch(() => null);
   if (stored?.narrative) {
     return Response.json({ weekStart, narrative: stored.narrative, source: "database" });
@@ -867,6 +880,84 @@ async function handleWeeksList(request: Request, env: Env): Promise<Response> {
  * cross-tab — every use case times every family — so it alone is more rows
  * than the other seven cuts together, and no line on this page plots it.
  */
+/**
+ * Write one summary now, for one period.
+ *
+ * The weekly run writes these, and a week it could not write stays empty until
+ * the next Monday comes round — which is a long time to look at a card
+ * explaining why there is nothing in it. This is the repair handle: the same
+ * fact pack, the same grounding, the same row, for a period named by hand.
+ *
+ * Admin-authenticated and POST-only, because it spends money (one model call,
+ * two if the first answer fails grounding) and overwrites a stored summary.
+ *
+ * It is NOT a general "run SQL" endpoint and must not become one. It takes a
+ * kind and a period key, both validated, and the only thing it can write is a
+ * row this feature owns.
+ */
+async function handleWriteInsight(request: Request, env: Env, url: URL): Promise<Response> {
+  if (request.method !== "POST") {
+    return Response.json({ error: "method_not_allowed" }, { status: 405, headers: { allow: "POST" } });
+  }
+  if (!isAuthorized(request, env.ADMIN_TOKEN)) {
+    return Response.json({ error: "unauthorized" }, { status: 401 });
+  }
+
+  const kind = url.searchParams.get("kind") ?? "week";
+  if (kind !== "week" && kind !== "month") {
+    return Response.json(
+      { error: "invalid_params", detail: "kind must be week or month" },
+      { status: 400 },
+    );
+  }
+
+  const periodKey = url.searchParams.get("period");
+  if (!periodKey) {
+    return Response.json(
+      { error: "invalid_params", detail: "period is required (a Monday YYYY-MM-DD for a week, YYYY-MM for a month)" },
+      { status: 400 },
+    );
+  }
+
+  const spec = periodSpec(kind, periodKey);
+  if (!spec) {
+    return Response.json(
+      {
+        error: "invalid_params",
+        detail: kind === "week"
+          ? "period must be a Monday, as YYYY-MM-DD"
+          : "period must be a month, as YYYY-MM",
+      },
+      { status: 400 },
+    );
+  }
+
+  const client = new BedrockClient({
+    apiKey: env.BEDROCK_API_KEY,
+    region: env.BEDROCK_REGION,
+  });
+
+  const pack = await buildFactPack(env.DB, spec);
+  const result = await generateInsight(client, env.BEDROCK_NARRATE_MODEL_ID, pack);
+  await saveInsight(env.DB, result, {
+    weekStart: kind === "week" ? periodKey : null,
+    modelId: env.BEDROCK_NARRATE_MODEL_ID,
+    generatedAt: new Date().toISOString(),
+  });
+
+  return Response.json({
+    kind: result.kind,
+    periodKey: result.periodKey,
+    status: result.status,
+    detail: result.detail,
+    factCount: pack.facts.length,
+    omitted: pack.omitted,
+    narrative: result.narrative,
+    inputTokens: result.inputTokens,
+    outputTokens: result.outputTokens,
+  });
+}
+
 const MAX_INSIGHTS = 12;
 
 /**
@@ -908,13 +999,15 @@ async function handleInsights(request: Request, env: Env, url: URL): Promise<Res
   const kinds: Array<"week" | "month"> = kind ? [kind] : ["week", "month"];
   const out: Record<string, unknown[]> = {};
   for (const k of kinds) {
-    // A pending migration must not turn this into a 500. It answers with an
-    // empty list and says WHY, because the alternative — an empty list and
-    // nothing else — is exactly how /api/narrative spent weeks looking like a
-    // feature nobody had built. See migrations/0006.
+    // The table creates itself the first time it is missing, so a deployment
+    // that shipped ahead of its migration heals on the first request rather
+    // than waiting for someone to remember. If that still fails, the endpoint
+    // answers with an empty list and says WHY — because an empty list and
+    // nothing else is exactly how /api/narrative spent weeks looking like a
+    // feature nobody had built. See ensureInsightsSchema.
     let rows;
     try {
-      rows = await env.DB.prepare(
+      rows = await withInsightsSchema(env.DB, () => env.DB.prepare(
         `SELECT kind, period_key, week_start, narrative, facts, status, detail,
                 model_id, prompt_version, generated_at
            FROM hf_insights
@@ -927,12 +1020,14 @@ async function handleInsights(request: Request, env: Env, url: URL): Promise<Res
           kind: string; period_key: string; week_start: string | null;
           narrative: string; facts: string; status: string; detail: string | null;
           model_id: string | null; prompt_version: string | null; generated_at: string;
-        }>();
+        }>());
     } catch (err) {
       return Response.json({
         taxonomyVersion: TAXONOMY_VERSION,
         week: [], month: [],
-        unavailable: "This deployment has no insights table yet — migrations/0006 has not been applied.",
+        unavailable: isMissingInsightsTable(err)
+          ? "The insights table could not be created on this deployment. Apply migrations/0006."
+          : "The insights could not be read on this deployment.",
         detail: err instanceof Error ? err.message : String(err),
       });
     }

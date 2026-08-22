@@ -58,4 +58,12 @@ CREATE TABLE IF NOT EXISTS hf_insights (
   UNIQUE (kind, period_key, taxonomy_version)
 ) STRICT;
 
-CREATE INDEX idx_insights_recent ON hf_insights (kind, period_key DESC);
+-- IF NOT EXISTS on both statements, because the Worker creates this schema
+-- itself the first time it needs it (see ensureInsightsSchema in
+-- src/lib/insights.ts). D1 has no migrate-on-deploy, so a table that only ever
+-- arrived by a human running `wrangler d1 migrations apply` is a feature that
+-- is dark until someone remembers. Both paths produce byte-identical schema —
+-- a test drops this table, rebuilds it from the code, and compares
+-- sqlite_master — and applying this migration afterwards is a clean no-op
+-- rather than "index already exists".
+CREATE INDEX IF NOT EXISTS idx_insights_recent ON hf_insights (kind, period_key DESC);

@@ -5,6 +5,10 @@ import {
   MIN_DENOMINATOR,
   MIN_FACTS,
   buildFactPack,
+  ensureInsightsSchema,
+  isMissingInsightsTable,
+  periodSpec,
+  withInsightsSchema,
   generateInsight,
   ground,
   renderPack,
@@ -417,22 +421,120 @@ describe("/api/narrative", () => {
   });
 });
 
-// ── a pending migration ─────────────────────────────────────────────────────
+// ── a deployment that shipped ahead of its migration ────────────────────────
 
-describe("a deployment whose migration has not been applied", () => {
+/** What the migration built, as SQLite recorded it. */
+async function schemaOf(): Promise<Array<{ name: string; sql: string }>> {
+  const { results } = await DB.prepare(
+    `SELECT name, sql FROM sqlite_master
+      WHERE name IN ('hf_insights', 'idx_insights_recent') ORDER BY name`,
+  ).all<{ name: string; sql: string }>();
+  return results;
+}
+
+describe("the schema bootstrap", () => {
+  it("rebuilds byte-for-byte what the migration built", async () => {
+    // The one thing that makes a self-creating table safe: it cannot drift
+    // from migrations/0006, because this test drops what the migration made,
+    // rebuilds it from the constants in the code, and compares what SQLite
+    // stored. If someone edits one and not the other, this fails.
+    const fromMigration = await schemaOf();
+    expect(fromMigration).toHaveLength(2);
+
+    await DB.prepare("DROP TABLE hf_insights").run();
+    expect(await schemaOf()).toHaveLength(0);
+
+    await ensureInsightsSchema(DB);
+    expect(await schemaOf()).toEqual(fromMigration);
+  });
+
+  it("is idempotent, so applying the migration afterwards is a clean no-op", async () => {
+    // Both statements are IF NOT EXISTS. Without that, `wrangler d1 migrations
+    // apply` on a database the Worker had already healed would fail with
+    // "index idx_insights_recent already exists" — and the operator would be
+    // told their migration is broken when it is not.
+    await ensureInsightsSchema(DB);
+    await ensureInsightsSchema(DB);
+    await ensureInsightsSchema(DB);
+    expect(await schemaOf()).toHaveLength(2);
+  });
+
+  it("only ever recognises its OWN table as missing", async () => {
+    // A guard this narrow is the difference between healing a table this
+    // feature owns and papering over a real database fault.
+    expect(isMissingInsightsTable(new Error("D1_ERROR: no such table: hf_insights: SQLITE_ERROR"))).toBe(true);
+    expect(isMissingInsightsTable(new Error("no such table: main.hf_insights"))).toBe(true);
+    expect(isMissingInsightsTable(new Error("no such table: hf_spaces"))).toBe(false);
+    expect(isMissingInsightsTable(new Error("no such column: hf_insights.narrative"))).toBe(false);
+    expect(isMissingInsightsTable(new Error("D1_ERROR: database is locked"))).toBe(false);
+  });
+
+  it("does not swallow a real error behind a retry", async () => {
+    let calls = 0;
+    await expect(withInsightsSchema(DB, async () => {
+      calls++;
+      throw new Error("D1_ERROR: something else entirely");
+    })).rejects.toThrow(/something else entirely/);
+    expect(calls).toBe(1);
+  });
+
+  it("heals the read path: the tab works on the first request", async () => {
+    await DB.prepare("DROP TABLE hf_insights").run();
+    const res = await SELF.fetch("http://localhost/api/insights");
+    expect(res.status).toBe(200);
+    const d = (await res.json()) as { week: unknown[]; month: unknown[]; unavailable?: string };
+    // No "not applied" message: it made the table and answered normally.
+    expect(d.unavailable).toBeUndefined();
+    expect(d.week).toEqual([]);
+    expect(await schemaOf()).toHaveLength(2);
+  });
+
+  it("heals the write path: the pipeline can store an insight", async () => {
+    await DB.prepare("DROP TABLE hf_insights").run();
+    await saveInsight(
+      DB,
+      { kind: "week", periodKey: "2026-08-10", narrative: "It worked.", facts: [],
+        status: "ok", detail: null, inputTokens: 0, outputTokens: 0 },
+      { weekStart: "2026-08-10", modelId: "m", generatedAt: "2026-08-11T00:00:00.000Z" },
+    );
+    const row = await DB.prepare("SELECT narrative FROM hf_insights WHERE period_key = '2026-08-10'")
+      .first<{ narrative: string }>();
+    expect(row?.narrative).toBe("It worked.");
+  });
+
+  it("heals /api/narrative too, rather than falling through to GitHub forever", async () => {
+    await DB.prepare("DROP TABLE hf_insights").run();
+    await saveInsight(
+      DB,
+      { kind: "week", periodKey: "2026-08-10", narrative: "The week went like this.",
+        facts: [], status: "ok", detail: null, inputTokens: 0, outputTokens: 0 },
+      { weekStart: "2026-08-10", modelId: "m", generatedAt: "2026-08-11T00:00:00.000Z" },
+    );
+    const res = await SELF.fetch("http://localhost/api/narrative?week=2026-08-10");
+    expect(res.status).toBe(200);
+    expect((await res.json() as { source: string }).source).toBe("database");
+  });
+});
+
+describe("a deployment where the table cannot be created at all", () => {
   it("answers with empty lists and says why, rather than a 500", async () => {
     // The lesson of /api/narrative, which spent weeks answering not_found for
     // every week on record while the card hid itself. An empty list with no
     // explanation is indistinguishable from a feature nobody has built.
     await DB.prepare("DROP TABLE hf_insights").run();
+    // A view of the same name: CREATE TABLE IF NOT EXISTS will not replace it,
+    // and every SELECT against it still fails. Stands in for a database the
+    // Worker cannot write to.
+    await DB.prepare("CREATE VIEW hf_insights AS SELECT 1 AS narrative WHERE 0").run();
     try {
       const res = await SELF.fetch("http://localhost/api/insights");
       expect(res.status).toBe(200);
       const d = (await res.json()) as { week: unknown[]; month: unknown[]; unavailable?: string };
       expect(d.week).toEqual([]);
       expect(d.month).toEqual([]);
-      expect(d.unavailable).toMatch(/0006/);
+      expect(d.unavailable).toBeTruthy();
     } finally {
+      await DB.prepare("DROP VIEW IF EXISTS hf_insights").run();
       await DB.exec(
         "CREATE TABLE IF NOT EXISTS hf_insights (id INTEGER PRIMARY KEY, kind TEXT NOT NULL CHECK (kind IN ('week','month')), period_key TEXT NOT NULL, week_start TEXT, taxonomy_version TEXT NOT NULL, narrative TEXT NOT NULL, facts TEXT NOT NULL DEFAULT '[]' CHECK (json_valid(facts)), status TEXT NOT NULL DEFAULT 'ok' CHECK (status IN ('ok','ungrounded','insufficient','error')), detail TEXT, model_id TEXT, prompt_version TEXT, input_tokens INTEGER, output_tokens INTEGER, generated_at TEXT NOT NULL, UNIQUE (kind, period_key, taxonomy_version)) STRICT",
       );
@@ -465,5 +567,75 @@ describe("a deployment whose migration has not been applied", () => {
         "CREATE TABLE IF NOT EXISTS hf_insights (id INTEGER PRIMARY KEY, kind TEXT NOT NULL CHECK (kind IN ('week','month')), period_key TEXT NOT NULL, week_start TEXT, taxonomy_version TEXT NOT NULL, narrative TEXT NOT NULL, facts TEXT NOT NULL DEFAULT '[]' CHECK (json_valid(facts)), status TEXT NOT NULL DEFAULT 'ok' CHECK (status IN ('ok','ungrounded','insufficient','error')), detail TEXT, model_id TEXT, prompt_version TEXT, input_tokens INTEGER, output_tokens INTEGER, generated_at TEXT NOT NULL, UNIQUE (kind, period_key, taxonomy_version)) STRICT",
       );
     }
+  });
+});
+
+// ── the repair endpoint ─────────────────────────────────────────────────────
+
+describe("periodSpec", () => {
+  it("gives a week its own Monday and the one before", () => {
+    const s = periodSpec("week", "2026-08-10")!;
+    expect(s.weeks).toEqual(["2026-08-10"]);
+    expect(s.previousWeeks).toEqual(["2026-08-03"]);
+    expect(s.periodLabel).toBe("the week of 10 Aug 2026");
+  });
+
+  it("refuses a date that is not a Monday", () => {
+    // A week in this pipeline IS its Monday. Accepting a Wednesday would write
+    // a row keyed by a date no metric is stored under.
+    expect(periodSpec("week", "2026-08-11")).toBeNull();
+    expect(periodSpec("week", "2026-08")).toBeNull();
+    expect(periodSpec("week", "not-a-date")).toBeNull();
+  });
+
+  it("gives a month every Monday that belongs to it", () => {
+    const s = periodSpec("month", "2026-08")!;
+    expect(s.weeks).toEqual(["2026-08-03", "2026-08-10", "2026-08-17", "2026-08-24", "2026-08-31"]);
+    expect(s.previousWeeks).toEqual(["2026-07-06", "2026-07-13", "2026-07-20", "2026-07-27"]);
+    expect(s.periodLabel).toBe("August 2026");
+    expect(s.previousLabel).toBe("July 2026");
+  });
+
+  it("crosses a year boundary correctly", () => {
+    const s = periodSpec("month", "2026-01")!;
+    expect(s.previousLabel).toBe("December 2025");
+    expect(s.previousWeeks[0]!.startsWith("2025-12")).toBe(true);
+  });
+
+  it("refuses a malformed month", () => {
+    expect(periodSpec("month", "2026-13")).toBeNull();
+    expect(periodSpec("month", "2026")).toBeNull();
+  });
+
+  it("agrees with what the weekly run would write", () => {
+    // One definition of "which weeks is August", shared by cron and by hand.
+    // Two answers is how a repaired month disagrees with the month beside it.
+    const fromRun = insightPeriodsFor("2026-08-31").find((p) => p.kind === "month")!;
+    expect(fromRun).toEqual(periodSpec("month", "2026-08"));
+  });
+});
+
+describe("POST /api/admin/insight", () => {
+  const auth = { authorization: `Bearer ${env.ADMIN_TOKEN}` };
+  const post = (q: string, headers: Record<string, string> = auth) =>
+    SELF.fetch(`http://localhost/api/admin/insight?${q}`, { method: "POST", headers });
+
+  it("refuses without the admin token", async () => {
+    expect((await post("kind=week&period=2026-08-10", {})).status).toBe(401);
+    expect((await post("kind=week&period=2026-08-10", { authorization: "Bearer wrong" })).status).toBe(401);
+  });
+
+  it("refuses a GET, because it spends money and overwrites a row", async () => {
+    const res = await SELF.fetch("http://localhost/api/admin/insight?kind=week&period=2026-08-10", {
+      headers: auth,
+    });
+    expect(res.status).toBe(405);
+  });
+
+  it("rejects a bad kind or period before calling any model", async () => {
+    expect((await post("kind=decade&period=2026")).status).toBe(400);
+    expect((await post("kind=week")).status).toBe(400);
+    expect((await post("kind=week&period=2026-08-11")).status).toBe(400);
+    expect((await post("kind=month&period=2026-13")).status).toBe(400);
   });
 });

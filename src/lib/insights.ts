@@ -486,6 +486,177 @@ export async function generateInsight(
   };
 }
 
+/* ── Which period a summary is about ─────────────────────────────────────── */
+
+const MONTH_NAMES = ["January", "February", "March", "April", "May", "June",
+                     "July", "August", "September", "October", "November", "December"];
+
+const monthKeyOf = (d: Date) =>
+  `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}`;
+
+const isoOf = (d: Date) => d.toISOString().slice(0, 10);
+
+/** Every Monday that belongs to a month, by the rule the dashboard buckets by. */
+export function mondaysOfMonth(key: string): string[] {
+  const [y, m] = key.split("-").map(Number);
+  if (!y || !m || m < 1 || m > 12) return [];
+  const cursor = new Date(Date.UTC(y, m - 1, 1));
+  while (cursor.getUTCDay() !== 1) cursor.setUTCDate(cursor.getUTCDate() + 1);
+  const weeks: string[] = [];
+  while (monthKeyOf(cursor) === key) {
+    weeks.push(isoOf(cursor));
+    cursor.setUTCDate(cursor.getUTCDate() + 7);
+  }
+  return weeks;
+}
+
+/**
+ * The weeks a summary covers, and the weeks it is measured against.
+ *
+ * One definition, used by the weekly run and by the repair endpoint, so a
+ * summary written by hand covers exactly the same span as one written by cron.
+ * Two answers to "which weeks is August?" is how a repaired month ends up
+ * disagreeing with the month beside it.
+ */
+export function periodSpec(kind: InsightKind, periodKey: string): BuildPackOptions | null {
+  if (kind === "week") {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(periodKey)) return null;
+    const monday = new Date(`${periodKey}T00:00:00.000Z`);
+    if (!Number.isFinite(monday.getTime()) || monday.getUTCDay() !== 1) return null;
+    const prev = isoOf(new Date(monday.getTime() - 7 * 86_400_000));
+    const longWeek = (iso: string) => {
+      const d = new Date(`${iso}T00:00:00.000Z`);
+      return `the week of ${d.getUTCDate()} ${MONTH_NAMES[d.getUTCMonth()]?.slice(0, 3)} ${d.getUTCFullYear()}`;
+    };
+    return {
+      kind: "week", periodKey,
+      periodLabel: longWeek(periodKey), previousLabel: longWeek(prev),
+      weeks: [periodKey], previousWeeks: [prev],
+    };
+  }
+
+  if (!/^\d{4}-\d{2}$/.test(periodKey)) return null;
+  const weeks = mondaysOfMonth(periodKey);
+  if (!weeks.length) return null;
+  const [y, m] = periodKey.split("-").map(Number);
+  const prevKey = monthKeyOf(new Date(Date.UTC(y!, m! - 2, 1)));
+  const named = (key: string) => {
+    const [yy, mm] = key.split("-");
+    return `${MONTH_NAMES[Number(mm) - 1]} ${yy}`;
+  };
+  return {
+    kind: "month", periodKey,
+    periodLabel: named(periodKey), previousLabel: named(prevKey),
+    weeks, previousWeeks: mondaysOfMonth(prevKey),
+  };
+}
+
+/* ── Schema bootstrap ────────────────────────────────────────────────────── */
+
+/**
+ * The insights schema, verbatim from migrations/0006_insights.sql.
+ *
+ * D1 has no migrate-on-deploy. `git push` ships the Worker; a human runs
+ * `wrangler d1 migrations apply`. Those two steps drift, and this repo has
+ * already paid for that drift twice — once with a run that died on a missing
+ * column a third of the way in, and once with a summary card that hid itself
+ * for weeks because the feature behind it had never been switched on.
+ *
+ * A table nobody remembers to create is a feature that is dark. So the code
+ * that needs this table can create it, once, the first time it finds it
+ * missing. Deliberately narrow: two idempotent CREATEs of a table this feature
+ * owns outright, with no data to migrate and no other reader. It is not a
+ * migration runner and must not become one — anything that alters an existing
+ * table, or touches a table another phase writes, belongs in migrations/ and
+ * nowhere else.
+ *
+ * The two paths cannot drift: a test drops the table the migration built,
+ * rebuilds it from these constants, and compares sqlite_master byte for byte.
+ * Applying the migration afterwards is a clean no-op.
+ *
+ * No SQL comments in the constant, deliberately. `wrangler d1 migrations apply`
+ * strips them before executing, so SQLite stores the migration's DDL without
+ * them; leaving them here would make the two stored schemas differ by
+ * whitespace alone and the drift test would fail for the one reason that does
+ * not matter. The commentary lives in migrations/0006_insights.sql, which is
+ * where someone reading the schema will look.
+ */
+export const INSIGHTS_TABLE_SQL = `CREATE TABLE IF NOT EXISTS hf_insights (
+  id                INTEGER PRIMARY KEY,
+
+  
+  
+  kind              TEXT NOT NULL CHECK (kind IN ('week', 'month')),
+  
+  period_key        TEXT NOT NULL,
+  
+  
+  week_start        TEXT,
+
+  taxonomy_version  TEXT NOT NULL,
+
+  
+  
+  narrative         TEXT NOT NULL,
+  
+  
+  
+  facts             TEXT NOT NULL DEFAULT '[]' CHECK (json_valid(facts)),
+
+  
+  
+  status            TEXT NOT NULL DEFAULT 'ok'
+                      CHECK (status IN ('ok', 'ungrounded', 'insufficient', 'error')),
+  detail            TEXT,
+
+  model_id          TEXT,
+  prompt_version    TEXT,
+  input_tokens      INTEGER,
+  output_tokens     INTEGER,
+  generated_at      TEXT NOT NULL,
+
+  UNIQUE (kind, period_key, taxonomy_version)
+) STRICT;`;
+
+export const INSIGHTS_INDEX_SQL = `CREATE INDEX IF NOT EXISTS idx_insights_recent ON hf_insights (kind, period_key DESC);`;
+
+/** True when a D1 failure is this table simply not being there yet. */
+export function isMissingInsightsTable(err: unknown): boolean {
+  const text = err instanceof Error ? err.message : String(err);
+  return /no such table:\s*(main\.)?hf_insights/i.test(text);
+}
+
+/**
+ * Creates the table if it is missing. Idempotent, and cheap to call.
+ *
+ * Callers reach this only after a statement has already failed, so the happy
+ * path never pays for it.
+ */
+export async function ensureInsightsSchema(db: D1Database): Promise<void> {
+  await db.prepare(INSIGHTS_TABLE_SQL).run();
+  await db.prepare(INSIGHTS_INDEX_SQL).run();
+}
+
+/**
+ * Runs an operation, and if the only thing wrong was the missing table,
+ * creates it and tries exactly once more.
+ *
+ * Once more, not in a loop: a second failure is a real failure, and retrying a
+ * genuine error forever is how a page-load turns into a timeout.
+ */
+export async function withInsightsSchema<T>(
+  db: D1Database,
+  run: () => Promise<T>,
+): Promise<T> {
+  try {
+    return await run();
+  } catch (err) {
+    if (!isMissingInsightsTable(err)) throw err;
+    await ensureInsightsSchema(db);
+    return await run();
+  }
+}
+
 /* ── Storing it ──────────────────────────────────────────────────────────── */
 
 export async function saveInsight(
@@ -494,7 +665,7 @@ export async function saveInsight(
   { weekStart, modelId, generatedAt }:
     { weekStart: string | null; modelId: string; generatedAt: string },
 ): Promise<void> {
-  await db
+  await withInsightsSchema(db, () => db
     .prepare(
       `INSERT INTO hf_insights
          (kind, period_key, week_start, taxonomy_version, narrative, facts,
@@ -518,5 +689,5 @@ export async function saveInsight(
       result.status, result.detail, modelId, INSIGHT_PROMPT_VERSION,
       result.inputTokens, result.outputTokens, generatedAt,
     )
-    .run();
+    .run());
 }
