@@ -1102,6 +1102,8 @@ function safeParse(text: string): unknown {
 }
 
 const MAX_USE_CASE_SPACES = 50;
+/** Three years of weeks is more than the dashboard can select. */
+const MAX_DRILL_WEEKS = 160;
 
 /**
  * The Spaces behind one bar of the use-case chart.
@@ -1176,7 +1178,45 @@ async function handleUseCaseSpaces(request: Request, env: Env, url: URL): Promis
   const fromIso = `${from}T00:00:00.000Z`;
   const toIso = `${to}T00:00:00.000Z`;
 
-  const counts = await env.DB.prepare(
+  /**
+   * The exact weeks, when the caller's selection is not one unbroken span.
+   *
+   * from/to alone describes a range, and a reader can pick two months with a
+   * third between them. The card would then count the third and report more
+   * Spaces than the bars it was opened from, with nothing on screen to say so.
+   *
+   * One bound parameter rather than a predicate per week: json_each over a JSON
+   * array keeps this at two placeholders however many weeks are named, well
+   * inside D1's limit on bound parameters.
+   */
+  const weeksParam = url.searchParams.get("weeks");
+  let weeks: string[] | null = null;
+  if (weeksParam !== null) {
+    weeks = weeksParam.split(",").filter(Boolean);
+    if (weeks.length === 0 || weeks.length > MAX_DRILL_WEEKS) {
+      return Response.json(
+        { error: "invalid_params", detail: `weeks must name between 1 and ${MAX_DRILL_WEEKS} Mondays` },
+        { status: 400 },
+      );
+    }
+    if (!weeks.every((w) => /^\d{4}-\d{2}-\d{2}$/.test(w))) {
+      return Response.json(
+        { error: "invalid_params", detail: "every entry in weeks must be a date, as YYYY-MM-DD" },
+        { status: 400 },
+      );
+    }
+  }
+
+  // Applied to the count and to the list alike, so the denominator on screen
+  // and the rows under it can never describe different spans.
+  const weekFilter = weeks
+    ? ` AND EXISTS (SELECT 1 FROM json_each(?5) je
+                     WHERE s.created_at >= je.value
+                       AND s.created_at < date(je.value, '+7 days'))`
+    : "";
+  const weekJson = JSON.stringify(weeks ?? []);
+
+  const countStmt = env.DB.prepare(
     `SELECT COUNT(*) AS total,
             SUM(CASE WHEN s.likes > 0 THEN 1 ELSE 0 END) AS with_traction,
             SUM(s.likes) AS likes
@@ -1184,25 +1224,30 @@ async function handleUseCaseSpaces(request: Request, env: Env, url: URL): Promis
        JOIN hf_spaces s ON s.space_id = c.space_id
       WHERE c.taxonomy_version = ?1 AND c.primary_use_case = ?2
         AND s.created_at >= ?3 AND s.created_at < ?4
-        AND s.is_cluster_primary = 1`,
-  )
-    .bind(TAXONOMY_VERSION, useCase, fromIso, toIso)
+        AND s.is_cluster_primary = 1${weekFilter}`,
+  );
+  const counts = await (weeks
+    ? countStmt.bind(TAXONOMY_VERSION, useCase, fromIso, toIso, weekJson)
+    : countStmt.bind(TAXONOMY_VERSION, useCase, fromIso, toIso))
     .first<{ total: number; with_traction: number | null; likes: number | null }>();
 
   // Ordered so idx_spaces_traction can be walked rather than sorted; space_id
   // last so the order is total and two runs of the same request agree.
-  const rows = await env.DB.prepare(
+  const listStmt = env.DB.prepare(
     `SELECT s.space_id, s.title, s.author, s.likes, s.created_at, s.sdk,
             s.short_description, c.low_confidence
        FROM hf_classifications c
        JOIN hf_spaces s ON s.space_id = c.space_id
       WHERE c.taxonomy_version = ?1 AND c.primary_use_case = ?2
         AND s.created_at >= ?3 AND s.created_at < ?4
-        AND s.is_cluster_primary = 1 AND s.likes > 0
+        AND s.is_cluster_primary = 1 AND s.likes > 0${
+          weeks ? weekFilter.replace("?5", "?6") : ""}
       ORDER BY s.likes DESC, s.created_at DESC, s.space_id
       LIMIT ?5`,
-  )
-    .bind(TAXONOMY_VERSION, useCase, fromIso, toIso, limit)
+  );
+  const rows = await (weeks
+    ? listStmt.bind(TAXONOMY_VERSION, useCase, fromIso, toIso, limit, weekJson)
+    : listStmt.bind(TAXONOMY_VERSION, useCase, fromIso, toIso, limit))
     .all<{
       space_id: string;
       title: string | null;
@@ -1219,6 +1264,8 @@ async function handleUseCaseSpaces(request: Request, env: Env, url: URL): Promis
       useCase,
       from,
       to,
+      // Echoed so a caller can see the span was honoured rather than assumed.
+      weeks,
       total: counts?.total ?? 0,
       withTraction: counts?.with_traction ?? 0,
       likes: counts?.likes ?? 0,
