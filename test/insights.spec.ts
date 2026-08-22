@@ -294,8 +294,13 @@ describe("generateInsight", () => {
 // ── which periods a run writes ──────────────────────────────────────────────
 
 describe("insightPeriodsFor", () => {
+  // The instant the weekly cron would fire for the week of 31 Aug: Monday
+  // 7 September, 00:30 UTC. Passed explicitly so these assertions do not
+  // depend on when the suite happens to run.
+  const CRON = Date.parse("2026-09-07T00:30:00Z");
+
   it("always writes the week just processed", () => {
-    const out = insightPeriodsFor("2026-08-10");
+    const out = insightPeriodsFor("2026-08-10", CRON);
     expect(out[0]).toMatchObject({ kind: "week", periodKey: "2026-08-10", weeks: ["2026-08-10"] });
     expect(out[0]!.previousWeeks).toEqual(["2026-08-03"]);
   });
@@ -304,12 +309,12 @@ describe("insightPeriodsFor", () => {
     // 10 Aug is followed by 17 Aug, still August. Writing the month here would
     // publish an "August" that had only reached the middle of itself, and the
     // next week's run would overwrite it with a different one.
-    expect(insightPeriodsFor("2026-08-10").some((p) => p.kind === "month")).toBe(false);
+    expect(insightPeriodsFor("2026-08-10", CRON).some((p) => p.kind === "month")).toBe(false);
   });
 
   it("writes the month on the last Monday of it", () => {
     // 31 Aug 2026 is a Monday and the next Monday is in September.
-    const out = insightPeriodsFor("2026-08-31");
+    const out = insightPeriodsFor("2026-08-31", Date.parse("2026-09-07T00:30:00Z"));
     const month = out.find((p) => p.kind === "month");
     expect(month).toBeDefined();
     expect(month!.periodKey).toBe("2026-08");
@@ -318,7 +323,7 @@ describe("insightPeriodsFor", () => {
   });
 
   it("buckets a week by the month its Monday falls in, like the dashboard", () => {
-    const month = insightPeriodsFor("2026-08-31").find((p) => p.kind === "month")!;
+    const month = insightPeriodsFor("2026-08-31", Date.parse("2026-09-07T00:30:00Z")).find((p) => p.kind === "month")!;
     expect(month.weeks).toEqual(["2026-08-03", "2026-08-10", "2026-08-17", "2026-08-24", "2026-08-31"]);
     expect(month.previousWeeks).toEqual(["2026-07-06", "2026-07-13", "2026-07-20", "2026-07-27"]);
   });
@@ -612,7 +617,7 @@ describe("periodSpec", () => {
   it("agrees with what the weekly run would write", () => {
     // One definition of "which weeks is August", shared by cron and by hand.
     // Two answers is how a repaired month disagrees with the month beside it.
-    const fromRun = insightPeriodsFor("2026-08-31").find((p) => p.kind === "month")!;
+    const fromRun = insightPeriodsFor("2026-08-31", Date.parse("2026-09-07T00:30:00Z")).find((p) => p.kind === "month")!;
     expect(fromRun).toEqual(periodSpec("month", "2026-08"));
   });
 });
@@ -684,7 +689,7 @@ describe("periodIsOpen", () => {
     // and that run happens on Monday 7 September. The two rules must not
     // disagree by so much as an hour, or a month is either written twice or
     // refused when cron would have allowed it.
-    const writesMonth = insightPeriodsFor("2026-08-31").some((p) => p.kind === "month");
+    const writesMonth = insightPeriodsFor("2026-08-31", Date.parse("2026-09-07T00:30:00Z")).some((p) => p.kind === "month");
     expect(writesMonth).toBe(true);
     expect(periodIsOpen("month", "2026-08", AT("2026-09-07T00:30:00Z"))).toBe(false);
   });
@@ -728,5 +733,26 @@ describe("POST /api/admin/insight refuses a period still running", () => {
 
   it("rejects the rolled-over date before it reaches the model", async () => {
     expect((await post("kind=week&period=2026-02-30")).status).toBe(400);
+  });
+});
+
+
+describe("the pipeline refuses an open period as well", () => {
+  it("writes nothing for a week that has not finished", () => {
+    // A run started by hand takes the CURRENT week when given no parameters.
+    // Without this it would write a summary of a week two days old and present
+    // it as the week's — the same defect the endpoint already refuses.
+    expect(insightPeriodsFor("2026-08-10", Date.parse("2026-08-12T10:00:00Z"))).toEqual([]);
+  });
+
+  it("writes the week once it has closed", () => {
+    const out = insightPeriodsFor("2026-08-10", Date.parse("2026-08-17T00:30:00Z"));
+    expect(out.map((p) => p.kind)).toEqual(["week"]);
+  });
+
+  it("does not write a month whose last week is still running", () => {
+    // 31 Aug is the last Monday of August and its week runs to 7 September.
+    expect(insightPeriodsFor("2026-08-31", Date.parse("2026-09-02T00:30:00Z"))
+      .some((p) => p.kind === "month")).toBe(false);
   });
 });
