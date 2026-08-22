@@ -317,10 +317,17 @@ button.bar-row:focus-visible { outline: 2px solid var(--series); outline-offset:
 .insight-facts { margin-top: 10px; }
 .insight-facts summary { cursor: pointer; font-size: 12.5px; color: var(--ink-2); }
 .insight-facts summary:hover { text-decoration: underline; }
-.insight-facts table { margin-top: 10px; font-size: 12.5px; }
-.insight-facts td:first-child { color: var(--ink-muted); white-space: nowrap; padding-right: 14px; }
-.insight-facts td { padding: 3px 0; vertical-align: top; }
-.insight-facts .fnum { font-variant-numeric: tabular-nums; white-space: nowrap; padding-left: 14px; }
+.insight-facts table { margin-top: 10px; font-size: 12px; }
+/* The fact table sits inside a half-width card, so `what` has to be allowed to
+   wrap. Left alone it inherits the page's nowrap table rules and pushes the
+   change column off the right edge of the card it is explaining. */
+.insight-facts th, .insight-facts td { padding: 4px 0 4px 10px; vertical-align: top; }
+.insight-facts th:first-child, .insight-facts td:first-child { padding-left: 0; }
+.insight-facts th:nth-child(2), .insight-facts td:nth-child(2) {
+  white-space: normal; text-align: left; width: 99%; padding: 4px 10px 4px 8px;
+}
+.insight-facts td:first-child { color: var(--ink-muted); width: 1%; }
+.insight-facts .fnum { font-variant-numeric: tabular-nums; white-space: nowrap; padding-left: 10px; width: 1%; }
 .insight-item { padding: 14px 0; border-top: 1px solid var(--grid); }
 .insight-item:first-child { border-top: 0; padding-top: 0; }
 .insight-item h3 { font-size: 13px; font-weight: 600; margin: 0 0 8px; }
@@ -3717,7 +3724,9 @@ function renderTechChange() {
   // one-point move, and a reader asking "what moved" wants both.
   const cell = (r) => {
     if (!r || r.value == null) return '<td>&mdash;</td><td>&mdash;</td>';
-    const pts = r.points == null ? '' :
+    // Suppressed where it rounds to nothing: "▼ 0.7%  −0.0 pts" reads as a
+    // typo, and a tenth of a point is not the part of that row worth printing.
+    const pts = r.points == null || Math.abs(r.points) < 0.05 ? '' :
       `<span class="suppressed" style="font-size:12px">${
         r.points >= 0 ? '+' : '\u2212'}${Math.abs(r.points).toFixed(1)} pts</span>`;
     return `<td>${esc(exact(r.value, '%'))}${r.suppressed ? '*' : ''}</td>
@@ -3825,11 +3834,16 @@ function syncToolbar() {
   const show = (id, on) => { document.getElementById(id).style.display = on ? '' : 'none'; };
   const onMatrixGrid = state.tab === 'tech' && state.sub.tech === 'matrix' && state.table;
 
-  show('tool-period', true);
+  // Insights is prose about periods the pipeline chose, not a view of the
+  // series: none of the time controls reach it, so none of them appear. A
+  // greyed-out row of controls is noise; one that silently does nothing is
+  // worse.
+  const timeless = state.tab === 'insights';
+  show('tool-period', !timeless);
   // The share toggle only changes a stacked chart. In the table both readings
   // are printed one above the other, so there is nothing left for it to do.
   show('tool-mode', panelIsWhole() && !state.table);
-  show('tool-table', true);
+  show('tool-table', !timeless);
   show('tool-track', state.tab === 'trends');
   show('tool-usecase', state.tab === 'tech' && state.sub.tech === 'matrix' && !state.table);
 
