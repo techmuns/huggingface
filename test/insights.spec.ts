@@ -7,6 +7,8 @@ import {
   buildFactPack,
   ensureInsightsSchema,
   isMissingInsightsTable,
+  mondaysOfMonth,
+  periodIsOpen,
   periodSpec,
   withInsightsSchema,
   generateInsight,
@@ -637,5 +639,94 @@ describe("POST /api/admin/insight", () => {
     expect((await post("kind=week")).status).toBe(400);
     expect((await post("kind=week&period=2026-08-11")).status).toBe(400);
     expect((await post("kind=month&period=2026-13")).status).toBe(400);
+  });
+});
+
+// ── two defects a review bot found on #9, both real ─────────────────────────
+
+describe("periodSpec refuses a date that does not exist", () => {
+  it.each([
+    ["2026-02-30", "30 February rolls forward to Monday 2 March"],
+    ["2026-02-29", "2026 is not a leap year"],
+    ["2026-11-31", "November has thirty days"],
+  ])("rejects %s — %s", (key) => {
+    // V8 rolls these forward rather than rejecting them, so the weekday test
+    // alone passes and the row is stored under a key no calendar contains and
+    // no metric exists for — visible in /api/insights for good.
+    expect(periodSpec("week", key)).toBeNull();
+  });
+
+  it("still accepts a real Monday", () => {
+    expect(periodSpec("week", "2026-08-10")?.periodKey).toBe("2026-08-10");
+  });
+});
+
+describe("periodIsOpen", () => {
+  // A month is not finished when its calendar ends: a week whose Monday is
+  // 31 August belongs to August and runs into September.
+  const AT = (iso: string) => Date.parse(iso);
+
+  it("a week is open until seven days after its Monday", () => {
+    expect(periodIsOpen("week", "2026-08-10", AT("2026-08-16T23:59:59Z"))).toBe(true);
+    expect(periodIsOpen("week", "2026-08-10", AT("2026-08-17T00:00:00Z"))).toBe(false);
+  });
+
+  it("a month is open until its LAST WEEK ends, not when the calendar month does", () => {
+    // August 2026's last Monday is the 31st; that week runs to 7 September.
+    expect(mondaysOfMonth("2026-08").at(-1)).toBe("2026-08-31");
+    expect(periodIsOpen("month", "2026-08", AT("2026-09-01T00:00:00Z"))).toBe(true);
+    expect(periodIsOpen("month", "2026-08", AT("2026-09-06T23:59:59Z"))).toBe(true);
+    expect(periodIsOpen("month", "2026-08", AT("2026-09-07T00:00:00Z"))).toBe(false);
+  });
+
+  it("agrees with the moment the weekly run would write that month", () => {
+    // insightPeriodsFor writes 2026-08 when it processes the week of 31 Aug,
+    // and that run happens on Monday 7 September. The two rules must not
+    // disagree by so much as an hour, or a month is either written twice or
+    // refused when cron would have allowed it.
+    const writesMonth = insightPeriodsFor("2026-08-31").some((p) => p.kind === "month");
+    expect(writesMonth).toBe(true);
+    expect(periodIsOpen("month", "2026-08", AT("2026-09-07T00:30:00Z"))).toBe(false);
+  });
+
+  it("treats a malformed key as open, never as finished", () => {
+    expect(periodIsOpen("month", "2026-13")).toBe(true);
+    expect(periodIsOpen("week", "not-a-date")).toBe(true);
+  });
+});
+
+describe("POST /api/admin/insight refuses a period still running", () => {
+  const auth = { authorization: `Bearer ${env.ADMIN_TOKEN}` };
+  const post = (q: string) =>
+    SELF.fetch(`http://localhost/api/admin/insight?${q}`, { method: "POST", headers: auth });
+
+  it("409s on the current week, and says which week it would take", async () => {
+    const thisMonday = (() => {
+      const d = new Date();
+      d.setUTCDate(d.getUTCDate() - ((d.getUTCDay() + 6) % 7));
+      return d.toISOString().slice(0, 10);
+    })();
+    const res = await post(`kind=week&period=${thisMonday}`);
+    expect(res.status).toBe(409);
+    const d = (await res.json()) as { error: string; detail: string; latestWritable: string };
+    expect(d.error).toBe("period_not_finished");
+    expect(d.detail).toMatch(/has not finished yet/);
+    // Actionable: the 409 names a period that would be accepted.
+    expect(d.latestWritable).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+    expect(periodIsOpen("week", d.latestWritable)).toBe(false);
+  });
+
+  it("409s on the current month", async () => {
+    const now = new Date();
+    const thisMonth = `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, "0")}`;
+    const res = await post(`kind=month&period=${thisMonth}`);
+    expect(res.status).toBe(409);
+    const d = (await res.json()) as { latestWritable: string };
+    expect(d.latestWritable).toMatch(/^\d{4}-\d{2}$/);
+    expect(periodIsOpen("month", d.latestWritable)).toBe(false);
+  });
+
+  it("rejects the rolled-over date before it reaches the model", async () => {
+    expect((await post("kind=week&period=2026-02-30")).status).toBe(400);
   });
 });

@@ -4,6 +4,8 @@ import {
   buildFactPack,
   generateInsight,
   isMissingInsightsTable,
+  mondaysOfMonth,
+  periodIsOpen,
   periodSpec,
   saveInsight,
   withInsightsSchema,
@@ -932,6 +934,25 @@ async function handleWriteInsight(request: Request, env: Env, url: URL): Promise
     );
   }
 
+  // A period still running must not be written. The tab presents whatever is
+  // stored as the latest week or month, directly under a hint promising a month
+  // is "written once it closes, never part-way through it" — and a half-written
+  // August would make that sentence false. The cron path never asks for an open
+  // period; this one takes whatever it is given, so the rule lives here.
+  if (periodIsOpen(kind, periodKey)) {
+    return Response.json(
+      {
+        error: "period_not_finished",
+        detail: kind === "week"
+          ? `The week of ${periodKey} has not finished yet. A summary written now would describe part of it.`
+          : `${periodKey} has not finished yet — its last week runs to ${
+              mondaysOfMonth(periodKey).at(-1) ?? periodKey} plus seven days. A summary written now would describe part of it.`,
+        latestWritable: latestFinished(kind),
+      },
+      { status: 409 },
+    );
+  }
+
   const client = new BedrockClient({
     apiKey: env.BEDROCK_API_KEY,
     region: env.BEDROCK_REGION,
@@ -956,6 +977,25 @@ async function handleWriteInsight(request: Request, env: Env, url: URL): Promise
     inputTokens: result.inputTokens,
     outputTokens: result.outputTokens,
   });
+}
+
+/** The newest period this endpoint would accept, so a 409 is actionable. */
+function latestFinished(kind: "week" | "month", now: number = Date.now()): string {
+  const cursor = new Date(now);
+  if (kind === "week") {
+    // Back to this week's Monday, then back one more: that week has closed.
+    cursor.setUTCDate(cursor.getUTCDate() - ((cursor.getUTCDay() + 6) % 7) - 7);
+    return cursor.toISOString().slice(0, 10);
+  }
+  const key = (d: Date) => `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}`;
+  // Walk back a month at a time rather than assuming: a month's last week can
+  // run days into the next one, so "last month" is not always finished either.
+  const probe = new Date(Date.UTC(cursor.getUTCFullYear(), cursor.getUTCMonth(), 1));
+  for (let back = 0; back < 24; back++) {
+    probe.setUTCMonth(probe.getUTCMonth() - (back === 0 ? 0 : 1));
+    if (!periodIsOpen("month", key(probe), now)) return key(probe);
+  }
+  return key(probe);
 }
 
 const MAX_INSIGHTS = 12;

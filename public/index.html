@@ -3422,9 +3422,34 @@ function renderProvenance() {
   const byRule = cov.bySource?.rule ?? 0;
   const byLlm = cov.bySource?.model ?? 0;
 
+  /**
+   * The week's figures as the METRICS have them, not as /api/coverage counts
+   * them live.
+   *
+   * These are two different instants and both are true. /api/coverage runs
+   * COUNT(*) against hf_spaces now; every other figure on this page comes from
+   * hf_weekly_metrics, written when the aggregate last ran. For a week still
+   * being ingested the gap is large — on the live database, 3,473 against
+   * 2,632 — and printing the live total here put "2,221 of 3,473" (64%) one
+   * line above a Coverage tile reading 84% of the same week. Both correct,
+   * side by side, contradicting each other.
+   *
+   * The tile cannot move to the live figure: /api/coverage is per-week and the
+   * tile has to answer for quarters too. So this line moves to the snapshot,
+   * and the ingest that has run ahead of it is reported as what it is.
+   */
+  const t2 = weeklyTotals();
+  const ci = t2.weeks.indexOf(coverageWeek);
+  const snapTotal = ci >= 0 ? t2.spaces[ci] : null;
+  const snapClassified = ci >= 0 ? t2.classified[ci] : null;
+  const ahead = snapTotal != null && cov.totalSpaces > snapTotal
+    ? cov.totalSpaces - snapTotal : 0;
+
   el.innerHTML = `<span>Showing <b>${scope}</b></span>
     <span><b>${esc(String(weeks.length))}</b> week${weeks.length === 1 ? '' : 's'} on record</span>
-    ${coverage ? `<span>Latest week classified <b>${num(cov.classifiedSpaces)}</b> of <b>${num(cov.totalSpaces)}</b> Spaces</span>
+    ${coverage && snapTotal != null ? `<span>Latest week classified <b>${num(snapClassified)}</b> of <b>${num(snapTotal)}</b> Spaces</span>${
+      ahead > 0 ? `<span class="wip" title="Ingest has run since these figures were computed. They catch up on the next run.">${
+        num(ahead)} more Spaces ingested since</span>` : ''}
     <span>Method <b>${num(byRule)}</b> by rule &middot; <b>${num(byLlm)}</b> by LLM${
       byLlm && cov.llmModel ? ` (${esc(prettyModel(cov.llmModel))})` : ''}</span>` : ''}
     ${last && last.partial
