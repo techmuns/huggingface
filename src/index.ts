@@ -717,6 +717,7 @@ async function handleStats(request: Request, env: Env): Promise<Response> {
   // invisible until a write fails deep inside a run. Name the columns a
   // deployed migration should have added and report which are actually there.
   const schema = await missingColumns(env.DB, EXPECTED_COLUMNS);
+  const degraded = await missingColumns(env.DB, DEGRADED_COLUMNS);
 
   return Response.json({
     stage: raw === 0 ? "ingesting (nothing written yet)"
@@ -737,6 +738,9 @@ async function handleStats(request: Request, env: Env): Promise<Response> {
     schema: {
       ok: schema.length === 0,
       missingColumns: schema,
+      // Present but not fatal: a feature is switched off until the migration
+      // lands, and nothing else is affected.
+      degraded,
     },
   });
 }
@@ -751,11 +755,27 @@ const EXPECTED_COLUMNS: ReadonlyArray<[table: string, column: string]> = [
   ["hf_models", "card_base_model"], // 0002_model_card_base
   ["hf_models", "model_type"],      // 0003_model_config_type (free ADD COLUMN)
   ["hf_runs", "instance_id"],       // 0004_run_registry
-  // 0006_insights. A whole missing TABLE fails the same zero-row SELECT, so
-  // one entry covers it. 0005 is an index and is deliberately not here: its
-  // absence makes the drill-down slower, not wrong, and a gate that stops a
-  // run over a performance regression is a gate people learn to ignore.
-  ["hf_insights", "narrative"],
+];
+
+/**
+ * Schema the code USES but does not need to survive without.
+ *
+ * The distinction is the whole point of having two lists. A missing
+ * hf_models.model_type breaks a write a third of the way into a run, after the
+ * D1 spend, and must stop the run before it starts. A missing hf_insights
+ * costs one paragraph: the endpoint answers 200 with a reason, the pipeline
+ * step catches and records, and every other phase is untouched.
+ *
+ * Gating the weekly run on this one would have blocked ingest, parse,
+ * classification and aggregation — four hours of the only work that matters —
+ * over a narrative table. A gate that stops good work is a gate people learn
+ * to disable, and it would have fired the first Monday after this shipped.
+ *
+ * 0005 is in neither list on purpose: it is an index, its absence makes the
+ * drill-down slower rather than wrong, and nothing should ever fail over that.
+ */
+const DEGRADED_COLUMNS: ReadonlyArray<[table: string, column: string]> = [
+  ["hf_insights", "narrative"],     // 0006_insights
 ];
 
 /**

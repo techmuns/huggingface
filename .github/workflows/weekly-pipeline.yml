@@ -98,10 +98,19 @@ jobs:
           BASE="${BASE:-https://huggingface.tech-441.workers.dev}"
           S=$(curl -sS --max-time 30 "$BASE/api/admin/stats" -H "Authorization: Bearer $TOKEN")
           if [ "$(echo "$S" | jq -r '.schema.ok // "absent"')" = "false" ]; then
-            echo "::error::Database is missing columns or tables the deployed code writes: \
+            echo "::error::Database is missing columns the deployed code writes: \
           $(echo "$S" | jq -r '.schema.missingColumns | join(", ")'). \
           Apply the pending migration in migrations/ before this run."
             exit 1
+          fi
+          # Schema the code uses but does not need. A missing narrative table
+          # costs one paragraph; it must not stop ingest, classification and
+          # aggregation, which are the four hours that matter.
+          DEG=$(echo "$S" | jq -r '.schema.degraded // [] | join(", ")')
+          if [ -n "$DEG" ]; then
+            echo "::warning::Database is missing optional schema: $DEG. \
+          The feature behind it is switched off and says so; the run continues. \
+          Apply the pending migration in migrations/ to switch it on."
           fi
 
       - name: Check the deployed Worker is not older than this commit

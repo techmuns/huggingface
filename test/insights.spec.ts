@@ -439,12 +439,27 @@ describe("a deployment whose migration has not been applied", () => {
     }
   });
 
-  it("is caught by the schema gate before a run spends anything", async () => {
+  it("is reported as degraded, and does NOT stop the weekly run", async () => {
+    // The distinction that matters. A missing hf_models column breaks a write a
+    // third of the way into a run and must stop it before it starts. A missing
+    // hf_insights costs one paragraph — gating on it would have blocked
+    // ingest, classification and aggregation, four hours of the only work that
+    // matters, the first Monday after this shipped.
     const { missingColumns } = await import("../src/index");
     await DB.prepare("DROP TABLE hf_insights").run();
     try {
       const missing = await missingColumns(DB, [["hf_insights", "narrative"]]);
       expect(missing).toEqual(["hf_insights.narrative"]);
+
+      const res = await SELF.fetch("http://localhost/api/admin/stats", {
+        headers: { authorization: `Bearer ${env.ADMIN_TOKEN}` },
+      });
+      expect(res.status).toBe(200);
+      const d = (await res.json()) as { schema: { ok: boolean; missingColumns: string[]; degraded: string[] } };
+      // Degraded, not missing: the gate stays green and CI raises a warning.
+      expect(d.schema.degraded).toContain("hf_insights.narrative");
+      expect(d.schema.missingColumns).not.toContain("hf_insights.narrative");
+      expect(d.schema.ok).toBe(true);
     } finally {
       await DB.exec(
         "CREATE TABLE IF NOT EXISTS hf_insights (id INTEGER PRIMARY KEY, kind TEXT NOT NULL CHECK (kind IN ('week','month')), period_key TEXT NOT NULL, week_start TEXT, taxonomy_version TEXT NOT NULL, narrative TEXT NOT NULL, facts TEXT NOT NULL DEFAULT '[]' CHECK (json_valid(facts)), status TEXT NOT NULL DEFAULT 'ok' CHECK (status IN ('ok','ungrounded','insufficient','error')), detail TEXT, model_id TEXT, prompt_version TEXT, input_tokens INTEGER, output_tokens INTEGER, generated_at TEXT NOT NULL, UNIQUE (kind, period_key, taxonomy_version)) STRICT",
