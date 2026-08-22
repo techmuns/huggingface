@@ -2498,8 +2498,14 @@ function rankedBars(cols, { unit = '', chartId = '', whole = false, drill = fals
     const residual = RESIDUAL.has(r.dimension) ? ' residual' : '';
     const hue = off.has(r.dimension) || !hues.has(r.dimension)
       ? 'var(--axis)' : SLOTS[hues.get(r.dimension)];
+    // The printed percentage divides by the sum of the rows listed; the base
+    // from the cut's denominator is a different number on spaces_by_use_case,
+    // which stores all cluster-primary Spaces so it can carry `coverage`. The
+    // tooltip said "365 of 2,632" beside a printed 16.4%, which is 365 of
+    // 2,221. Name the base the figure beside it actually used.
     const tip = `${titleCase(r.dimension)}: ${exact(r.value, unit)}`
-      + (r.base ? ` of ${num(r.base)}` : '')
+      + (whole && total > 0 ? ` of ${num(total)} classified`
+        : r.base ? ` of ${num(r.base)}` : '')
       + (r.suppressed ? ' — base too small to call it a trend' : '');
     // A row is a button only where there is something behind it to open.
     // Everywhere else it stays a div, because a control that looks clickable
@@ -2744,7 +2750,15 @@ function periodTable(cols, { unit = '', name = 'Value', whole = false } = {}) {
   const groupRow = (label) => `<tr class="grp"><td>${esc(label)}</td>${
     periods.map(() => '<td></td>').join('')}${avgBlank}</tr>`;
 
-  const shareRows = whole ? groupRow('Share of the total') +
+  // Not on a percent cut. Where the values ARE shares, every column total is
+  // 100 by construction, so v/total*100 is v — the block is a verbatim copy of
+  // the rows above it, and its average degenerates: num/den with den = 100
+  // every column is the arithmetic mean, not a pooled share. On the live
+  // database that printed Voice / speech twice with identical cells and two
+  // different averages, 6.5% and 10.1%, a 56% overstatement directly under a
+  // footnote promising shares are "pooled by each period's own base, not
+  // averaged flat".
+  const shareRows = whole && kind !== 'percent' ? groupRow('Share of the total') +
     ranked.map(r => `<tr${RESIDUAL.has(r.dimension) ? ' class="residual"' : ''}>
       <td>${esc(titleCase(r.dimension))}</td>
       ${periods.map((p, i) => {
@@ -3753,6 +3767,38 @@ function lastTwoFinished(periods) {
   return now - before === 1 ? { now, before } : null;
 }
 
+/**
+ * How much of each period was classified at all, for a cut whose denominator
+ * is the classified subset.
+ *
+ * technology_penetration and vertical_penetration divide by classified Spaces.
+ * Comparing two periods whose coverage differs is comparing two different
+ * populations, and the arithmetic manufactures movement out of nothing: on the
+ * live database 3 Aug was 21.7% classified and 10 Aug 100%, and six of twelve
+ * techniques printed a FALL while every one of them rose. Agentic went from
+ * 112 Spaces to 332 and the card said down 33.5%.
+ *
+ * The classified count is the cut's own denominator. The population it is drawn
+ * from is the period's whole Space count, which the SDK cut carries because
+ * every new Space has one.
+ */
+function coverageByPeriod(cut, period) {
+  const cls = cutColumns(cut, { period });
+  const all = cutColumns(CUTS.sdk, { period });
+  const totals = columnTotals(all.rows, all.periods);
+  return cls.periods.map((_, i) => {
+    const den = cls.rows.reduce((best, r) => {
+      const d = r.denominators?.[i];
+      return d != null && d > best ? d : best;
+    }, 0);
+    const whole = totals[i];
+    return whole > 0 && den > 0 ? (den / whole) * 100 : null;
+  });
+}
+
+/** Below this much difference in coverage, two periods are comparable. */
+const COVERAGE_GAP = 10;
+
 /** One period's figure and its change from the one before, per category. */
 function changeAgainstPrevious(cut, period) {
   const cols = cutColumns(cut, { period });
@@ -3767,6 +3813,17 @@ function changeAgainstPrevious(cut, period) {
     };
   }
   const { now, before } = pair;
+
+  // Two periods, two different fractions of them classified, one ratio between
+  // them: the ratio is of the classifier, not of the Hub. Withheld rather than
+  // rebased, because with three quarters of a period unclassified the true
+  // share is unknown, and a rebase would publish a floor as a fact.
+  const cov = KIND[cut] === 'percent' ? coverageByPeriod(cut, period) : null;
+  const covNow = cov?.[now] ?? null;
+  const covBefore = cov?.[before] ?? null;
+  const incomparable = covNow != null && covBefore != null
+    && Math.abs(covNow - covBefore) > COVERAGE_GAP;
+
   const rows = cols.rows.map(r => {
     const value = combine(r.values, r.denominators, [now], cols.kind);
     const prev = combine(r.values, r.denominators, [before], cols.kind);
@@ -3783,7 +3840,8 @@ function changeAgainstPrevious(cut, period) {
       // earlier period — it was zero — and saying "no earlier period" beside
       // "+0.3 pts" in the same cell is the page contradicting itself. Long
       // context on the live database is exactly this case.
-      reason: prev == null ? 'no earlier period'
+      reason: incomparable ? 'coverage differs'
+        : prev == null ? 'no earlier period'
         : prev === 0 ? (value ? 'new' : 'nothing either period')
         : null,
       suppressed: !!(r.suppressed?.[now] && r.suppressed?.[before]),
@@ -3793,6 +3851,7 @@ function changeAgainstPrevious(cut, period) {
     ok: true, rows, cols,
     nowLabel: cols.periods[now].full,
     beforeLabel: cols.periods[before].full,
+    incomparable, covNow, covBefore,
   };
 }
 
@@ -3843,11 +3902,15 @@ function renderTechChange() {
         r.points >= 0 ? '+' : '\u2212'}${Math.abs(r.points).toFixed(1)} pts</span>`;
     // 'new' is a statement, not a failed comparison, so it is not greyed out
     // the way a missing figure is.
-    const change = r.growth != null ? delta(r.growth)
+    const change = r.reason === 'coverage differs'
+      ? delta(null, { reason: 'not comparable' })
+      : r.growth != null ? delta(r.growth)
       : r.reason === 'new' ? '<span class="delta up">new</span>'
       : delta(null, { reason: r.reason ?? 'no earlier period' });
+    // The points are a difference between the same two incomparable figures,
+    // so they go with the ratio rather than surviving it.
     return `<td>${esc(exact(r.value, '%'))}${r.suppressed ? '*' : ''}</td>
-      <td>${change} ${pts}</td>`;
+      <td>${change}${r.reason === 'coverage differs' ? '' : ' ' + pts}</td>`;
   };
 
   // Named, not "this week": the newest week on screen is usually still
@@ -3869,9 +3932,14 @@ function renderTechChange() {
   const anySup = order.some(d => at(week, d)?.suppressed || at(month, d)?.suppressed);
   setHTML(el, `<div class="table-scroll"><table class="pmatrix change">
     <thead>${head}</thead><tbody>${body}</tbody></table></div>
-    <p class="hint" style="margin-top:12px">Each figure is the share of new Spaces using that
-    technique in a <b>finished</b> period, against the finished period before it &mdash; a week two days
-    old would read as a collapse rather than as a week that has not happened yet.${
+    <p class="hint" style="margin-top:12px">Each figure is the share of the
+    <b>classified</b> new Spaces of a <b>finished</b> period that used that technique, against the
+    finished period before it &mdash; a week two days old would read as a collapse rather than as a
+    week that has not happened yet.${
+      [week, month].filter(r => r.ok && r.incomparable).map(r =>
+        ` Changes are withheld for ${esc(shortOf(r))}: ${r.covNow.toFixed(0)}% of that period was
+          classified against ${r.covBefore.toFixed(0)}% of the one before, so a ratio between them
+          would be a ratio of the classifier rather than of the Hub.`).join('')}${
       month.ok ? '' : ` Month on month needs two finished months, and ${esc(month.why)}.`}${
       anySup ? ' <b>*</b> too few behind this figure to call it a trend.' : ''}</p>`);
 }
