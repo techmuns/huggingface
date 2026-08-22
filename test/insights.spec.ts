@@ -21,6 +21,7 @@ import {
 } from "../src/lib/insights";
 import { insightPeriodsFor } from "../src/workflow";
 import { TAXONOMY_VERSION } from "../src/lib/taxonomy";
+import { aggregateWeeklyMetrics } from "../src/lib/aggregate";
 import type { BedrockClient, BedrockResponse } from "../src/lib/bedrock";
 
 const DB = env.DB;
@@ -125,6 +126,15 @@ describe("slotsOf", () => {
 
 // ── the fact pack ───────────────────────────────────────────────────────────
 
+/**
+ * Seeds metric rows the way the AGGREGATOR writes them.
+ *
+ * `cov` is given as a percentage for readability and stored as a ratio,
+ * because that is what aggregate.ts writes: `classified / denominator`. The
+ * earlier version of this helper stored the percentage directly, which is why
+ * a units bug that omitted every classification fact from every pack passed a
+ * full suite — the fixtures encoded the assumption instead of the system.
+ */
 async function seedWeek(
   week: string,
   rows: Array<[cut: string, dim: string, value: number, den: number, cov: number | null]>,
@@ -135,7 +145,20 @@ async function seedWeek(
          (week_start, metric_cut, dimension, sub_dimension, value, denominator,
           coverage, suppressed, taxonomy_version, computed_at)
        VALUES (?1,?2,?3,'',?4,?5,?6,0,?7,?1)`,
-    ).bind(week, cut, dim, value, den, cov, TAXONOMY_VERSION)));
+    ).bind(week, cut, dim, value, den, cov == null ? null : cov / 100, TAXONOMY_VERSION)));
+
+  // Every week needs an SDK row: it is where the week's whole Space count comes
+  // from, and a week with no classifications writes no use-case rows at all.
+  const sdk = rows.find(([cut]) => cut === "sdk_distribution");
+  if (!sdk) {
+    const den = rows[0]?.[3] ?? 0;
+    await DB.prepare(
+      `INSERT OR IGNORE INTO hf_weekly_metrics
+         (week_start, metric_cut, dimension, sub_dimension, value, denominator,
+          coverage, suppressed, taxonomy_version, computed_at)
+       VALUES (?1,'sdk_distribution','gradio','',?2,?2,NULL,0,?3,?1)`,
+    ).bind(week, den, TAXONOMY_VERSION).run();
+  }
 }
 
 const weekPack = (week: string, prev: string) => ({
@@ -219,9 +242,14 @@ describe("buildFactPack", () => {
   it("pools a monthly share by base rather than averaging the weeks flat", async () => {
     // 10% of 100 and 50% of 900 is 46%, not 30%. Getting this wrong in prose
     // would be invisible — it would read as a sentence.
-    await seedWeek("2026-08-03", [["technology_penetration", "rag", 10, 100, 90]]);
-    await seedWeek("2026-08-10", [["technology_penetration", "rag", 50, 900, 90]]);
-    await seedWeek("2026-08-03", [["spaces_by_use_case", "coding", 50, 100, 90]]);
+    await seedWeek("2026-08-03", [
+      ["technology_penetration", "rag", 10, 100, 90],
+      ["spaces_by_use_case", "coding", 50, 100, 90],
+    ]);
+    await seedWeek("2026-08-10", [
+      ["technology_penetration", "rag", 50, 900, 90],
+      ["spaces_by_use_case", "coding", 400, 900, 90],
+    ]);
     const pack = await buildFactPack(DB, {
       kind: "month", periodKey: "2026-08", periodLabel: "August 2026",
       previousLabel: "July 2026", weeks: ["2026-08-03", "2026-08-10"], previousWeeks: [],
@@ -847,5 +875,109 @@ describe("a change needs both periods classified alike", () => {
 
   it("the gap it allows is the gap it documents", () => {
     expect(MAX_COVERAGE_GAP).toBe(10);
+  });
+});
+
+
+// ── the units the aggregator actually writes ────────────────────────────────
+
+describe("coverage is read in the units the aggregator stores", () => {
+  it("treats a fully classified week as 100%, not as 1%", async () => {
+    // aggregate.ts stores classified/denominator — a RATIO. Every threshold in
+    // this module is a percentage. Comparing them directly meant `coverage >=
+    // 40` could never be true for a real pipeline row, so every
+    // classification-derived fact was omitted from every pack and the one fact
+    // that survived reported a 100% week as "1.0%". A whole suite passed
+    // because its fixtures used the scale this module assumed.
+    await seedWeek("2026-08-10", [
+      ["sdk_distribution", "gradio", 5570, 5570, null],
+      ["spaces_by_use_case", "coding", 5570, 5570, 100],
+    ]);
+    const pack = await buildFactPack(DB, weekPack("2026-08-10", "2026-08-03"));
+    const cov = pack.facts[0]!;
+    expect(cov.what).toMatch(/able to classify/);
+    expect(cov.value).toBeCloseTo(100, 5);
+    // And the classification facts are admitted, which is the whole point.
+    expect(pack.facts.some((f) => f.what.includes("coding"))).toBe(true);
+  });
+
+  it("reads the real pipeline's own output", async () => {
+    // Driven through aggregateWeeklyMetrics rather than hand-seeded, so the
+    // scale cannot be assumed on either side.
+    await DB.batch([
+      DB.prepare(
+        `INSERT INTO hf_spaces (space_id, author, created_at, last_modified, likes, title,
+           sdk, tags, linked_models, linked_datasets, is_cluster_primary, first_seen_at, updated_at)
+         VALUES ('a/one','a','2026-08-10T01:00:00.000Z','2026-08-10T01:00:00.000Z',0,'one','gradio','[]','[]','[]',1,'2026-08-10T01:00:00.000Z','2026-08-10T01:00:00.000Z')`),
+      DB.prepare(
+        `INSERT INTO hf_classifications (space_id, taxonomy_version, primary_use_case,
+           verticals, model_families, technologies, source_kind, source_ref, classified_at)
+         VALUES ('a/one', ?1, 'coding', '[]','[]','[]','rule','r1','2026-08-10T01:00:00.000Z')`,
+      ).bind(TAXONOMY_VERSION),
+    ]);
+    await aggregateWeeklyMetrics(DB, "2026-08-10", "2026-08-17T00:00:00.000Z");
+
+    const stored = await DB.prepare(
+      `SELECT coverage FROM hf_weekly_metrics
+        WHERE week_start='2026-08-10' AND metric_cut='spaces_by_use_case' LIMIT 1`,
+    ).first<{ coverage: number }>();
+    // This is the assertion that pins the contract between the two modules.
+    expect(stored!.coverage).toBeLessThanOrEqual(1);
+
+    const pack = await buildFactPack(DB, weekPack("2026-08-10", "2026-08-03"));
+    expect(pack.facts[0]!.value).toBeCloseTo(100, 5);
+  });
+
+  it("pools a month by Spaces, not by how many use cases each week saw", async () => {
+    // Every row of a week repeats that week's coverage, so an average over rows
+    // weights a week by its number of dimensions. 100% of 100 Spaces and 20% of
+    // 900 is 28%, not 60%.
+    await seedWeek("2026-08-03", [
+      ["sdk_distribution", "gradio", 100, 100, null],
+      ["spaces_by_use_case", "coding", 100, 100, 100],
+    ]);
+    await seedWeek("2026-08-10", [
+      ["sdk_distribution", "gradio", 900, 900, null],
+      ["spaces_by_use_case", "coding", 90, 900, 20],
+      ["spaces_by_use_case", "education", 45, 900, 20],
+      ["spaces_by_use_case", "robotics", 45, 900, 20],
+    ]);
+    const pack = await buildFactPack(DB, {
+      kind: "month", periodKey: "2026-08", periodLabel: "August 2026",
+      previousLabel: "July 2026", weeks: ["2026-08-03", "2026-08-10"], previousWeeks: [],
+    });
+    expect(pack.facts[0]!.value).toBeCloseTo(28, 1);
+  });
+
+  it("does not let a week with nothing classified vanish from the average", async () => {
+    // A week with no classifications writes no use-case rows, so it disappears
+    // from an average taken over them — and a vanished zero flatters the month.
+    await seedWeek("2026-08-03", [["sdk_distribution", "gradio", 1000, 1000, null]]);
+    await seedWeek("2026-08-10", [
+      ["sdk_distribution", "gradio", 1000, 1000, null],
+      ["spaces_by_use_case", "coding", 1000, 1000, 100],
+    ]);
+    const pack = await buildFactPack(DB, {
+      kind: "month", periodKey: "2026-08", periodLabel: "August 2026",
+      previousLabel: "July 2026", weeks: ["2026-08-03", "2026-08-10"], previousWeeks: [],
+    });
+    expect(pack.facts[0]!.value).toBeCloseTo(50, 1);
+  });
+
+  it("refuses a comparison whose earlier period is itself below the floor", async () => {
+    // A 5-point gap between 40% and 35% is a small gap between one figure this
+    // module trusts and one it does not.
+    await seedWeek("2026-08-03", [
+      ["sdk_distribution", "gradio", 1000, 1000, null],
+      ["spaces_by_use_case", "coding", 350, 1000, 35],
+    ]);
+    await seedWeek("2026-08-10", [
+      ["sdk_distribution", "gradio", 1000, 1000, null],
+      ["spaces_by_use_case", "coding", 400, 1000, 40],
+    ]);
+    const pack = await buildFactPack(DB, weekPack("2026-08-10", "2026-08-03"));
+    const coding = pack.facts.find((f) => f.what.includes("coding"))!;
+    expect(coding.value).toBe(400);
+    expect(coding.prev).toBeNull();
   });
 });
