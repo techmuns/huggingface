@@ -1,7 +1,7 @@
 import { aggregateWeeklyMetrics } from "./lib/aggregate";
 import { isAuthorized } from "./lib/auth";
 import { decodeBase64Utf8 } from "./lib/snapshot";
-import { TAXONOMY_VERSION } from "./lib/taxonomy";
+import { TAXONOMY_VERSION, USE_CASES } from "./lib/taxonomy";
 import { isoWeekLabel, weekStartIso } from "./lib/time";
 import type { WeeklyPipelineParams } from "./workflow";
 
@@ -86,6 +86,10 @@ export default {
 
     if (url.pathname === "/api/series") {
       return handleSeries(request, env, url);
+    }
+
+    if (url.pathname === "/api/use-case-spaces") {
+      return handleUseCaseSpaces(request, env, url);
     }
 
     if (url.pathname === "/api" || url.pathname.startsWith("/api/")) {
@@ -816,6 +820,142 @@ async function handleWeeksList(request: Request, env: Env): Promise<Response> {
  * cross-tab — every use case times every family — so it alone is more rows
  * than the other seven cuts together, and no line on this page plots it.
  */
+const MAX_USE_CASE_SPACES = 50;
+
+/**
+ * The Spaces behind one bar of the use-case chart.
+ *
+ * The chart says 1,140 new Coding Spaces this month. This says which ones —
+ * and that is a question the data can only half answer, so the answer is
+ * shaped around what is actually true rather than around what was asked for.
+ *
+ * There is no "most downloaded". `GET /api/spaces?expand[]=downloads` is an
+ * HTTP 400: the Hub enumerates its field set for Spaces and downloads is not
+ * in it. The trap is that `?sort=downloads` answers 200 and silently ignores
+ * the parameter, so a plausible-looking endpoint can be built on a sort that
+ * never happened.
+ *
+ * There is no "most popular" either, not as a reader would hear it. `likes` is
+ * frozen at ingest — it is whatever the Space had in the hours after it was
+ * created — and of 4,000 sampled Hub Spaces, 95.5% of the 0-7 day cohort have
+ * zero likes, the maximum is 28 and the mean is 0.09. Ranking that and calling
+ * it popularity would be ranking noise. `trendingScore` is no rescue: 97.0%
+ * zero, maximum 24.
+ *
+ * What it CAN answer honestly is which new Spaces got noticed at all, and how
+ * few did. So `likes > 0` is a rule rather than a filter, and the response
+ * carries `total` beside `withTraction` so the caller can say "31 of 1,140"
+ * instead of presenting a top ten as though it were a leaderboard.
+ */
+async function handleUseCaseSpaces(request: Request, env: Env, url: URL): Promise<Response> {
+  if (request.method !== "GET") {
+    return Response.json({ error: "method_not_allowed" }, { status: 405, headers: { allow: "GET" } });
+  }
+
+  const useCase = url.searchParams.get("useCase");
+  if (!useCase || !(USE_CASES as readonly string[]).includes(useCase)) {
+    return Response.json(
+      { error: "invalid_params", detail: `useCase must be one of: ${USE_CASES.join(", ")}` },
+      { status: 400 },
+    );
+  }
+
+  const from = url.searchParams.get("from");
+  const to = url.searchParams.get("to");
+  const isDate = (v: string | null) => !!v && /^\d{4}-\d{2}-\d{2}$/.test(v);
+  if (!isDate(from) || !isDate(to)) {
+    return Response.json(
+      { error: "invalid_params", detail: "from and to are required (YYYY-MM-DD, `to` exclusive)" },
+      { status: 400 },
+    );
+  }
+  if (from! >= to!) {
+    return Response.json(
+      { error: "invalid_params", detail: "from must be earlier than to" },
+      { status: 400 },
+    );
+  }
+
+  const limitParam = url.searchParams.get("limit");
+  let limit = 20;
+  if (limitParam !== null) {
+    const n = Number(limitParam);
+    if (!Number.isInteger(n) || n < 1 || n > MAX_USE_CASE_SPACES) {
+      return Response.json(
+        { error: "invalid_params", detail: `limit must be an integer between 1 and ${MAX_USE_CASE_SPACES}` },
+        { status: 400 },
+      );
+    }
+    limit = n;
+  }
+
+  // Half-open, matching every other window in the pipeline: `to` is the Monday
+  // AFTER the last week the caller wants, so a caller can hand over a period's
+  // own bounds without arithmetic and without double-counting the boundary.
+  const fromIso = `${from}T00:00:00.000Z`;
+  const toIso = `${to}T00:00:00.000Z`;
+
+  const counts = await env.DB.prepare(
+    `SELECT COUNT(*) AS total,
+            SUM(CASE WHEN s.likes > 0 THEN 1 ELSE 0 END) AS with_traction,
+            SUM(s.likes) AS likes
+       FROM hf_classifications c
+       JOIN hf_spaces s ON s.space_id = c.space_id
+      WHERE c.taxonomy_version = ?1 AND c.primary_use_case = ?2
+        AND s.created_at >= ?3 AND s.created_at < ?4
+        AND s.is_cluster_primary = 1`,
+  )
+    .bind(TAXONOMY_VERSION, useCase, fromIso, toIso)
+    .first<{ total: number; with_traction: number | null; likes: number | null }>();
+
+  // Ordered so idx_spaces_traction can be walked rather than sorted; space_id
+  // last so the order is total and two runs of the same request agree.
+  const rows = await env.DB.prepare(
+    `SELECT s.space_id, s.title, s.author, s.likes, s.created_at, s.sdk,
+            s.short_description, c.low_confidence
+       FROM hf_classifications c
+       JOIN hf_spaces s ON s.space_id = c.space_id
+      WHERE c.taxonomy_version = ?1 AND c.primary_use_case = ?2
+        AND s.created_at >= ?3 AND s.created_at < ?4
+        AND s.is_cluster_primary = 1 AND s.likes > 0
+      ORDER BY s.likes DESC, s.created_at DESC, s.space_id
+      LIMIT ?5`,
+  )
+    .bind(TAXONOMY_VERSION, useCase, fromIso, toIso, limit)
+    .all<{
+      space_id: string;
+      title: string | null;
+      author: string | null;
+      likes: number;
+      created_at: string;
+      sdk: string | null;
+      short_description: string | null;
+      low_confidence: number;
+    }>();
+
+  return Response.json(
+    {
+      useCase,
+      from,
+      to,
+      total: counts?.total ?? 0,
+      withTraction: counts?.with_traction ?? 0,
+      likes: counts?.likes ?? 0,
+      limit,
+      spaces: (rows.results ?? []).map((r) => ({
+        spaceId: r.space_id,
+        title: r.title,
+        author: r.author,
+        likes: r.likes,
+        createdAt: r.created_at,
+        sdk: r.sdk,
+        description: r.short_description,
+        lowConfidence: r.low_confidence === 1,
+      })),
+    },
+  );
+}
+
 async function handleSeries(request: Request, env: Env, url: URL): Promise<Response> {
   if (request.method !== "GET") {
     return Response.json({ error: "method_not_allowed" }, { status: 405, headers: { allow: "GET" } });

@@ -301,6 +301,30 @@ select:hover, .btn:hover { border-color: var(--axis); }
 /* A residual bucket is not a category — it sits last and is drawn recessive,
    so a long "Other" bar at the foot of a descending list reads as deliberate
    rather than as a sorting bug. */
+/* An openable row is a button, so it has to be talked out of looking like one. */
+button.bar-row {
+  font: inherit; color: inherit; border: 0; background: transparent;
+  width: 100%; text-align: left; cursor: pointer;
+}
+button.bar-row:focus-visible { outline: 2px solid var(--series); outline-offset: 2px; }
+.bar-row.open { background: color-mix(in srgb, var(--series) 10%, transparent); }
+.bar-row.open .bar-label { font-weight: 600; }
+
+.drill-list { display: grid; gap: 2px; }
+.drill-row {
+  display: grid; grid-template-columns: 56px 1fr; gap: 12px; align-items: baseline;
+  padding: 8px 10px; text-decoration: none; color: inherit; border-radius: 3px;
+}
+.drill-row:hover { background: color-mix(in srgb, var(--series) 7%, transparent); }
+.drill-row:focus-visible { outline: 2px solid var(--series); outline-offset: -2px; }
+.drill-likes {
+  font-variant-numeric: tabular-nums; text-align: right; font-weight: 600;
+  color: var(--series);
+}
+.drill-likes::after { content: ' \2665'; font-weight: 400; opacity: .55; font-size: 11px; }
+.drill-name b { font-weight: 600; }
+.drill-meta { display: block; font-size: 12px; color: var(--ink-muted); margin-top: 1px; }
+
 .bar-row.residual { margin-top: 5px; padding-top: 7px; border-top: 1px solid var(--grid); }
 .bar-row.residual .bar-fill { background: var(--series-soft); }
 .bar-row.residual .bar-label { color: var(--ink-muted); }
@@ -677,6 +701,15 @@ details.method li { margin-bottom: 7px; max-width: 82ch; }
         <div id="c-usecase"></div>
       </section>
 
+      <section class="card" id="usecase-drill-card" hidden>
+        <header>
+          <h2 id="drill-title">The Spaces behind it</h2>
+          <p class="hint">Ranked by the likes a Space had when the pipeline first saw it,
+            which is the only traction figure the Hub reports for Spaces at all.</p>
+        </header>
+        <div id="c-usecase-drill"></div>
+      </section>
+
       <section class="card" role="tabpanel" id="sub-vertical" aria-labelledby="subtab-vertical" tabindex="-1" hidden>
         <header>
           <h2>Where they're building it</h2>
@@ -963,6 +996,7 @@ const state = {
   table: false,        // the numbers behind whichever view is on screen
   track: 'spaces_total',
   matrixUseCase: null, // which use case the family-by-use-case view follows
+  drill: null,         // which use case the Spaces list underneath is open on
   /** Periods the reader picked out of the chart. Empty means all of them. */
   picked: new Set(),
   /** Series switched off from a legend, keyed by chart id. Colour follows the
@@ -2333,7 +2367,7 @@ function columnTotals(rows, periods) {
  * shape of the mix without reading a single figure. The key dot ties each row
  * to its band in the chart above.
  */
-function rankedBars(cols, { unit = '', chartId = '', whole = false } = {}) {
+function rankedBars(cols, { unit = '', chartId = '', whole = false, drill = false } = {}) {
   const { rows, periods, kind, like = null } = cols;
   const idx = pickedIndexes(periods);
   if (!rows.length || !idx.length) return '<p class="empty">Nothing to show for this selection.</p>';
@@ -2400,7 +2434,19 @@ function rankedBars(cols, { unit = '', chartId = '', whole = false } = {}) {
     const tip = `${titleCase(r.dimension)}: ${exact(r.value, unit)}`
       + (r.base ? ` of ${num(r.base)}` : '')
       + (r.suppressed ? ' — base too small to call it a trend' : '');
-    return `<div class="bar-row${residual}" title="${esc(tip)}">
+    // A row is a button only where there is something behind it to open.
+    // Everywhere else it stays a div, because a control that looks clickable
+    // and does nothing is worse than one that never offered.
+    const openable = drill && !RESIDUAL.has(r.dimension);
+    const tag = openable ? 'button' : 'div';
+    const attrs = openable
+      ? ` type="button" data-drill="${esc(r.dimension)}" aria-expanded="${
+          state.drill === r.dimension ? 'true' : 'false'}"`
+      : '';
+    const label = openable
+      ? `${esc(tip)}. Click to see the Spaces behind it.` : esc(tip);
+    return `<${tag} class="bar-row${residual}${openable ? ' openable' : ''}${
+      state.drill === r.dimension ? ' open' : ''}"${attrs} title="${label}">
       <span class="bar-label"><span class="key-dot" style="background:${
         RESIDUAL.has(r.dimension) ? 'var(--ink-muted)' : hue}"></span>${esc(titleCase(r.dimension))}</span>
       <span class="bar-track"><span class="bar-fill" style="width:${Math.min(100, r.value / max * 100).toFixed(1)}%"></span></span>
@@ -2408,8 +2454,113 @@ function rankedBars(cols, { unit = '', chartId = '', whole = false } = {}) {
       ${noComparison ? '<span class="bar-delta"></span>' : `<span class="bar-delta">${r.suppressed
         ? '<span class="delta flat">too few</span>'
         : delta(r.growth, { reason: whyNot, note })}</span>`}
-    </div>`;
+    </${tag}>`;
   }).join('')}</div>`;
+}
+
+/* ── The Spaces behind a use case ─────────────────────────────────────── */
+
+let drillSeq = 0;
+const drillCache = new Map();
+
+/** The half-open window a selection covers, as the API wants it. */
+function drillWindow(periods) {
+  const idx = pickedIndexes(periods);
+  if (!idx.length) return null;
+  const weeks = idx.flatMap(i => periods[i].weeks);
+  if (!weeks.length) return null;
+  const sorted = [...weeks].sort();
+  const last = new Date(`${sorted[sorted.length - 1]}T00:00:00.000Z`);
+  return {
+    from: sorted[0],
+    // Exclusive, and the Monday AFTER the last week — a period's own bounds,
+    // handed over without arithmetic at the other end.
+    to: new Date(last.getTime() + 7 * 86400000).toISOString().slice(0, 10),
+  };
+}
+
+function openDrill(useCase, periods) {
+  state.drill = useCase;
+  writeHash();
+  // The rows carry their own open/closed state, so the list is repainted
+  // rather than patched: one source of truth for which one is open.
+  renderAll();
+}
+
+async function renderDrill(cols) {
+  const host = document.getElementById('c-usecase-drill');
+  const card = document.getElementById('usecase-drill-card');
+  if (!host || !card) return;
+  if (!state.drill) { card.hidden = true; return; }
+
+  // A link can name a use case the payload does not have. Closing the card is
+  // the honest answer; leaving it open on a request that will 400 is not.
+  if (!cols.rows.some(r => r.dimension === state.drill)) {
+    card.hidden = true;
+    state.drill = null;
+    writeHash();
+    return;
+  }
+
+  const win = drillWindow(cols.periods);
+  if (!win) { card.hidden = true; return; }
+
+  card.hidden = false;
+  document.getElementById('drill-title').textContent =
+    `${titleCase(state.drill)} — the Spaces behind it`;
+
+  const key = `${state.drill}|${win.from}|${win.to}`;
+  const seq = ++drillSeq;
+  if (!drillCache.has(key)) {
+    setHTML(host, '<p class="empty">Loading…</p>');
+    try {
+      drillCache.set(key, await getJSON(
+        `/api/use-case-spaces?useCase=${encodeURIComponent(state.drill)}` +
+        `&from=${win.from}&to=${win.to}&limit=20`));
+    } catch {
+      if (seq === drillSeq) setHTML(host, '<p class="empty">That list could not be loaded just now.</p>');
+      return;
+    }
+  }
+  if (seq !== drillSeq) return;   // a later click already won
+  const data = drillCache.get(key);
+
+  const share = data.total > 0 ? (data.withTraction / data.total) * 100 : null;
+
+  // The denominator leads, deliberately. A top twenty with nothing beside it
+  // reads as "the twenty biggest"; what it actually is, on this data, is every
+  // Space in the period that anyone noticed at all.
+  const preamble = `<p class="hint" style="margin-bottom:14px">
+    <b>${num(data.withTraction)}</b> of <b>${num(data.total)}</b> new
+    ${esc(titleCase(state.drill))} Spaces in this selection have a single like${
+      share == null ? '' : ` — ${share.toFixed(1)}%`}.
+    Likes are recorded when we first see a Space, in the hours after it is created, so this is
+    which ones got noticed fastest rather than which are most popular today.
+    <a href="https://huggingface.co/spaces" target="_blank" rel="noopener">The Hub</a> has no
+    download figure for Spaces at all.</p>`;
+
+  if (!data.spaces.length) {
+    setHTML(host, preamble + `<p class="empty">Not one of the ${
+      num(data.total)} had a like when we saw it.</p>`);
+    return;
+  }
+
+  setHTML(host, preamble + `<div class="drill-list">${data.spaces.map(s => {
+    const name = s.title || s.spaceId.split('/')[1] || s.spaceId;
+    return `<a class="drill-row" href="https://huggingface.co/spaces/${
+      esc(s.spaceId)}" target="_blank" rel="noopener"
+      title="${esc(s.description || s.spaceId)}">
+      <span class="drill-likes">${num(s.likes)}</span>
+      <span class="drill-name">
+        <b>${esc(name)}</b>
+        <span class="drill-meta">${esc(s.author || '')}${s.sdk ? ' &middot; ' + esc(titleCase(s.sdk)) : ''} &middot; ${
+          esc(shortWeek(s.createdAt.slice(0, 10)))}${s.lowConfidence ? ' &middot; use case uncertain' : ''}</span>
+      </span>
+    </a>`;
+  }).join('')}</div>${data.withTraction > data.spaces.length
+    ? `<p class="hint" style="margin-top:12px">The ${data.spaces.length} most-liked of ${
+        num(data.withTraction)}.</p>`
+    : ''}`);
 }
 
 /* ── The period matrix ────────────────────────────────────────────────── */
@@ -2647,13 +2798,30 @@ function renderCutPanel(elId, cut, { unit = '', chartId, extraNote = '', rows = 
     unit, chartId, note: notes.join(' '),
   });
 
+  // Only the use-case cut has anything behind a category: the drill-down reads
+  // hf_spaces, and a Space carries exactly one primary use case. There is no
+  // equivalent list behind a technique or an industry, both of which are
+  // multi-label, and no list at all behind a model family — those are model
+  // repos, not Spaces.
+  const drill = cut === CUTS.usecase;
+
   const list = document.createElement('div');
   list.className = 'ranked';
   list.innerHTML = `<div class="ranked-head">
       <h3>${esc(name)}</h3>
       <span class="scope">${scopeLabel(cols.periods, cols.kind)}</span>
-    </div>${rankedBars(cols, { unit, chartId, whole })}`;
+    </div>${rankedBars(cols, { unit, chartId, whole, drill })}${drill
+      ? '<p class="hint" style="margin-top:10px">Click a use case to see the new Spaces behind it.</p>'
+      : ''}`;
   el.appendChild(list);
+
+  if (drill) {
+    list.querySelectorAll('button[data-drill]').forEach(b => {
+      b.addEventListener('click', () => openDrill(
+        b.dataset.drill === state.drill ? null : b.dataset.drill, cols.periods));
+    });
+    renderDrill(cols);
+  }
 }
 
 /** What the figures in a cut ARE, in words, for the table and the list header. */
@@ -3538,6 +3706,9 @@ function writeHash(push = false) {
   if (state.tab === 'tech' && state.sub.tech === 'matrix' && state.matrixUseCase) {
     p.set('uc', state.matrixUseCase);
   }
+  if (state.tab === 'build' && state.sub.build === 'usecase' && state.drill) {
+    p.set('drill', state.drill);
+  }
   if (state.picked.size) p.set('sel', [...state.picked].join(','));
 
   // Only once the reader has actually touched the legend: an untouched chart
@@ -3592,6 +3763,12 @@ function readHash() {
   // against the cross-tab's own use cases once that payload arrives;
   // fillUseCasePicker falls back to the first if this names one that is gone.
   state.matrixUseCase = p.get('uc') || null;
+
+  // Shape-checked here and checked against the data in renderDrill, which is
+  // the only place that knows which use cases the payload actually has. A link
+  // naming one that is gone closes the card rather than leaving it loading.
+  const drill = p.get('drill');
+  state.drill = drill && /^[a-z0-9-]{1,40}$/.test(drill) && !RESIDUAL.has(drill) ? drill : null;
 
   // Keys not in the data are simply dropped: a link written under Month and
   // opened under Week would otherwise leave a selection nothing can clear.

@@ -294,3 +294,152 @@ describe("GET /api/series", () => {
     expect(res.status).toBe(405);
   });
 });
+
+// ── /api/use-case-spaces ────────────────────────────────────────────────────
+
+interface UseCaseSpacesResponse {
+  useCase: string;
+  from: string;
+  to: string;
+  total: number;
+  withTraction: number;
+  likes: number;
+  spaces: Array<{
+    spaceId: string; title: string | null; author: string | null;
+    likes: number; createdAt: string; sdk: string | null;
+    description: string | null; lowConfidence: boolean;
+  }>;
+}
+
+describe("/api/use-case-spaces", () => {
+  /** Seven Spaces in one use case, six of them with no likes at all. */
+  async function seedCoding() {
+    const rows: Array<[string, string, number, number]> = [
+      // space_id, created_at, likes, is_cluster_primary
+      ["a/code-1", "2026-08-03T01:00:00.000Z", 12, 1],
+      ["a/code-2", "2026-08-04T01:00:00.000Z", 5, 1],
+      ["a/code-3", "2026-08-05T01:00:00.000Z", 0, 1],
+      ["a/code-4", "2026-08-06T01:00:00.000Z", 0, 1],
+      ["a/code-5", "2026-08-07T01:00:00.000Z", 0, 1],
+      // a duplicate of a viral template: real likes, but it is not its own Space
+      ["a/code-dupe", "2026-08-07T02:00:00.000Z", 99, 0],
+      // outside the window
+      ["a/code-old", "2026-07-20T01:00:00.000Z", 40, 1],
+    ];
+    await DB.batch(rows.map(([id, created, likes, primary]) =>
+      DB.prepare(
+        `INSERT INTO hf_spaces (space_id, author, created_at, last_modified, likes,
+           title, sdk, tags, linked_models, linked_datasets, is_cluster_primary,
+           first_seen_at, updated_at)
+         VALUES (?1,'a',?2,?2,?3,?4,'gradio','[]','[]','[]',?5,?2,?2)`,
+      ).bind(id, created, likes, id.split("/")[1], primary)));
+
+    await DB.batch(rows.map(([id, created]) =>
+      DB.prepare(
+        `INSERT INTO hf_classifications (space_id, taxonomy_version, primary_use_case,
+           verticals, model_families, technologies, source_kind, source_ref, classified_at)
+         VALUES (?1, ?2, 'coding', '[]', '[]', '[]', 'rule', 'r1', ?3)`,
+      ).bind(id, TAXONOMY_VERSION, created)));
+  }
+
+  const get = (q: string) => SELF.fetch(`http://localhost/api/use-case-spaces?${q}`);
+
+  it("ranks the new Spaces in one use case that got any traction", async () => {
+    await seedCoding();
+    const res = await get("useCase=coding&from=2026-08-03&to=2026-08-10");
+    expect(res.status).toBe(200);
+    const data = (await res.json()) as UseCaseSpacesResponse;
+    expect(data.spaces.map((s) => s.spaceId)).toEqual(["a/code-1", "a/code-2"]);
+    expect(data.spaces[0]!.likes).toBe(12);
+  });
+
+  it("says how few of them that is, rather than presenting a leaderboard", async () => {
+    // 95.5% of new Spaces never get a single like. A top ten with no
+    // denominator beside it reads as "the ten biggest" instead of "the only
+    // two anybody noticed".
+    await seedCoding();
+    const data = (await (await get("useCase=coding&from=2026-08-03&to=2026-08-10")).json()) as UseCaseSpacesResponse;
+    expect(data.total).toBe(5);
+    expect(data.withTraction).toBe(2);
+  });
+
+  it("counts clusters, not copies", async () => {
+    // One viral template produced 2% of a day's Spaces on its own. The
+    // duplicate here has more likes than anything else in the window and must
+    // not appear, or the drill-down becomes a list of one template.
+    await seedCoding();
+    const data = (await (await get("useCase=coding&from=2026-08-03&to=2026-08-10")).json()) as UseCaseSpacesResponse;
+    expect(data.spaces.map((s) => s.spaceId)).not.toContain("a/code-dupe");
+    expect(data.total).toBe(5);
+  });
+
+  it("treats `to` as exclusive, like every other window in the pipeline", async () => {
+    await seedCoding();
+    const inside = (await (await get("useCase=coding&from=2026-07-20&to=2026-08-04")).json()) as UseCaseSpacesResponse;
+    expect(inside.spaces.map((s) => s.spaceId)).toEqual(["a/code-old", "a/code-1"]);
+    const boundary = (await (await get("useCase=coding&from=2026-07-20&to=2026-08-03")).json()) as UseCaseSpacesResponse;
+    expect(boundary.spaces.map((s) => s.spaceId)).toEqual(["a/code-old"]);
+  });
+
+  it("orders ties by newest, then by id, so two identical requests agree", async () => {
+    await DB.batch([
+      DB.prepare(
+        `INSERT INTO hf_spaces (space_id, author, created_at, last_modified, likes, title,
+           sdk, tags, linked_models, linked_datasets, is_cluster_primary, first_seen_at, updated_at)
+         VALUES ('z/tie','z','2026-08-03T00:00:00.000Z','2026-08-03T00:00:00.000Z',4,'z','gradio','[]','[]','[]',1,'2026-08-03T00:00:00.000Z','2026-08-03T00:00:00.000Z')`,
+      ),
+      DB.prepare(
+        `INSERT INTO hf_spaces (space_id, author, created_at, last_modified, likes, title,
+           sdk, tags, linked_models, linked_datasets, is_cluster_primary, first_seen_at, updated_at)
+         VALUES ('a/tie','a','2026-08-04T00:00:00.000Z','2026-08-04T00:00:00.000Z',4,'a','gradio','[]','[]','[]',1,'2026-08-04T00:00:00.000Z','2026-08-04T00:00:00.000Z')`,
+      ),
+    ]);
+    await DB.batch(["z/tie", "a/tie"].map((id) =>
+      DB.prepare(
+        `INSERT INTO hf_classifications (space_id, taxonomy_version, primary_use_case,
+           verticals, model_families, technologies, source_kind, source_ref, classified_at)
+         VALUES (?1, ?2, 'coding', '[]', '[]', '[]', 'rule', 'r1', '2026-08-04T00:00:00.000Z')`,
+      ).bind(id, TAXONOMY_VERSION)));
+
+    const once = (await (await get("useCase=coding&from=2026-08-01&to=2026-08-10")).json()) as UseCaseSpacesResponse;
+    const twice = (await (await get("useCase=coding&from=2026-08-01&to=2026-08-10")).json()) as UseCaseSpacesResponse;
+    expect(once.spaces.map((s) => s.spaceId)).toEqual(["a/tie", "z/tie"]);
+    expect(twice.spaces.map((s) => s.spaceId)).toEqual(once.spaces.map((s) => s.spaceId));
+  });
+
+  it("answers honestly when nothing in the window got noticed", async () => {
+    await seedCoding();
+    const data = (await (await get("useCase=coding&from=2026-08-05&to=2026-08-07")).json()) as UseCaseSpacesResponse;
+    expect(data.spaces).toEqual([]);
+    expect(data.total).toBe(2);
+    expect(data.withTraction).toBe(0);
+  });
+
+  it("rejects a use case that is not in the taxonomy", async () => {
+    const res = await get("useCase=not-a-use-case&from=2026-08-03&to=2026-08-10");
+    expect(res.status).toBe(400);
+  });
+
+  it("rejects a missing or malformed window", async () => {
+    expect((await get("useCase=coding")).status).toBe(400);
+    expect((await get("useCase=coding&from=2026-08-03")).status).toBe(400);
+    expect((await get("useCase=coding&from=03-08-2026&to=2026-08-10")).status).toBe(400);
+    expect((await get("useCase=coding&from=2026-08-10&to=2026-08-03")).status).toBe(400);
+    expect((await get("useCase=coding&from=2026-08-03&to=2026-08-03")).status).toBe(400);
+  });
+
+  it("rejects a limit outside the cap", async () => {
+    expect((await get("useCase=coding&from=2026-08-03&to=2026-08-10&limit=0")).status).toBe(400);
+    expect((await get("useCase=coding&from=2026-08-03&to=2026-08-10&limit=51")).status).toBe(400);
+    expect((await get("useCase=coding&from=2026-08-03&to=2026-08-10&limit=2.5")).status).toBe(400);
+    expect((await get("useCase=coding&from=2026-08-03&to=2026-08-10&limit=50")).status).toBe(200);
+  });
+
+  it("rejects a non-GET method", async () => {
+    const res = await SELF.fetch(
+      "http://localhost/api/use-case-spaces?useCase=coding&from=2026-08-03&to=2026-08-10",
+      { method: "POST" },
+    );
+    expect(res.status).toBe(405);
+  });
+});
