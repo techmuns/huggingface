@@ -375,6 +375,11 @@ tbody tr:last-child td { border-bottom: 0; }
   font-variant-numeric: tabular-nums; color: var(--ink-2);
 }
 .pmatrix th.avg { text-transform: none; letter-spacing: 0; font-size: 11.5px; }
+/* The technique change table: no period columns to scroll through, so the
+   first column is a plain header rather than a pinned one. */
+.pmatrix.change th { text-transform: none; letter-spacing: 0; font-size: 12px; }
+.pmatrix.change td:first-child, .pmatrix.change th:first-child { box-shadow: none; }
+.pmatrix.change tbody td { padding-top: 7px; padding-bottom: 7px; }
 
 /* ── Charts ───────────────────────────────────────────────────────────── */
 .chart-legend { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 14px; }
@@ -529,6 +534,7 @@ details.method li { margin-bottom: 7px; max-width: 82ch; }
     <button role="tab" id="tab-trends"     data-tab="trends"     aria-selected="false" aria-controls="panel-trends"     tabindex="-1">Trends</button>
     <button role="tab" id="tab-build"      data-tab="build"      aria-selected="false" aria-controls="panel-build"      tabindex="-1">What they build</button>
     <button role="tab" id="tab-tech"       data-tab="tech"       aria-selected="false" aria-controls="panel-tech"       tabindex="-1">How they build</button>
+    <button role="tab" id="tab-techniques" data-tab="techniques" aria-selected="false" aria-controls="panel-techniques" tabindex="-1">Techniques used</button>
     <button role="tab" id="tab-engagement" data-tab="engagement" aria-selected="false" aria-controls="panel-engagement" tabindex="-1">Engagement</button>
   </nav>
 
@@ -619,7 +625,7 @@ details.method li { margin-bottom: 7px; max-width: 82ch; }
           <li><a href="#tab=build&sub=usecase">What developers are building</a> <span>What they build &rsaquo; Use case</span></li>
           <li><a href="#tab=build&sub=vertical">Where they're building it</a> <span>What they build &rsaquo; Industry</span></li>
           <li><a href="#tab=tech&sub=family">What they're building on</a> <span>How they build &rsaquo; Model family</span></li>
-          <li><a href="#tab=tech&sub=tech">How they're building it</a> <span>How they build &rsaquo; Technique</span></li>
+          <li><a href="#tab=techniques">How they're building it</a> <span>Techniques used</span></li>
           <li><a href="#tab=tech&sub=sdk">New Spaces by SDK</a> <span>How they build &rsaquo; SDK</span></li>
           <li><a href="#tab=tech&sub=matrix">Model family by use case</a> <span>How they build &rsaquo; Family by use case</span></li>
           <li><a href="#tab=engagement">Engagement</a> <span>Its own tab</span></li>
@@ -684,7 +690,6 @@ details.method li { margin-bottom: 7px; max-width: 82ch; }
     <section role="tabpanel" id="panel-tech" aria-labelledby="tab-tech" tabindex="-1" hidden>
       <div class="subtabs" role="tablist" aria-label="How they build">
         <button role="tab" id="subtab-family" data-sub="family" aria-selected="true"  aria-controls="sub-family" title="What they're building on">Model family</button>
-        <button role="tab" id="subtab-tech" data-sub="tech"   aria-selected="false" aria-controls="sub-tech"   tabindex="-1" title="How they're building it">Technique</button>
         <button role="tab" id="subtab-sdk" data-sub="sdk"    aria-selected="false" aria-controls="sub-sdk"    tabindex="-1" title="New Spaces by SDK">SDK</button>
         <button role="tab" id="subtab-matrix" data-sub="matrix" aria-selected="false" aria-controls="sub-matrix" tabindex="-1">Family by use case</button>
       </div>
@@ -699,15 +704,6 @@ details.method li { margin-bottom: 7px; max-width: 82ch; }
             families; <b>Unresolved</b> is a model that told us none of them.</p>
         </header>
         <div id="c-family"></div>
-      </section>
-
-      <section class="card" role="tabpanel" id="sub-tech" aria-labelledby="subtab-tech" tabindex="-1" hidden>
-        <header>
-          <h2>How they're building it</h2>
-          <p class="hint">Methods used inside a Space. One Space can use several, so these do not add up to 100%.
-            The toolkit it ships with is on the SDK tab.</p>
-        </header>
-        <div id="c-tech"></div>
       </section>
 
       <section class="card" role="tabpanel" id="sub-sdk" aria-labelledby="subtab-sdk" tabindex="-1" hidden>
@@ -725,6 +721,30 @@ details.method li { margin-bottom: 7px; max-width: 82ch; }
             A Space that names two families counts in both, and a Space that names none is outside the base.</p>
         </header>
         <div class="matrix-scroll" id="c-matrix"></div>
+      </section>
+    </section>
+
+    <!-- ── Techniques used ──────────────────────────────────────────── -->
+    <section role="tabpanel" id="panel-techniques" aria-labelledby="tab-techniques" tabindex="-1" hidden>
+      <p class="panel-intro">The methods used inside new Spaces &mdash; how far each has spread, and what moved.
+        One Space can use several, so these do not add up to 100%. The toolkit a Space ships with is
+        on <a href="#tab=tech&amp;sub=sdk">How they build &rsaquo; SDK</a>.</p>
+
+      <section class="card">
+        <header>
+          <h2>What moved</h2>
+          <p class="hint" id="tech-change-hint">Every technique, week on week and month on month.</p>
+        </header>
+        <div id="c-tech-change"></div>
+      </section>
+
+      <section class="card">
+        <header>
+          <h2>How they're building it</h2>
+          <p class="hint">The share of new Spaces using each technique, over every period on record.
+            Change the time period above to group the weeks into months, quarters or one all-time total.</p>
+        </header>
+        <div id="c-tech"></div>
       </section>
     </section>
 
@@ -763,7 +783,7 @@ details.method li { margin-bottom: 7px; max-width: 82ch; }
       <li><b>What developers are building.</b> Primary use case &mdash; one per Space, so shares total 100%.</li>
       <li><b>Where they're building it.</b> Vertical &mdash; multi-label, so these do not total 100%.</li>
       <li><b>What they're building on.</b> Model family, from declared <code>base_model</code> lineage.</li>
-      <li><b>How they're building it.</b> Technique &mdash; multi-label. The build SDK is separate, on its own sub-tab.</li>
+      <li><b>How they're building it.</b> Technique &mdash; multi-label, on its own tab. The build SDK is separate, under How they build.</li>
       <li><b>Model family by use case.</b> Share of each use case's Spaces built on a given family.</li>
       <li><b>Engagement.</b> Downloads are a rolling 30-day rate; likes are cumulative.</li>
       <li><b>The matrix asterisk.</b> Base below the reporting threshold &mdash; shown for completeness, not as a trend.</li>
@@ -1492,12 +1512,15 @@ function prepareSeries(weeks, rows, { zeroFill = false, isCount = false, payload
  * Every panel goes through here, so the chart, the ranked list and the table
  * are three readings of one array and cannot disagree with each other.
  */
-function cutColumns(cut, { rows = null, payload = seriesRaw } = {}) {
+function cutColumns(cut, { rows = null, payload = seriesRaw, period = state.period } = {}) {
   const weeks = payload?.weeks || [];
   const kind = KIND[cut] || 'count';
   const src = rows || seriesOf(cut, payload);
   const prepared = prepareSeries(weeks, src, { zeroFill: true, isCount: kind === 'count', payload });
-  const periods = buildPeriods(prepared.weeks, state.period, payload);
+  // The period is a parameter rather than a read of `state`, because one panel
+  // — the technique change table — reports weeks and months side by side and
+  // must not be at the mercy of whichever one the toolbar happens to be on.
+  const periods = buildPeriods(prepared.weeks, period, payload);
   const behind = weeksBehind(prepared.weeks, prepared.rows, periods);
   const withBehind = periods.map((p, i) => ({ ...p, behind: behind[i] }));
   return {
@@ -3220,11 +3243,12 @@ function renderAll() {
   if (state.tab === 'tech') {
     const sub = state.sub.tech;
     if (sub === 'family') renderCutPanel('c-family', CUTS.family, { chartId: 'family' });
-    else if (sub === 'tech') renderCutPanel('c-tech', CUTS.tech, { unit: '%', chartId: 'tech' });
     else if (sub === 'sdk') renderCutPanel('c-sdk', CUTS.sdk, { chartId: 'sdk' });
     else renderMatrix();
     return;
   }
+
+  if (state.tab === 'techniques') { renderTechniques(); return; }
 
   if (state.tab === 'engagement') renderEngagement(document.getElementById('c-engagement'));
 }
@@ -3244,7 +3268,7 @@ function renderEveryPanel() {
   renderCutPanel('c-usecase', CUTS.usecase, { chartId: 'usecase' });
   renderCutPanel('c-vertical', CUTS.vertical, { unit: '%', chartId: 'vertical' });
   renderCutPanel('c-family', CUTS.family, { chartId: 'family' });
-  renderCutPanel('c-tech', CUTS.tech, { unit: '%', chartId: 'tech' });
+  renderTechniques();
   renderCutPanel('c-sdk', CUTS.sdk, { chartId: 'sdk' });
   // The cross-tab's history is fetched on demand, and beforeprint cannot wait
   // for it: printing before it has ever been opened would capture the loading
@@ -3253,17 +3277,148 @@ function renderEveryPanel() {
   renderEngagement(document.getElementById('c-engagement'));
 }
 
+/* ── Techniques ───────────────────────────────────────────────────────── */
+
+/**
+ * The last two FINISHED periods of a cut, if they sit next to each other.
+ *
+ * "What moved this week" has to be two whole weeks. The newest column is
+ * usually two days old, and reporting its share as this week's is how a
+ * technique appears to have halved overnight. Adjacency is required too: with
+ * a period missing in between, the change would silently span a gap the reader
+ * cannot see on screen.
+ */
+function lastTwoFinished(periods) {
+  const done = periods.map((p, i) => (p.partial ? -1 : i)).filter(i => i >= 0);
+  if (done.length < 2) return null;
+  const now = done[done.length - 1], before = done[done.length - 2];
+  return now - before === 1 ? { now, before } : null;
+}
+
+/** One period's figure and its change from the one before, per category. */
+function changeAgainstPrevious(cut, period) {
+  const cols = cutColumns(cut, { period });
+  const pair = lastTwoFinished(cols.periods);
+  if (!pair) {
+    return {
+      ok: false,
+      why: cols.periods.length < 2
+        ? `there is only one ${PERIOD_WORD[period]} on record`
+        : `no two finished ${PERIOD_WORD[period]}s sit next to each other yet`,
+      periods: cols.periods,
+    };
+  }
+  const { now, before } = pair;
+  const rows = cols.rows.map(r => {
+    const value = combine(r.values, r.denominators, [now], cols.kind);
+    const prev = combine(r.values, r.denominators, [before], cols.kind);
+    return {
+      dimension: r.dimension,
+      value,
+      prev,
+      // Points, not just a ratio: 5% to 6% is +20% and +1.0 points, and only
+      // one of those two numbers tells a reader how much of the mix moved.
+      points: value != null && prev != null ? value - prev : null,
+      growth: value != null && prev ? ((value - prev) / prev) * 100 : null,
+      suppressed: !!(r.suppressed?.[now] && r.suppressed?.[before]),
+    };
+  });
+  return {
+    ok: true, rows, cols,
+    nowLabel: cols.periods[now].full,
+    beforeLabel: cols.periods[before].full,
+  };
+}
+
+/**
+ * Techniques, week on week and month on month, side by side.
+ *
+ * Two time grains at once is the whole point of this table, so neither of them
+ * may read `state.period` — the toolbar still drives the chart underneath, and
+ * a reader who groups that chart by quarter should not find this table has
+ * quietly become a quarterly one.
+ */
+function renderTechChange() {
+  const el = document.getElementById('c-tech-change');
+  if (!el) return;
+  if (!seriesRaw || !(seriesRaw.weeks || []).length) { setHTML(el, noSeriesNote()); return; }
+
+  const week = changeAgainstPrevious(CUTS.tech, 'week');
+  const month = changeAgainstPrevious(CUTS.tech, 'month');
+
+  if (!week.ok && !month.ok) {
+    setHTML(el, `<p class="empty">Nothing to compare yet &mdash; ${esc(week.why)}.</p>`);
+    document.getElementById('tech-change-hint').textContent =
+      'Two finished weeks are needed before a change can be reported.';
+    return;
+  }
+
+  const order = (week.ok ? week.rows : month.rows)
+    .filter(r => !RESIDUAL.has(r.dimension))
+    .sort((a, b) => (b.value ?? -1) - (a.value ?? -1))
+    .map(r => r.dimension);
+  const at = (res, dim) => (res.ok ? res.rows.find(r => r.dimension === dim) : null);
+
+  document.getElementById('tech-change-hint').textContent = week.ok && month.ok
+    ? `${week.nowLabel} against ${week.beforeLabel}, and ${month.nowLabel} against ${month.beforeLabel}.`
+    : week.ok
+      ? `${week.nowLabel} against ${week.beforeLabel}. Month on month is withheld: ${month.why}.`
+      : `${month.nowLabel} against ${month.beforeLabel}. Week on week is withheld: ${week.why}.`;
+
+  // A cell prints the share, the change in points, and the change as a
+  // percentage of itself — because "3.3% to 4.4%" is a third more RAG and a
+  // one-point move, and a reader asking "what moved" wants both.
+  const cell = (r) => {
+    if (!r || r.value == null) return '<td>&mdash;</td><td>&mdash;</td>';
+    const pts = r.points == null ? '' :
+      `<span class="suppressed" style="font-size:12px">${
+        r.points >= 0 ? '+' : '\u2212'}${Math.abs(r.points).toFixed(1)} pts</span>`;
+    return `<td>${esc(exact(r.value, '%'))}${r.suppressed ? '*' : ''}</td>
+      <td>${delta(r.growth, { reason: 'no earlier period' })} ${pts}</td>`;
+  };
+
+  // Named, not "this week": the newest week on screen is usually still
+  // filling, and this table is deliberately reporting the one before it.
+  const shortOf = (res) => res.cols.periods[
+    lastTwoFinished(res.cols.periods).now].label;
+  const head = `<tr>
+    <th>Technique</th>
+    ${week.ok ? `<th>${esc(shortOf(week))}</th><th>vs the week before</th>` : ''}
+    ${month.ok ? `<th>${esc(shortOf(month))}</th><th>vs the month before</th>` : ''}
+  </tr>`;
+
+  const body = order.map(dim => `<tr>
+    <td>${esc(titleCase(dim))}</td>
+    ${week.ok ? cell(at(week, dim)) : ''}
+    ${month.ok ? cell(at(month, dim)) : ''}
+  </tr>`).join('');
+
+  const anySup = order.some(d => at(week, d)?.suppressed || at(month, d)?.suppressed);
+  setHTML(el, `<div class="table-scroll"><table class="pmatrix change">
+    <thead>${head}</thead><tbody>${body}</tbody></table></div>
+    <p class="hint" style="margin-top:12px">Each figure is the share of new Spaces using that
+    technique in a <b>finished</b> period, against the finished period before it &mdash; a week two days
+    old would read as a collapse rather than as a week that has not happened yet.${
+      month.ok ? '' : ` Month on month needs two finished months, and ${esc(month.why)}.`}${
+      anySup ? ' <b>*</b> too few behind this figure to call it a trend.' : ''}</p>`);
+}
+
+function renderTechniques() {
+  renderTechChange();
+  renderCutPanel('c-tech', CUTS.tech, { unit: '%', chartId: 'tech' });
+}
+
 /* ── Tabs, toolbar and routing ────────────────────────────────────────── */
 
 const PANELS = {
   overview: 'panel-overview', trends: 'panel-trends', build: 'panel-build',
-  tech: 'panel-tech', engagement: 'panel-engagement',
+  tech: 'panel-tech', techniques: 'panel-techniques', engagement: 'panel-engagement',
 };
 
 /** The sub-tabs each panel actually has, so a hash cannot name one that isn't there. */
 const SUBS = {
   build: ['usecase', 'vertical'],
-  tech: ['family', 'tech', 'sdk', 'matrix'],
+  tech: ['family', 'sdk', 'matrix'],
 };
 
 function showTab(tab, { push = false, land = false } = {}) {
@@ -3301,6 +3456,9 @@ function applySubTabs() {
 /** Whether what is on screen is a composition — a whole made of its parts. */
 function panelIsWhole() {
   if (state.tab === 'build') return state.sub.build === 'usecase';
+  // CUTS.tech is deliberately not here. Thirteen multi-label techniques over
+  // one week of Spaces add up to somewhere between 32% and 40%, never 100, so
+  // a stack of them would be a whole made of parts of something else.
   if (state.tab === 'tech') return state.sub.tech === 'family' || state.sub.tech === 'sdk';
   if (state.tab === 'trends') {
     const t = TRACKS.find(t => t.id === state.track);
@@ -3363,8 +3521,9 @@ function activeChartId() {
   }
   if (state.tab === 'build') return state.sub.build === 'vertical' ? 'vertical' : 'usecase';
   if (state.tab === 'tech') {
-    return { family: 'family', tech: 'tech', sdk: 'sdk', matrix: 'matrix' }[state.sub.tech] || null;
+    return { family: 'family', sdk: 'sdk', matrix: 'matrix' }[state.sub.tech] || null;
   }
+  if (state.tab === 'techniques') return 'tech';
   return null;
 }
 
@@ -3410,9 +3569,14 @@ function readHash() {
   const p = new URLSearchParams(location.hash.replace(/^#/, ''));
 
   const tab = p.get('tab');
+  const sub = p.get('sub');
   state.tab = tab && PANELS[tab] ? tab : 'overview';
 
-  const sub = p.get('sub');
+  // Technique used to be a sub-tab of How they build. Every link written
+  // before it moved still names it that way, so those links land where they
+  // always did rather than on the panel's first sub-tab.
+  if (state.tab === 'tech' && sub === 'tech') state.tab = 'techniques';
+
   if (state.tab === 'build') state.sub.build = SUBS.build.includes(sub) ? sub : 'usecase';
   if (state.tab === 'tech') state.sub.tech = SUBS.tech.includes(sub) ? sub : 'family';
 
