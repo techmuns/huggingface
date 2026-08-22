@@ -703,16 +703,16 @@ details.method li { margin-bottom: 7px; max-width: 82ch; }
         Every figure below was substituted in afterwards, and you can open the facts under any summary
         to see exactly which one each came from.</p>
 
-      <div class="insight-cols">
-        <section class="card">
+      <div class="insight-cols" id="insight-cols">
+        <section class="card" id="insight-week-card">
           <header>
-            <h2>This week</h2>
+            <h2 id="insight-week-title">This week</h2>
             <p class="hint" id="insight-week-hint">The most recent week the pipeline finished.</p>
           </header>
           <div id="c-insight-week"></div>
         </section>
 
-        <section class="card">
+        <section class="card" id="insight-month-card">
           <header>
             <h2>This month</h2>
             <p class="hint" id="insight-month-hint">Written once a month closes, never part-way through it.</p>
@@ -721,7 +721,7 @@ details.method li { margin-bottom: 7px; max-width: 82ch; }
         </section>
       </div>
 
-      <section class="card">
+      <section class="card" id="insight-history-card">
         <header>
           <h2>Earlier</h2>
           <p class="hint">Every summary still on record, newest first.</p>
@@ -3599,10 +3599,26 @@ async function renderInsights() {
     if (state.tab !== 'insights' && !printing) return;
   }
 
-  if (insightFailed) {
-    setHTML(weekEl, '<p class="empty">The summaries could not be loaded just now. Reload to try again.</p>');
+  // One message, in one place, with the other two cards out of the way. Three
+  // boxes where two are blank is its own kind of broken: the reader cannot tell
+  // whether the empty ones failed, are loading, or have nothing to say.
+  const soleMessage = (title, html) => {
+    document.getElementById('insight-week-title').textContent = title;
+    document.getElementById('insight-week-hint').textContent = '';
+    document.getElementById('insight-month-card').hidden = true;
+    document.getElementById('insight-history-card').hidden = true;
+    setHTML(weekEl, html);
     setHTML(monthEl, '');
     setHTML(histEl, '');
+  };
+  const threeCards = () => {
+    document.getElementById('insight-week-title').textContent = 'This week';
+    document.getElementById('insight-month-card').hidden = false;
+    document.getElementById('insight-history-card').hidden = false;
+  };
+
+  if (insightFailed) {
+    soleMessage('Summaries', '<p class="insight-none">The summaries could not be loaded just now. Reload to try again.</p>');
     return;
   }
 
@@ -3611,14 +3627,24 @@ async function renderInsights() {
   // hiding itself: an empty list and no explanation is indistinguishable from
   // a feature nobody has built.
   if (insightData?.unavailable) {
-    setHTML(weekEl, `<p class="empty">${esc(insightData.unavailable)}</p>`);
-    setHTML(monthEl, '');
-    setHTML(histEl, '');
+    soleMessage('Not switched on yet', `<p class="insight-none">${esc(insightData.unavailable)}
+      Everything else on this dashboard is unaffected. Once it is applied, the first summary is
+      written by the next weekly run.</p>`);
     return;
   }
 
+  threeCards();
+
   const weeks = insightData?.week || [];
   const months = insightData?.month || [];
+
+  // Applied, but nothing written yet — the state between the migration and the
+  // first Monday. Also one message rather than three empty boxes.
+  if (!weeks.length && !months.length) {
+    soleMessage('Nothing written yet', `<p class="insight-none">No week has been summarised yet.
+      The first one is written by the next weekly run, and a month follows once a month closes.</p>`);
+    return;
+  }
 
   document.getElementById('insight-week-hint').textContent = weeks.length
     ? PERIOD_NAME('week', weeks[0].periodKey)
