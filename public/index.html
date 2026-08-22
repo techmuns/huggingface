@@ -686,7 +686,10 @@ details.method li { margin-bottom: 7px; max-width: 82ch; }
       <section class="card" role="tabpanel" id="sub-family" aria-labelledby="subtab-family" tabindex="-1">
         <header>
           <h2>What they're building on</h2>
-          <p class="hint">The model family behind each new model, read from the model it says it came from.</p>
+          <p class="hint">The model family behind each new model, read from the parent it declares, the
+            architecture it reports, or its own name &mdash; in that order.
+            <b>Other open</b> is a model that told us one of those and is none of the eight named
+            families; <b>Unresolved</b> is a model that told us none of them.</p>
         </header>
         <div id="c-family"></div>
       </section>
@@ -872,14 +875,14 @@ const titleCase = s => LABELS[s] ?? String(s).replace(/[-_]/g, ' ')
 const RESIDUAL = new Set(['other', 'other-open', 'unknown', 'unresolved']);
 
 /* What each residual actually means. They are not interchangeable: "Other
-   open" is a POSITIVE result — a model that declared a parent we could not put
-   a name to — while "Unresolved" declared no lineage at all. A tile that names
-   one without saying which is which invites the reader to read both as
-   failures. */
+   open" is a POSITIVE result — the model told us something, it just was not
+   one of the eight named families — while "Unresolved" told us nothing at all.
+   A tile that names one without saying which is which invites the reader to
+   read both as failures. */
 const RESIDUAL_NOTE = {
-  'other-open': 'Other open — an open model that declared a parent we could not name',
-  unknown: 'Unresolved — no lineage declared anywhere',
-  unresolved: 'Unresolved — no lineage declared anywhere',
+  'other-open': 'Other open — an open model that is none of the eight named families: it declared a parent we could not name, or an architecture we do not track',
+  unknown: 'Unresolved — the model declared no parent, no architecture and nothing in its name',
+  unresolved: 'Unresolved — the model declared no parent, no architecture and nothing in its name',
   other: 'Other — everything outside the named categories',
 };
 

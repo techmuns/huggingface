@@ -648,13 +648,57 @@ export async function resolveModelFamilies(
   const byArchitecture = architecture.resolved;
   const byName = name.resolved;
 
-  // Anything with a declared lineage that still couldn't be placed
+  // Anything with a declared lineage that still couldn't be placed. Safe to
+  // run unbounded: `base_model` is written by the two lineage rungs and by
+  // nothing else — parse.ts writes `card_base_model`, never this — so a row
+  // that has one has already been through them.
   await db
     .prepare(
       `UPDATE hf_models SET family = 'other-open'
        WHERE base_model IS NOT NULL AND family IS NULL`,
     )
     .run();
+
+  // And anything that told us its architecture plainly, where the architecture
+  // is not one of the eight named families.
+  //
+  // This is the difference between "we could not tell what this is" and "this
+  // is a BERT". 1,107 models in 12,000 — bert 424, roberta 76, xlm-roberta 66,
+  // gpt2 62, distilbert 59, whisper 36, t5 28 — were being published as
+  // Unresolved while the row said exactly what they were. The taxonomy is the
+  // stakeholder's and is not ours to extend, but it already has the bucket for
+  // this: `other-open` is "Other open models", and an open model that is none
+  // of the eight named families is precisely that. A NULL family should mean
+  // the one thing it cannot mean today — that we could not tell.
+  //
+  // Bounded, unlike the clause above, because `model_type` is written at PARSE
+  // time: a row can carry one without any rung having looked at it. Stamping
+  // those would take them out of `family IS NULL` and no later pass would ever
+  // examine them — the exact failure the cursors exist to prevent. So it
+  // reaches only as far as BOTH remaining rungs have walked, or the whole
+  // table once both have walked it all.
+  const walkedBoth = architecture.exhausted && name.exhausted
+    ? null
+    : (architecture.cursor && name.cursor
+        ? (architecture.cursor < name.cursor ? architecture.cursor : name.cursor)
+        : "");
+  if (walkedBoth === null) {
+    await db
+      .prepare(
+        `UPDATE hf_models SET family = 'other-open'
+         WHERE family IS NULL AND base_model IS NULL AND model_type IS NOT NULL`,
+      )
+      .run();
+  } else if (walkedBoth !== "") {
+    await db
+      .prepare(
+        `UPDATE hf_models SET family = 'other-open'
+         WHERE family IS NULL AND base_model IS NULL AND model_type IS NOT NULL
+           AND repo_id <= ?1`,
+      )
+      .bind(walkedBoth)
+      .run();
+  }
 
   // A repo that declares no parent is a base model. The brief asks for all
   // six derivative types, and without this every repo without a base_model

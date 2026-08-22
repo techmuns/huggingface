@@ -33,20 +33,9 @@ export interface HfListPage {
  * `gguf` must never be bulk-expanded. It embeds the model's entire chat
  * template — hundreds of KB per record — and is fatal in a listing of 1,000.
  *
- * `config` is absent for the same reason, arrived at the hard way. It was
- * added for `config.model_type` and it works, but it carries the whole config
- * object: a quantized flagship's per-layer quantization block runs to 2.38 MB
- * on one record, and 17 records in 12,000 (0.14%) exceed the 90,000-byte
- * ceiling in `chunkByBytes` and are DISCARDED with a console warning. Those 17
- * are exactly the models that would have resolved to a named family — the
- * NVFP4 and GPTQ builds of Nemotron, DeepSeek, Qwen3-Coder — and they never
- * reach the table at all.
- *
- * Dropping it costs nothing, because the Hub derives an architecture tag from
- * the same field: measured over 12,000 models, `config.model_type` appears
- * verbatim in `tags` in 4,786 of 4,786 cases, and there is not one model the
- * config can place that the tags cannot. Mean record 4,507 -> 467 bytes,
- * largest 2.38 MB -> 39.7 KB, records over the ceiling 17 -> 0.
+ * `config` IS expanded, but only one field of it survives the response — see
+ * `slimConfig` below. We want `config.model_type` and nothing else, and the
+ * rest of the object is what nearly cost us the models it was there to find.
  */
 const EXPAND: Record<EntityKind, readonly string[]> = {
   model: [
@@ -60,6 +49,10 @@ const EXPAND: Record<EntityKind, readonly string[]> = {
     "pipeline_tag",
     "library_name",
     "cardData",
+    // The canonical architecture field. Free — it rides the listing request we
+    // already make — and it is what the model itself says it is, rather than
+    // what its title suggests. Trimmed to `model_type` on arrival.
+    "config",
   ],
   // Verified against the live API: `title` and `shortDescription` are NOT
   // expandable on Spaces — the endpoint rejects them and enumerates what it
@@ -207,10 +200,40 @@ export class HfClient {
     }
 
     return {
-      records,
+      records: kind === "model" ? records.map(slimConfig) : records,
       nextCursor: parseNextCursor(response.headers.get("link")),
     };
   }
+}
+
+/**
+ * Keeps `config.model_type` and throws the rest of the config away.
+ *
+ * The whole config object is enormous and almost entirely useless to us. A
+ * quantized flagship carries a per-layer quantization block: measured over
+ * 12,000 models, the mean record is 4,507 bytes and the largest is 2.38 MB
+ * (`Karmation/NVIDIA-Nemotron-3-Ultra-550B-A55B-NVFP4`), and **17 of them
+ * exceed the 90,000-byte ceiling in `chunkByBytes` and are silently
+ * DISCARDED** with a console warning. Those 17 are precisely the models that
+ * would resolve to a named family — the NVFP4 and GPTQ builds of Nemotron,
+ * DeepSeek, Qwen3-Coder — and they never reach the table at all.
+ *
+ * Trimming here rather than dropping the expand entirely is what keeps the
+ * signal: `model_type` is the field the resolver reads, and it is 20-odd bytes
+ * of a 4,000-byte object. Mean record 4,507 -> ~490 bytes, largest 2.38 MB ->
+ * ~40 KB, records over the ceiling 17 -> 0.
+ *
+ * This is the ingest boundary, so everything downstream — the raw store, the
+ * byte chunker, the upsert — sees the trimmed record and nothing has to know.
+ */
+function slimConfig(record: HfRecord): HfRecord {
+  const config = (record as { config?: unknown }).config;
+  if (config == null || typeof config !== "object") return record;
+  const modelType = (config as { model_type?: unknown }).model_type;
+  return {
+    ...record,
+    config: typeof modelType === "string" ? { model_type: modelType } : {},
+  } as HfRecord;
 }
 
 async function safeText(response: Response): Promise<string> {

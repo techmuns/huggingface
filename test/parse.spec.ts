@@ -8,6 +8,7 @@ import {
   EMPTY_CURSORS,
   resolveModelFamilies,
 } from "../src/lib/model-family";
+import { MODEL_FAMILIES } from "../src/lib/taxonomy";
 import { parseRawModels, parseRawSpaces, upsertModels } from "../src/lib/parse";
 import { insertRawRecords } from "../src/lib/raw-store";
 
@@ -468,7 +469,12 @@ describe("resolveByArchitecture", () => {
     expect(row?.resolution_source).toBeNull();
   });
 
-  it("leaves a bespoke architecture unresolved rather than forcing a bucket", async () => {
+  it("never forces a bespoke architecture into a named family", async () => {
+    // The Hub carries hundreds of one-off model_types ("inkling_mm_model",
+    // "Gr00tN1d7"). None of them may be squeezed into one of the eight. It
+    // lands in "Other open models" — the brief's bucket for an open model that
+    // is none of the eight — rather than in Unresolved, which now means the
+    // one thing it should: that the row told us nothing at all.
     await upsertModels(
       DB,
       [{ id: "someone/bespoke", createdAt: "2026-08-17T00:00:00.000Z",
@@ -479,8 +485,9 @@ describe("resolveByArchitecture", () => {
 
     const row = await DB.prepare("SELECT family FROM hf_models WHERE repo_id = ?")
       .bind("someone/bespoke")
-      .first<{ family: string | null }>();
-    expect(row?.family).toBeNull();
+      .first<{ family: string }>();
+    expect(row?.family).toBe("other-open");
+    expect(MODEL_FAMILIES).toContain(row?.family);
   });
 
   it("prefers a declared parent over the architecture", async () => {
@@ -601,6 +608,59 @@ describe("resolveByArchitecture", () => {
       .bind("someone/StableDiffusion-1.4-Pruned")
       .first<{ family: string | null }>();
     expect(row?.family).toBeNull();
+  });
+
+  it("files a declared architecture we do not name under Other open, not Unresolved", async () => {
+    // The taxonomy is the stakeholder's and is not ours to extend, but it
+    // already has the bucket: `other-open` is "Other open models". A BERT is
+    // an open model that is none of the eight named families. 1,107 models in
+    // 12,000 were being published as Unresolved with the row saying plainly
+    // what they were.
+    await upsertModels(
+      DB,
+      [{ id: "someone/a-bert", createdAt: "2026-08-17T00:00:00.000Z",
+         tags: ["fill-mask"], config: { model_type: "bert" } }],
+      "2026-08-18T00:00:00.000Z",
+    );
+    await resolveModelFamilies(DB);
+
+    const row = await DB.prepare("SELECT family FROM hf_models WHERE repo_id = ?")
+      .bind("someone/a-bert")
+      .first<{ family: string }>();
+    expect(row?.family).toBe("other-open");
+  });
+
+  it("still leaves a model that declared nothing at all Unresolved", async () => {
+    await upsertModels(
+      DB,
+      [{ id: "someone/silent-thing", createdAt: "2026-08-17T00:00:00.000Z", tags: [] }],
+      "2026-08-18T00:00:00.000Z",
+    );
+    await resolveModelFamilies(DB);
+
+    const row = await DB.prepare("SELECT family, model_type FROM hf_models WHERE repo_id = ?")
+      .bind("someone/silent-thing")
+      .first<{ family: string | null; model_type: string | null }>();
+    expect(row?.model_type).toBeNull();
+    expect(row?.family).toBeNull();
+  });
+
+  it("lets the repo name win over an architecture we cannot name", async () => {
+    // The stamp is terminal for a reason: the name rung runs after the
+    // architecture rung, and a bespoke architecture must not take a model out
+    // of `family IS NULL` before its name has been read.
+    await upsertModels(
+      DB,
+      [{ id: "someone/Llama-3-experiment", createdAt: "2026-08-17T00:00:00.000Z",
+         tags: [], config: { model_type: "inkling_mm_model" } }],
+      "2026-08-18T00:00:00.000Z",
+    );
+    await resolveModelFamilies(DB);
+
+    const row = await DB.prepare("SELECT family, resolution_source FROM hf_models WHERE repo_id = ?")
+      .bind("someone/Llama-3-experiment")
+      .first<{ family: string; resolution_source: string }>();
+    expect(row).toMatchObject({ family: "llama", resolution_source: "name_pattern" });
   });
 
   it("but does keep a family's own image model", async () => {
