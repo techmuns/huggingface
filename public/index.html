@@ -711,7 +711,8 @@ details.method li { margin-bottom: 7px; max-width: 82ch; }
       <section class="card" role="tabpanel" id="sub-matrix" aria-labelledby="subtab-matrix" tabindex="-1" hidden>
         <header>
           <h2>Model family by use case</h2>
-          <p class="hint">Within each use case, the share of Spaces built on a given model family.</p>
+          <p class="hint">Within each use case, how the model families those Spaces name divide up.
+            A Space that names two families counts in both, and a Space that names none is outside the base.</p>
         </header>
         <div class="matrix-scroll" id="c-matrix"></div>
       </section>
@@ -869,6 +870,21 @@ const titleCase = s => LABELS[s] ?? String(s).replace(/[-_]/g, ' ')
 
 /* "Other" is a residual, not a rank — it sits last however large it is. */
 const RESIDUAL = new Set(['other', 'other-open', 'unknown', 'unresolved']);
+
+/* What each residual actually means. They are not interchangeable: "Other
+   open" is a POSITIVE result — a model that declared a parent we could not put
+   a name to — while "Unresolved" declared no lineage at all. A tile that names
+   one without saying which is which invites the reader to read both as
+   failures. */
+const RESIDUAL_NOTE = {
+  'other-open': 'Other open — an open model that declared a parent we could not name',
+  unknown: 'Unresolved — no lineage declared anywhere',
+  unresolved: 'Unresolved — no lineage declared anywhere',
+  other: 'Other — everything outside the named categories',
+};
+
+const joinWords = (xs) => xs.length < 2 ? (xs[0] ?? '')
+  : `${xs.slice(0, -1).join(', ')} and ${xs[xs.length - 1]}`;
 const byValueOtherLast = (a, b) =>
   (RESIDUAL.has(a.dimension) ? 1 : 0) - (RESIDUAL.has(b.dimension) ? 1 : 0) ||
   b.value - a.value;
@@ -1489,8 +1505,53 @@ function pickedIndexes(periods) {
   return hit.length ? hit : [periods.length - 1];
 }
 
-/** How the ranked list under a chart describes what it is counting. */
-function scopeLabel(periods) {
+/**
+ * How a part-period comparison describes itself.
+ *
+ * `behind[i]` measured weeks of column i are matched against the FIRST
+ * `behind[i]` weeks of column i-1. Where the earlier column holds no more
+ * measured weeks than that — always the case at week granularity — "the first
+ * 1 week of 10 Aug" IS the whole of 10 Aug, and wording it as a trim invents a
+ * restriction that never happened. Three places print this sentence; they all
+ * come through here so they cannot drift apart.
+ */
+function likeSpan(periods, i) {
+  const n = periods[i]?.behind ?? 0;
+  const prev = periods[i - 1];
+  if (!n || !prev) return null;
+  return { n, label: prev.label, whole: n >= (prev.behind ?? Infinity) };
+}
+
+/** The short form, for a figure that sits beside its own comparison. */
+function likeSuffix(periods, i) {
+  const s = likeSpan(periods, i);
+  if (!s) return null;
+  return s.whole
+    ? `against the whole of ${s.label}, so far`
+    : `against the first ${s.n} week${s.n === 1 ? '' : 's'} of ${s.label}, so far`;
+}
+
+/** The long form, for a footnote under a card. */
+function likeFootnote(periods, i, word) {
+  const s = likeSpan(periods, i);
+  if (!s) return '';
+  return s.whole
+    ? `This ${word} is still filling, so it is measured against the whole of ${s.label}.`
+    : `This ${word} is not finished, so it is measured against the first ${s.n} week${
+        s.n === 1 ? '' : 's'} of ${s.label} rather than against the whole of it.`;
+}
+
+/**
+ * How the ranked list under a chart describes what it is counting.
+ *
+ * The suffix names the arithmetic, not just the span: counts across several
+ * columns are added up, percentages are pooled by each column's own base, and
+ * a level reports the last one measured. Saying "added up" over a pooled share
+ * is the one wording that would make a reader mistrust a correct figure.
+ */
+const COMBINE_WORD = { count: 'added up', percent: 'pooled by size', level: 'last measured week' };
+
+function scopeLabel(periods, kind = null) {
   const idx = pickedIndexes(periods);
   if (!idx.length) return '';
   if (idx.length === 1) {
@@ -1501,7 +1562,8 @@ function scopeLabel(periods) {
       (state.picked.size || only ? ''
         : ` <span class="suppressed">&mdash; the latest ${esc(PERIOD_WORD[state.period])}</span>`);
   }
-  return esc(`${periods[idx[0]].label} to ${periods[idx[idx.length - 1]].label}, added up`);
+  const how = kind ? COMBINE_WORD[kind] : null;
+  return esc(`${periods[idx[0]].label} to ${periods[idx[idx.length - 1]].label}${how ? `, ${how}` : ''}`);
 }
 
 /* ── Sparkline ────────────────────────────────────────────────────────── */
@@ -2250,9 +2312,7 @@ function rankedBars(cols, { unit = '', chartId = '', whole = false } = {}) {
   // the only one. Repeating "no earlier period" down every row of the list
   // says the same thing fourteen times; the column simply goes away.
   const noComparison = !comparable && !prior.length;
-  const note = likeMode
-    ? `against the first ${periods[single].behind} week${periods[single].behind === 1 ? '' : 's'} of ${periods[single - 1].label}, so far`
-    : null;
+  const note = likeMode ? likeSuffix(periods, single) : null;
 
   const items = rows.map((r, k) => {
     const value = combine(r.values, r.denominators, idx, kind);
@@ -2451,7 +2511,13 @@ function renderCutPanel(elId, cut, { unit = '', chartId, extraNote = '', rows = 
   const form = formFor(whole, cols.periods);
   const notes = [];
   if (cols.hasGaps) notes.push(`A ${PERIOD_WORD[state.period]} nothing was measured in is a gap, not a zero.`);
-  if (!whole) {
+  // Two different reasons a cut is not stacked, and they must not be given the
+  // same sentence. Penetration rates (vertical, technique) share no total at
+  // all, so stacking them would invent one. The family-by-use-case cut does
+  // have a common base — every family named inside one use case — and its lines
+  // really do add to 100%; it stays unstacked because the reader is following
+  // one use case through time, not reading a composition.
+  if (!whole && cut !== CUTS.matrix) {
     notes.push(`One Space can be in several of these at once, so they are drawn ${
       form === 'group' ? 'side by side' : 'as separate lines'} rather than stacked — a stack would add up to a total that does not exist.`);
   }
@@ -2473,7 +2539,7 @@ function renderCutPanel(elId, cut, { unit = '', chartId, extraNote = '', rows = 
   list.className = 'ranked';
   list.innerHTML = `<div class="ranked-head">
       <h3>${esc(name)}</h3>
-      <span class="scope">${scopeLabel(cols.periods)}</span>
+      <span class="scope">${scopeLabel(cols.periods, cols.kind)}</span>
     </div>${rankedBars(cols, { unit, chartId, whole })}`;
   el.appendChild(list);
 }
@@ -2486,7 +2552,7 @@ const CUT_NAMES = {
   [CUTS.share]:    'Share of new Spaces',
   [CUTS.vertical]: 'Share of Spaces serving it',
   [CUTS.tech]:     'Share of Spaces using it',
-  [CUTS.matrix]:   'Share of the use case',
+  [CUTS.matrix]:   'Share of the families named',
   [CUTS.engage]:   'Engagement',
 };
 
@@ -2529,9 +2595,14 @@ function renderTiles() {
   // the panel below draws, so the tile and the chart cannot disagree.
   const uc = cutColumns(CUTS.usecase);
   const ucIdx = pickedIndexes(uc.periods);
+  // No `?? 0`: a category that was never measured is not a category that saw
+  // zero. Coercing null to 0 ties every row and the sort hands back row 0, so
+  // the tile would name a leader for a column the pipeline never ran while its
+  // three siblings correctly print an em dash.
   const leadRow = uc.rows
     .filter(r => !RESIDUAL.has(r.dimension))
-    .map(r => ({ dimension: r.dimension, value: combine(r.values, r.denominators, ucIdx, 'count') ?? 0 }))
+    .map(r => ({ dimension: r.dimension, value: combine(r.values, r.denominators, ucIdx, 'count') }))
+    .filter(r => r.value != null && r.value > 0)
     .sort((a, b) => b.value - a.value)[0];
   const lead = (() => {
     if (!leadRow) return { value: null, note: null };
@@ -2540,8 +2611,7 @@ function renderTiles() {
     let before = null, note = null;
     if (one > 0 && uc.periods[one].partial) {
       before = uc.like?.[k]?.[one] ?? null;
-      note = before == null ? null
-        : `against the first ${uc.periods[one].behind} week${uc.periods[one].behind === 1 ? '' : 's'} of ${uc.periods[one - 1].label}, so far`;
+      note = before == null ? null : likeSuffix(uc.periods, one);
     } else {
       const prior = priorBlock(ucIdx, uc.periods);
       if (prior.length && ![...prior, ...ucIdx].some(i => uc.periods[i].partial)) {
@@ -2554,9 +2624,17 @@ function renderTiles() {
   // Families that actually appear in the selection, not every family the
   // taxonomy knows about: "34 families" under a week that saw four is a count
   // of the taxonomy, not of the week.
+  //
+  // Residuals are excluded from the count for the same reason every chart and
+  // ranked list on the page excludes them: "Unresolved" is the absence of a
+  // family, and counting it as one turned 8 into 10 in every period. They are
+  // named underneath instead of dropped, because a bare 8 would silently write
+  // off the 16,774 models sitting in "Other open".
   const fam = cutColumns(CUTS.family);
   const famIdx = pickedIndexes(fam.periods);
-  const famCount = fam.rows.filter(r => (combine(r.values, r.denominators, famIdx, 'count') ?? 0) > 0).length;
+  const famSeen = fam.rows.filter(r => (combine(r.values, r.denominators, famIdx, 'count') ?? 0) > 0);
+  const famCount = famSeen.filter(r => !RESIDUAL.has(r.dimension)).length;
+  const famRest = famSeen.filter(r => RESIDUAL.has(r.dimension)).map(r => r.dimension);
 
   const openTail = periods.length && periods[periods.length - 1].partial;
   const spark = (row) => sparkline(row.values, { provisional: openTail });
@@ -2566,6 +2644,15 @@ function renderTiles() {
   const idxNow = pickedIndexes(periods);
   const scope = idxNow.length === 1 ? periods[idxNow[0]].label
     : `${periods[idxNow[0]].label}–${periods[idxNow[idxNow.length - 1]].label}`;
+
+  // /api/coverage is per-week and always describes the newest week on screen.
+  // Printed under a quarter's numerator it read "70% · 613 by rule · 1,608 by
+  // LLM" — 2,221 rows, one week, beneath 14,715. There is no multi-week
+  // substitute to splice in, so the split only appears where it is true of the
+  // figure above it: one week, and that week.
+  const bySourceFits = !!coverage && idxNow.length === 1 &&
+    (periods[idxNow[0]].weeks || []).length === 1 &&
+    periods[idxNow[0]].weeks[0] === coverageWeek;
 
   document.getElementById('tiles').innerHTML = `
     <div class="tile">
@@ -2577,7 +2664,11 @@ function renderTiles() {
     <div class="tile">
       <div class="label">New Models</div>
       <div class="value">${num(models)}</div>
-      <div class="sub">${famCount} famil${famCount === 1 ? 'y' : 'ies'} &middot; ${esc(scope)}</div>
+      <div class="sub">${famCount} named famil${famCount === 1 ? 'y' : 'ies'} &middot; ${esc(scope)}</div>
+      ${famRest.length
+        ? `<div class="sub" title="${esc(famRest.map(d => RESIDUAL_NOTE[d] ?? titleCase(d)).join('. '))}">plus ${
+            esc(joinWords(famRest.map(titleCase)))}</div>`
+        : ''}
       ${spark(rolled[2])}
     </div>
     <div class="tile">
@@ -2591,7 +2682,7 @@ function renderTiles() {
     <div class="tile">
       <div class="label">Coverage</div>
       <div class="value">${cover == null ? '—' : Math.round(cover) + '%'}</div>
-      <div class="sub">${coverage
+      <div class="sub">${bySourceFits
         ? `${num(coverage.bySource?.rule ?? 0)} by rule &middot; ${num(coverage.bySource?.model ?? 0)} by LLM`
         : 'of new Spaces classified'}</div>
       ${sparkline(periods.map((_, i) => {
@@ -2705,9 +2796,7 @@ function renderMovers() {
     <div><h3>Grew</h3>${list(up, 'Nothing grew.')}</div>
     <div><h3>Shrank</h3>${list(down, 'Nothing shrank.')}</div>
   </div>${likeMode
-    ? `<p class="chart-note">○ This ${esc(word)} is not finished, so it is measured against the first ${
-        esc(String(cols.periods[one].behind))} week${cols.periods[one].behind === 1 ? '' : 's'} of ${
-        esc(cols.periods[one - 1].label)} rather than against the whole of it.</p>`
+    ? `<p class="chart-note">○ ${esc(likeFootnote(cols.periods, one, word))}</p>`
     : ''}`;
 }
 
@@ -2909,7 +2998,13 @@ async function renderMatrix() {
   // weeks from the main one if the two were fetched either side of a run.
   renderCutPanel('c-matrix', CUTS.matrix, {
     unit: '%', chartId: 'matrix', rows, payload: matrixSeries,
-    extraNote: `Each line is the share of ${titleCase(uc)} Spaces built on that family.`,
+    // The pipeline divides by the family MENTIONS inside a use case, not by
+    // the Spaces in it (aggregate.ts, familyShareByUseCase): model_families is
+    // multi-label, so a Space naming two families adds two to the base, and a
+    // Space naming none adds nothing. "Share of Chat / assistant Spaces" read
+    // as 365 when the real base was 186.
+    extraNote: `Each line is that family's share of every family named by ${titleCase(uc)} Spaces. ` +
+      `A Space naming two families counts in both; one naming none is not in the base.`,
   });
 }
 
@@ -2945,7 +3040,7 @@ function renderMatrixGrid(el) {
   const grid = ucs.map(uc => fams.map(f => cell(uc, f)));
   const max = Math.max(...grid.flat().filter(Boolean).map(m => m.value), 0) || 1;
 
-  setHTML(el, `<p class="hint" style="margin-bottom:12px">${scopeLabel(periods)}.</p>
+  setHTML(el, `<p class="hint" style="margin-bottom:12px">${scopeLabel(periods, 'percent')}.</p>
     <table>
     <thead><tr><th>Use case</th>${fams.map(f => `<th>${esc(titleCase(f))}</th>`).join('')}</tr></thead>
     <tbody>${ucs.map((uc, r) => `<tr><td>${esc(titleCase(uc))}</td>${fams.map((f, c) => {
@@ -2955,8 +3050,8 @@ function renderMatrixGrid(el) {
       const a = 0.10 + (m.value / max) * 0.62;
       const label = m.suppressed ? `${Math.round(m.value)}%*` : `${Math.round(m.value)}%`;
       return `<td><span class="cell" style="background:color-mix(in srgb, var(--series) ${(a * 100).toFixed(0)}%, transparent)"
-        title="${esc(titleCase(uc))} · ${esc(titleCase(f))}: ${m.value.toFixed(1)}% of ${num(m.denominator)}${
-        m.suppressed ? ' — base too small' : ''}">${label}</span></td>`;
+        title="${esc(titleCase(uc))} · ${esc(titleCase(f))}: ${m.value.toFixed(1)}% of ${
+        num(m.denominator)} families named${m.suppressed ? ' — base too small' : ''}">${label}</span></td>`;
     }).join('')}</tr>`).join('')}</tbody></table>
     <p class="hint" style="margin-top:12px">* too few Spaces behind this figure to call it a trend &mdash; shown for completeness.</p>`);
 }
