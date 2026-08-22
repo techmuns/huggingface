@@ -443,3 +443,82 @@ describe("/api/use-case-spaces", () => {
     expect(res.status).toBe(405);
   });
 });
+
+// ── a selection that is not one unbroken span ───────────────────────────────
+
+describe("/api/use-case-spaces honours the exact weeks", () => {
+  async function seedThreeWeeks() {
+    const rows: Array<[string, string, number]> = [
+      ["a/w1-liked", "2026-08-03T01:00:00.000Z", 10],
+      ["a/w1-quiet", "2026-08-03T02:00:00.000Z", 0],
+      ["a/w2-liked", "2026-08-10T01:00:00.000Z", 20],
+      ["a/w2-quiet", "2026-08-10T02:00:00.000Z", 0],
+      ["a/w3-liked", "2026-08-17T01:00:00.000Z", 30],
+      ["a/w3-quiet", "2026-08-17T02:00:00.000Z", 0],
+    ];
+    await DB.batch(rows.map(([id, created, likes]) =>
+      DB.prepare(
+        `INSERT INTO hf_spaces (space_id, author, created_at, last_modified, likes, title,
+           sdk, tags, linked_models, linked_datasets, is_cluster_primary, first_seen_at, updated_at)
+         VALUES (?1,'a',?2,?2,?3,?4,'gradio','[]','[]','[]',1,?2,?2)`,
+      ).bind(id, created, likes, id)));
+    await DB.batch(rows.map(([id, created]) =>
+      DB.prepare(
+        `INSERT INTO hf_classifications (space_id, taxonomy_version, primary_use_case,
+           verticals, model_families, technologies, source_kind, source_ref, classified_at)
+         VALUES (?1, ?2, 'coding', '[]', '[]', '[]', 'rule', 'r1', ?3)`,
+      ).bind(id, TAXONOMY_VERSION, created)));
+  }
+  const get = (q: string) => SELF.fetch(`http://localhost/api/use-case-spaces?${q}`);
+
+  it("skips a week inside the span that was not picked", async () => {
+    // The defect: from/to describes a RANGE, and a reader can pick two periods
+    // with a third between them. Without this the card counted the third and
+    // reported more Spaces than the bars it was opened from.
+    await seedThreeWeeks();
+    const span = "useCase=coding&from=2026-08-03&to=2026-08-24";
+    const all = (await (await get(span)).json()) as UseCaseSpacesResponse;
+    expect(all.total).toBe(6);
+
+    const picked = (await (await get(`${span}&weeks=2026-08-03,2026-08-17`)).json()) as UseCaseSpacesResponse;
+    expect(picked.total).toBe(4);
+    expect(picked.withTraction).toBe(2);
+    expect(picked.spaces.map((s) => s.spaceId)).toEqual(["a/w3-liked", "a/w1-liked"]);
+  });
+
+  it("applies the same filter to the count and to the list", async () => {
+    // A denominator over one span and rows over another is the defect wearing
+    // a different hat.
+    await seedThreeWeeks();
+    const d = (await (await get(
+      "useCase=coding&from=2026-08-03&to=2026-08-24&weeks=2026-08-10",
+    )).json()) as UseCaseSpacesResponse;
+    expect(d.total).toBe(2);
+    expect(d.withTraction).toBe(1);
+    expect(d.spaces).toHaveLength(1);
+    expect(d.spaces[0]!.spaceId).toBe("a/w2-liked");
+  });
+
+  it("echoes the weeks so a caller can see they were honoured", async () => {
+    await seedThreeWeeks();
+    const d = (await (await get(
+      "useCase=coding&from=2026-08-03&to=2026-08-24&weeks=2026-08-03,2026-08-17",
+    )).json()) as UseCaseSpacesResponse & { weeks: string[] | null };
+    expect(d.weeks).toEqual(["2026-08-03", "2026-08-17"]);
+  });
+
+  it("behaves exactly as before when weeks is omitted", async () => {
+    await seedThreeWeeks();
+    const d = (await (await get("useCase=coding&from=2026-08-03&to=2026-08-24")).json()) as
+      UseCaseSpacesResponse & { weeks: string[] | null };
+    expect(d.weeks).toBeNull();
+    expect(d.total).toBe(6);
+  });
+
+  it("rejects a malformed or oversized weeks list", async () => {
+    expect((await get("useCase=coding&from=2026-08-03&to=2026-08-24&weeks=")).status).toBe(400);
+    expect((await get("useCase=coding&from=2026-08-03&to=2026-08-24&weeks=03-08-2026")).status).toBe(400);
+    const many = Array.from({ length: 161 }, (_, i) => `2026-01-${String((i % 28) + 1).padStart(2, "0")}`).join(",");
+    expect((await get(`useCase=coding&from=2026-08-03&to=2026-08-24&weeks=${many}`)).status).toBe(400);
+  });
+});

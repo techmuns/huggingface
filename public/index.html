@@ -2340,9 +2340,17 @@ function pickPeriod(periods, i, extend) {
       return;
     }
   }
-  if (state.picked.has(p.key)) state.picked.delete(p.key);
-  else state.picked.add(p.key);
-  pickAnchor = p.key;
+  // The page says "Click a column to look at just that week; shift-click a
+  // second one to take the range between them." It did not mean it: a plain
+  // click TOGGLED, so a second one gave you two columns rather than the one
+  // you asked for — and if they were not adjacent, every figure below became a
+  // reading of a span the reader never picked.
+  //
+  // Clicking the one column already picked clears the selection, which is the
+  // only other thing a plain click could reasonably mean.
+  const only = state.picked.size === 1 && state.picked.has(p.key);
+  state.picked = only ? new Set() : new Set([p.key]);
+  pickAnchor = only ? null : p.key;
   afterPick();
 }
 
@@ -2535,6 +2543,13 @@ function drillWindow(periods) {
     // Exclusive, and the Monday AFTER the last week — a period's own bounds,
     // handed over without arithmetic at the other end.
     to: new Date(last.getTime() + 7 * 86400000).toISOString().slice(0, 10),
+    // The weeks THEMSELVES, because from/to is a span and a selection is not
+    // always one. Two months picked with a third between them would otherwise
+    // have counted the third: the card would report more Spaces than the bars
+    // it was opened from, and nothing on screen would say why. A shared link
+    // can carry any set of keys, so this survives even now that a plain click
+    // picks a single column.
+    weeks: sorted,
   };
 }
 
@@ -2568,14 +2583,15 @@ async function renderDrill(cols) {
   document.getElementById('drill-title').textContent =
     `${titleCase(state.drill)} — the Spaces behind it`;
 
-  const key = `${state.drill}|${win.from}|${win.to}`;
+  const key = `${state.drill}|${win.weeks.join(',')}`;
   const seq = ++drillSeq;
   if (!drillCache.has(key)) {
     setHTML(host, '<p class="empty">Loading…</p>');
     try {
       drillCache.set(key, await getJSON(
         `/api/use-case-spaces?useCase=${encodeURIComponent(state.drill)}` +
-        `&from=${win.from}&to=${win.to}&limit=20`));
+        `&from=${win.from}&to=${win.to}&limit=20` +
+        `&weeks=${encodeURIComponent(win.weeks.join(','))}`));
     } catch {
       if (seq === drillSeq) setHTML(host, '<p class="empty">That list could not be loaded just now.</p>');
       return;
@@ -2591,7 +2607,7 @@ async function renderDrill(cols) {
   // Space in the period that anyone noticed at all.
   const preamble = `<p class="hint" style="margin-bottom:14px">
     <b>${num(data.withTraction)}</b> of <b>${num(data.total)}</b> new
-    ${esc(titleCase(state.drill))} Spaces in this selection have a single like${
+    ${esc(titleCase(state.drill))} Spaces in this selection were liked by anyone at all${
       share == null ? '' : ` — ${share.toFixed(1)}%`}.
     Likes are recorded when we first see a Space, in the hours after it is created, so this is
     which ones got noticed fastest rather than which are most popular today.
@@ -2824,6 +2840,10 @@ function renderCutPanel(elId, cut, { unit = '', chartId, extraNote = '', rows = 
   }
 
   if (state.table) {
+    // The table has no ranked list to have opened a drill-down from, and the
+    // card would keep the last selection's figures. state.drill is left alone,
+    // so toggling back restores it.
+    if (cut === CUTS.usecase) hideDrillCard();
     setHTML(el, periodTable(cols, { unit, name, whole }));
     wireTableHeads(el, cols.periods);
     return;
@@ -2881,6 +2901,21 @@ function renderCutPanel(elId, cut, { unit = '', chartId, extraNote = '', rows = 
     });
     renderDrill(cols);
   }
+}
+
+/**
+ * The drill card belongs to the ranked use-case list and to nothing else.
+ *
+ * It used to be left on screen by whatever last put it there: switching to
+ * Industry left a list of Chat / assistant Spaces sitting under a chart about
+ * industries, and switching to the Table left it showing the previous
+ * selection's figures, because renderCutPanel returns before the drill wiring
+ * in table mode. A card that outlives the thing that opened it is a card a
+ * reader will read as belonging to what is now underneath it.
+ */
+function hideDrillCard() {
+  const card = document.getElementById('usecase-drill-card');
+  if (card) card.hidden = true;
 }
 
 /** What the figures in a cut ARE, in words, for the table and the list header. */
@@ -3014,7 +3049,11 @@ function renderTiles() {
       <div class="label">Leading use case</div>
       <div class="value word">${leadRow ? esc(titleCase(leadRow.dimension)) : '—'}</div>
       <div class="sub">${leadRow
-        ? delta(lead.value, { reason: 'no comparable period', note: lead.note }) + ` ${esc(word)} on ${esc(word)}`
+        ? delta(lead.value, { reason: 'no comparable period', note: lead.note })
+          // The suffix names the comparison; with no comparison there is
+          // nothing to name, and under All time PERIOD_WORD is "period", so it
+          // read "no comparable period period on period".
+          + (lead.value == null ? '' : ` ${esc(word)} on ${esc(word)}`)
         : ''}</div>
       ${leadSeries ? sparkline(leadSeries.values, { provisional: openTail }) : ''}
     </div>
@@ -3478,6 +3517,9 @@ function renderAll() {
 
   if (printing) { renderEveryPanel(); return; }
 
+  // Every tab that is not the use-case panel: the card is not theirs.
+  if (!(state.tab === 'build' && state.sub.build === 'usecase' && !state.table)) hideDrillCard();
+
   if (state.tab === 'overview') {
     renderTiles();
     renderHeadline();
@@ -3489,7 +3531,7 @@ function renderAll() {
 
   if (state.tab === 'build') {
     if (state.sub.build === 'usecase') renderCutPanel('c-usecase', CUTS.usecase, { chartId: 'usecase' });
-    else renderCutPanel('c-vertical', CUTS.vertical, { unit: '%', chartId: 'vertical' });
+    else { hideDrillCard(); renderCutPanel('c-vertical', CUTS.vertical, { unit: '%', chartId: 'vertical' }); }
     return;
   }
 
@@ -3736,6 +3778,14 @@ function changeAgainstPrevious(cut, period) {
       // one of those two numbers tells a reader how much of the mix moved.
       points: value != null && prev != null ? value - prev : null,
       growth: value != null && prev ? ((value - prev) / prev) * 100 : null,
+      // Three different reasons a ratio is missing, and they are not the same
+      // sentence. A technique that went from nothing to something HAS an
+      // earlier period — it was zero — and saying "no earlier period" beside
+      // "+0.3 pts" in the same cell is the page contradicting itself. Long
+      // context on the live database is exactly this case.
+      reason: prev == null ? 'no earlier period'
+        : prev === 0 ? (value ? 'new' : 'nothing either period')
+        : null,
       suppressed: !!(r.suppressed?.[now] && r.suppressed?.[before]),
     };
   });
@@ -3791,8 +3841,13 @@ function renderTechChange() {
     const pts = r.points == null || Math.abs(r.points) < 0.05 ? '' :
       `<span class="suppressed" style="font-size:12px">${
         r.points >= 0 ? '+' : '\u2212'}${Math.abs(r.points).toFixed(1)} pts</span>`;
+    // 'new' is a statement, not a failed comparison, so it is not greyed out
+    // the way a missing figure is.
+    const change = r.growth != null ? delta(r.growth)
+      : r.reason === 'new' ? '<span class="delta up">new</span>'
+      : delta(null, { reason: r.reason ?? 'no earlier period' });
     return `<td>${esc(exact(r.value, '%'))}${r.suppressed ? '*' : ''}</td>
-      <td>${delta(r.growth, { reason: 'no earlier period' })} ${pts}</td>`;
+      <td>${change} ${pts}</td>`;
   };
 
   // Named, not "this week": the newest week on screen is usually still
