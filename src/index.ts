@@ -751,6 +751,11 @@ const EXPECTED_COLUMNS: ReadonlyArray<[table: string, column: string]> = [
   ["hf_models", "card_base_model"], // 0002_model_card_base
   ["hf_models", "model_type"],      // 0003_model_config_type (free ADD COLUMN)
   ["hf_runs", "instance_id"],       // 0004_run_registry
+  // 0006_insights. A whole missing TABLE fails the same zero-row SELECT, so
+  // one entry covers it. 0005 is an index and is deliberately not here: its
+  // absence makes the drill-down slower, not wrong, and a gate that stops a
+  // run over a performance regression is a gate people learn to ignore.
+  ["hf_insights", "narrative"],
 ];
 
 /**
@@ -883,20 +888,34 @@ async function handleInsights(request: Request, env: Env, url: URL): Promise<Res
   const kinds: Array<"week" | "month"> = kind ? [kind] : ["week", "month"];
   const out: Record<string, unknown[]> = {};
   for (const k of kinds) {
-    const rows = await env.DB.prepare(
-      `SELECT kind, period_key, week_start, narrative, facts, status, detail,
-              model_id, prompt_version, generated_at
-         FROM hf_insights
-        WHERE kind = ?1 AND taxonomy_version = ?2
-        ORDER BY period_key DESC
-        LIMIT ?3`,
-    )
-      .bind(k, TAXONOMY_VERSION, limit)
-      .all<{
-        kind: string; period_key: string; week_start: string | null;
-        narrative: string; facts: string; status: string; detail: string | null;
-        model_id: string | null; prompt_version: string | null; generated_at: string;
-      }>();
+    // A pending migration must not turn this into a 500. It answers with an
+    // empty list and says WHY, because the alternative — an empty list and
+    // nothing else — is exactly how /api/narrative spent weeks looking like a
+    // feature nobody had built. See migrations/0006.
+    let rows;
+    try {
+      rows = await env.DB.prepare(
+        `SELECT kind, period_key, week_start, narrative, facts, status, detail,
+                model_id, prompt_version, generated_at
+           FROM hf_insights
+          WHERE kind = ?1 AND taxonomy_version = ?2
+          ORDER BY period_key DESC
+          LIMIT ?3`,
+      )
+        .bind(k, TAXONOMY_VERSION, limit)
+        .all<{
+          kind: string; period_key: string; week_start: string | null;
+          narrative: string; facts: string; status: string; detail: string | null;
+          model_id: string | null; prompt_version: string | null; generated_at: string;
+        }>();
+    } catch (err) {
+      return Response.json({
+        taxonomyVersion: TAXONOMY_VERSION,
+        week: [], month: [],
+        unavailable: "This deployment has no insights table yet — migrations/0006 has not been applied.",
+        detail: err instanceof Error ? err.message : String(err),
+      });
+    }
 
     out[k] = (rows.results ?? []).map((r) => ({
       kind: r.kind,

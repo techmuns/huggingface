@@ -368,18 +368,30 @@ export class WeeklyPipeline extends WorkflowEntrypoint<Env, WeeklyPipelineParams
     const insights: Array<{ kind: InsightKind; periodKey: string; status: string; detail: string | null }> = [];
     for (const period of insightPeriods) {
       const written = await step.do(`insight-${period.kind}-${period.periodKey}`, PAGE_RETRY, async () => {
-        const pack = await buildFactPack(this.env.DB, period);
-        const result: InsightResult = await generateInsight(
-          bedrockNarrate,
-          this.env.BEDROCK_NARRATE_MODEL_ID,
-          pack,
-        );
-        await saveInsight(this.env.DB, result, {
-          weekStart: period.kind === "week" ? config.weekStart : null,
-          modelId: this.env.BEDROCK_NARRATE_MODEL_ID,
-          generatedAt: new Date().toISOString(),
-        });
-        return { kind: result.kind, periodKey: result.periodKey, status: result.status, detail: result.detail };
+        // Non-fatal, for the same reason the snapshot step is: by the time this
+        // runs the week is DONE — Phase 7 has written hf_weekly_metrics and the
+        // dashboard is already serving the new figures. A summary that could
+        // not be written is a missing paragraph, not a failed pipeline, and a
+        // pending migration must not be able to report four hours of correct
+        // work as a failure.
+        try {
+          const pack = await buildFactPack(this.env.DB, period);
+          const result: InsightResult = await generateInsight(
+            bedrockNarrate,
+            this.env.BEDROCK_NARRATE_MODEL_ID,
+            pack,
+          );
+          await saveInsight(this.env.DB, result, {
+            weekStart: period.kind === "week" ? config.weekStart : null,
+            modelId: this.env.BEDROCK_NARRATE_MODEL_ID,
+            generatedAt: new Date().toISOString(),
+          });
+          return { kind: result.kind, periodKey: result.periodKey, status: result.status, detail: result.detail };
+        } catch (err) {
+          const reason = err instanceof Error ? err.message : String(err);
+          console.error(`insight ${period.kind} ${period.periodKey} failed: ${reason}`);
+          return { kind: period.kind, periodKey: period.periodKey, status: "error", detail: reason };
+        }
       });
       insights.push(written);
     }

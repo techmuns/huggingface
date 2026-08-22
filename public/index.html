@@ -3606,6 +3606,17 @@ async function renderInsights() {
     return;
   }
 
+  // A deployment whose migration has not been applied answers 200 with empty
+  // lists. Saying so is the whole lesson of the summary card that spent weeks
+  // hiding itself: an empty list and no explanation is indistinguishable from
+  // a feature nobody has built.
+  if (insightData?.unavailable) {
+    setHTML(weekEl, `<p class="empty">${esc(insightData.unavailable)}</p>`);
+    setHTML(monthEl, '');
+    setHTML(histEl, '');
+    return;
+  }
+
   const weeks = insightData?.week || [];
   const months = insightData?.month || [];
 

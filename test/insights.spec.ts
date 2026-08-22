@@ -416,3 +416,39 @@ describe("/api/narrative", () => {
     expect(res.status).not.toBe(200);
   });
 });
+
+// ── a pending migration ─────────────────────────────────────────────────────
+
+describe("a deployment whose migration has not been applied", () => {
+  it("answers with empty lists and says why, rather than a 500", async () => {
+    // The lesson of /api/narrative, which spent weeks answering not_found for
+    // every week on record while the card hid itself. An empty list with no
+    // explanation is indistinguishable from a feature nobody has built.
+    await DB.prepare("DROP TABLE hf_insights").run();
+    try {
+      const res = await SELF.fetch("http://localhost/api/insights");
+      expect(res.status).toBe(200);
+      const d = (await res.json()) as { week: unknown[]; month: unknown[]; unavailable?: string };
+      expect(d.week).toEqual([]);
+      expect(d.month).toEqual([]);
+      expect(d.unavailable).toMatch(/0006/);
+    } finally {
+      await DB.exec(
+        "CREATE TABLE IF NOT EXISTS hf_insights (id INTEGER PRIMARY KEY, kind TEXT NOT NULL CHECK (kind IN ('week','month')), period_key TEXT NOT NULL, week_start TEXT, taxonomy_version TEXT NOT NULL, narrative TEXT NOT NULL, facts TEXT NOT NULL DEFAULT '[]' CHECK (json_valid(facts)), status TEXT NOT NULL DEFAULT 'ok' CHECK (status IN ('ok','ungrounded','insufficient','error')), detail TEXT, model_id TEXT, prompt_version TEXT, input_tokens INTEGER, output_tokens INTEGER, generated_at TEXT NOT NULL, UNIQUE (kind, period_key, taxonomy_version)) STRICT",
+      );
+    }
+  });
+
+  it("is caught by the schema gate before a run spends anything", async () => {
+    const { missingColumns } = await import("../src/index");
+    await DB.prepare("DROP TABLE hf_insights").run();
+    try {
+      const missing = await missingColumns(DB, [["hf_insights", "narrative"]]);
+      expect(missing).toEqual(["hf_insights.narrative"]);
+    } finally {
+      await DB.exec(
+        "CREATE TABLE IF NOT EXISTS hf_insights (id INTEGER PRIMARY KEY, kind TEXT NOT NULL CHECK (kind IN ('week','month')), period_key TEXT NOT NULL, week_start TEXT, taxonomy_version TEXT NOT NULL, narrative TEXT NOT NULL, facts TEXT NOT NULL DEFAULT '[]' CHECK (json_valid(facts)), status TEXT NOT NULL DEFAULT 'ok' CHECK (status IN ('ok','ungrounded','insufficient','error')), detail TEXT, model_id TEXT, prompt_version TEXT, input_tokens INTEGER, output_tokens INTEGER, generated_at TEXT NOT NULL, UNIQUE (kind, period_key, taxonomy_version)) STRICT",
+      );
+    }
+  });
+});
