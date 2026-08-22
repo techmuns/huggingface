@@ -310,6 +310,22 @@ button.bar-row:focus-visible { outline: 2px solid var(--series); outline-offset:
 .bar-row.open { background: color-mix(in srgb, var(--series) 10%, transparent); }
 .bar-row.open .bar-label { font-weight: 600; }
 
+.insight-cols { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(380px, 100%), 1fr)); gap: 18px; }
+.insight-body p { margin: 0 0 12px; max-width: 74ch; line-height: 1.62; }
+.insight-body p:last-child { margin-bottom: 0; }
+.insight-meta { font-size: 12px; color: var(--ink-muted); margin-top: 14px; }
+.insight-facts { margin-top: 10px; }
+.insight-facts summary { cursor: pointer; font-size: 12.5px; color: var(--ink-2); }
+.insight-facts summary:hover { text-decoration: underline; }
+.insight-facts table { margin-top: 10px; font-size: 12.5px; }
+.insight-facts td:first-child { color: var(--ink-muted); white-space: nowrap; padding-right: 14px; }
+.insight-facts td { padding: 3px 0; vertical-align: top; }
+.insight-facts .fnum { font-variant-numeric: tabular-nums; white-space: nowrap; padding-left: 14px; }
+.insight-item { padding: 14px 0; border-top: 1px solid var(--grid); }
+.insight-item:first-child { border-top: 0; padding-top: 0; }
+.insight-item h3 { font-size: 13px; font-weight: 600; margin: 0 0 8px; }
+.insight-none { color: var(--ink-muted); font-size: 13.5px; line-height: 1.6; max-width: 74ch; }
+
 .drill-list { display: grid; gap: 2px; }
 .drill-row {
   display: grid; grid-template-columns: 56px 1fr; gap: 12px; align-items: baseline;
@@ -555,6 +571,7 @@ details.method li { margin-bottom: 7px; max-width: 82ch; }
 
   <nav class="tabs" role="tablist" aria-label="Dashboard sections">
     <button role="tab" id="tab-overview"   data-tab="overview"   aria-selected="true"  aria-controls="panel-overview">Overview</button>
+    <button role="tab" id="tab-insights"   data-tab="insights"   aria-selected="false" aria-controls="panel-insights"   tabindex="-1">Insights</button>
     <button role="tab" id="tab-trends"     data-tab="trends"     aria-selected="false" aria-controls="panel-trends"     tabindex="-1">Trends</button>
     <button role="tab" id="tab-build"      data-tab="build"      aria-selected="false" aria-controls="panel-build"      tabindex="-1">What they build</button>
     <button role="tab" id="tab-tech"       data-tab="tech"       aria-selected="false" aria-controls="panel-tech"       tabindex="-1">How they build</button>
@@ -669,6 +686,41 @@ details.method li { margin-bottom: 7px; max-width: 82ch; }
           <dt>Share of the mix</dt><dd>Out of everything counted in that period, the slice this category took.</dd>
         </dl>
       </details>
+    </section>
+
+    <!-- ── Insights ─────────────────────────────────────────────────── -->
+    <section role="tabpanel" id="panel-insights" aria-labelledby="tab-insights" tabindex="-1" hidden>
+      <p class="panel-intro">What changed, in words. Written each week from the same figures the rest of
+        this dashboard draws &mdash; and written in a way that makes inventing one impossible: the model
+        is given a numbered list of facts and writes about them by reference, never by typing a number.
+        Every figure below was substituted in afterwards, and you can open the facts under any summary
+        to see exactly which one each came from.</p>
+
+      <div class="insight-cols">
+        <section class="card">
+          <header>
+            <h2>This week</h2>
+            <p class="hint" id="insight-week-hint">The most recent week the pipeline finished.</p>
+          </header>
+          <div id="c-insight-week"></div>
+        </section>
+
+        <section class="card">
+          <header>
+            <h2>This month</h2>
+            <p class="hint" id="insight-month-hint">Written once a month closes, never part-way through it.</p>
+          </header>
+          <div id="c-insight-month"></div>
+        </section>
+      </div>
+
+      <section class="card">
+        <header>
+          <h2>Earlier</h2>
+          <p class="hint">Every summary still on record, newest first.</p>
+        </header>
+        <div id="c-insight-history"></div>
+      </section>
     </section>
 
     <!-- ── Trends ───────────────────────────────────────────────────── -->
@@ -3400,6 +3452,7 @@ function renderAll() {
     renderMovers();
     return;
   }
+  if (state.tab === 'insights') { renderInsights(); return; }
   if (state.tab === 'trends') { renderTrendsTab(); return; }
 
   if (state.tab === 'build') {
@@ -3430,6 +3483,7 @@ function renderAll() {
  */
 function renderEveryPanel() {
   renderTiles();
+  renderInsights();
   renderHeadline();
   renderMovers();
   renderTrendsTab();
@@ -3443,6 +3497,131 @@ function renderEveryPanel() {
   // line, so the grid is only drawn once the payload is to hand.
   if (matrixSeries) renderMatrixGrid(document.getElementById('c-matrix'));
   renderEngagement(document.getElementById('c-engagement'));
+}
+
+/* ── Insights ─────────────────────────────────────────────────────────── */
+
+let insightData = null;
+let insightPending = null;
+let insightFailed = false;
+
+const PERIOD_NAME = (kind, key) => {
+  if (kind === 'month') {
+    const [y, m] = key.split('-');
+    return `${MONTHS_LONG[Number(m) - 1]} ${y}`;
+  }
+  return longWeek(key);
+};
+
+/** Why a period has no summary, in the reader's terms rather than a status code. */
+const WHY_NONE = {
+  ungrounded: 'The summary for this period was withheld. The model would not keep every figure tied to the data it was given, and a summary that is quietly wrong is worse than none.',
+  insufficient: 'There was not enough measured in this period to write about. That is usually a run that did not finish, rather than a quiet week.',
+  error: 'The summary could not be generated for this period.',
+};
+
+function insightCard(entry, { heading = true } = {}) {
+  if (!entry) {
+    return `<p class="insight-none">Nothing written for this period yet.</p>`;
+  }
+  const title = heading
+    ? `<h3>${esc(PERIOD_NAME(entry.kind, entry.periodKey))}</h3>` : '';
+  if (entry.status !== 'ok' || !entry.narrative) {
+    return `${title}<p class="insight-none">${esc(WHY_NONE[entry.status] || WHY_NONE.error)}${
+      entry.detail ? ` (${esc(entry.detail)})` : ''}</p>`;
+  }
+
+  const facts = Array.isArray(entry.facts) ? entry.facts : [];
+  const fmt = (f, v) => v == null ? '—'
+    : f.unit === 'percent' ? `${v.toFixed(1)}%` : num(Math.round(v));
+
+  // The facts are the point, not a footnote: they are what makes a sentence in
+  // the paragraph above checkable rather than merely plausible.
+  // Every slot the prose was allowed to cite gets a column. A figure that
+  // appears in a paragraph and nowhere in this table would be exactly the
+  // unverifiable number the whole design exists to prevent — "+1.1 points" was
+  // in the prose and missing here until a test went looking for it.
+  const anyPts = facts.some(f => f.changePts != null);
+  const anyDen = facts.some(f => f.denominator != null);
+  const factTable = facts.length ? `<details class="insight-facts">
+    <summary>The ${facts.length} facts this was written from &mdash; every figure above is one of these</summary>
+    <div class="table-scroll"><table>
+      <thead><tr><th>Fact</th><th>What</th><th>Figure</th><th>Before</th><th>Change</th>${
+        anyPts ? '<th>In points</th>' : ''}${anyDen ? '<th>Out of</th>' : ''}</tr></thead>
+      <tbody>${facts.map(f => `<tr>
+        <td>${esc(f.id)}</td>
+        <td>${esc(f.what)}</td>
+        <td class="fnum">${esc(fmt(f, f.value))}</td>
+        <td class="fnum">${esc(fmt(f, f.prev))}</td>
+        <td class="fnum">${f.changePct == null ? '—' : delta(f.changePct)}</td>
+        ${anyPts ? `<td class="fnum">${f.changePts == null ? '—'
+          : esc(`${f.changePts >= 0 ? '+' : '\u2212'}${Math.abs(f.changePts).toFixed(1)} points`)}</td>` : ''}
+        ${anyDen ? `<td class="fnum">${f.denominator == null ? '—' : num(Math.round(f.denominator))}</td>` : ''}
+      </tr>`).join('')}</tbody>
+    </table></div>
+  </details>` : '';
+
+  return `${title}
+    <div class="insight-body">${entry.narrative.split(/\n\n+/)
+      .map(p => `<p>${esc(p.trim())}</p>`).join('')}</div>
+    <p class="insight-meta">Written ${esc(shortWeek(entry.generatedAt.slice(0, 10)))}${
+      entry.model ? ` by ${esc(prettyModel(entry.model))}` : ''}, from figures it could not alter.</p>
+    ${factTable}`;
+}
+
+async function renderInsights() {
+  const weekEl = document.getElementById('c-insight-week');
+  const monthEl = document.getElementById('c-insight-month');
+  const histEl = document.getElementById('c-insight-history');
+  if (!weekEl) return;
+
+  if (!insightData && !insightFailed) {
+    setHTML(weekEl, '<p class="empty">Loading…</p>');
+    setHTML(monthEl, '');
+    setHTML(histEl, '');
+    try {
+      // Shared, like the cross-tab's payload: three renders of this tab before
+      // the first response lands would otherwise fire three requests.
+      insightPending ||= getJSON('/api/insights?limit=12');
+      insightData = await insightPending;
+    } catch {
+      insightFailed = true;
+    } finally {
+      insightPending = null;
+    }
+    if (state.tab !== 'insights' && !printing) return;
+  }
+
+  if (insightFailed) {
+    setHTML(weekEl, '<p class="empty">The summaries could not be loaded just now. Reload to try again.</p>');
+    setHTML(monthEl, '');
+    setHTML(histEl, '');
+    return;
+  }
+
+  const weeks = insightData?.week || [];
+  const months = insightData?.month || [];
+
+  document.getElementById('insight-week-hint').textContent = weeks.length
+    ? PERIOD_NAME('week', weeks[0].periodKey)
+    : 'No week has been summarised yet.';
+  document.getElementById('insight-month-hint').textContent = months.length
+    ? PERIOD_NAME('month', months[0].periodKey)
+    : 'Written once a month closes, never part-way through it.';
+
+  setHTML(weekEl, insightCard(weeks[0], { heading: false }));
+  setHTML(monthEl, months.length
+    ? insightCard(months[0], { heading: false })
+    : `<p class="insight-none">No month has closed since the pipeline started keeping these.
+       A month is written on the last Monday of it, so that August is never compared with July on
+       two weeks of evidence.</p>`);
+
+  // Everything but the two above, newest first, weeks and months interleaved.
+  const rest = [...weeks.slice(1), ...months.slice(1)]
+    .sort((a, b) => (a.periodKey < b.periodKey ? 1 : -1));
+  setHTML(histEl, rest.length
+    ? rest.map(e => `<div class="insight-item">${insightCard(e)}</div>`).join('')
+    : '<p class="insight-none">Nothing earlier yet.</p>');
 }
 
 /* ── Techniques ───────────────────────────────────────────────────────── */
@@ -3579,8 +3758,9 @@ function renderTechniques() {
 /* ── Tabs, toolbar and routing ────────────────────────────────────────── */
 
 const PANELS = {
-  overview: 'panel-overview', trends: 'panel-trends', build: 'panel-build',
-  tech: 'panel-tech', techniques: 'panel-techniques', engagement: 'panel-engagement',
+  overview: 'panel-overview', insights: 'panel-insights', trends: 'panel-trends',
+  build: 'panel-build', tech: 'panel-tech', techniques: 'panel-techniques',
+  engagement: 'panel-engagement',
 };
 
 /** The sub-tabs each panel actually has, so a hash cannot name one that isn't there. */

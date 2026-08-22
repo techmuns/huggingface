@@ -92,6 +92,10 @@ export default {
       return handleUseCaseSpaces(request, env, url);
     }
 
+    if (url.pathname === "/api/insights") {
+      return handleInsights(request, env, url);
+    }
+
     if (url.pathname === "/api" || url.pathname.startsWith("/api/")) {
       return Response.json({ error: "not_found", path: url.pathname }, { status: 404 });
     }
@@ -476,6 +480,24 @@ async function handleNarrative(request: Request, env: Env, url: URL): Promise<Re
     );
   }
 
+  // D1 first. The narrative used to live only in the GitHub archive, which
+  // meant this endpoint answered `not_found` for every week on record the
+  // moment the Worker's token lost `contents: write` — and the dashboard card
+  // hides itself on not_found, so a broken feature looked exactly like one
+  // that was never built. The archive is still written; it is no longer the
+  // only copy.
+  const stored = await env.DB.prepare(
+    `SELECT narrative FROM hf_insights
+      WHERE kind = 'week' AND period_key = ?1 AND taxonomy_version = ?2
+        AND status = 'ok' AND narrative <> ''`,
+  )
+    .bind(weekStart, TAXONOMY_VERSION)
+    .first<{ narrative: string }>()
+    .catch(() => null);
+  if (stored?.narrative) {
+    return Response.json({ weekStart, narrative: stored.narrative, source: "database" });
+  }
+
   // Snapshots are committed under their ISO week label (2026-W33), not the
   // Monday date, so the label has to be derived here or every lookup 404s.
   const label = isoWeekLabel(new Date(`${weekStart}T00:00:00.000Z`));
@@ -820,6 +842,91 @@ async function handleWeeksList(request: Request, env: Env): Promise<Response> {
  * cross-tab — every use case times every family — so it alone is more rows
  * than the other seven cuts together, and no line on this page plots it.
  */
+const MAX_INSIGHTS = 12;
+
+/**
+ * The written insights, newest first.
+ *
+ * Two kinds, asked for separately or together. Rows whose status is not "ok"
+ * are returned too, with their reason: a period the model could not ground its
+ * numbers for is a thing the reader should be told about, not a gap in a list.
+ */
+async function handleInsights(request: Request, env: Env, url: URL): Promise<Response> {
+  if (request.method !== "GET") {
+    return Response.json({ error: "method_not_allowed" }, { status: 405, headers: { allow: "GET" } });
+  }
+
+  const kind = url.searchParams.get("kind");
+  if (kind !== null && kind !== "week" && kind !== "month") {
+    return Response.json(
+      { error: "invalid_params", detail: "kind must be week or month" },
+      { status: 400 },
+    );
+  }
+
+  const limitParam = url.searchParams.get("limit");
+  let limit = 6;
+  if (limitParam !== null) {
+    const n = Number(limitParam);
+    if (!Number.isInteger(n) || n < 1 || n > MAX_INSIGHTS) {
+      return Response.json(
+        { error: "invalid_params", detail: `limit must be an integer between 1 and ${MAX_INSIGHTS}` },
+        { status: 400 },
+      );
+    }
+    limit = n;
+  }
+
+  // Two bounded queries rather than one over-fetch: asking for six of each is
+  // not the same as asking for the six most recent overall, which on a weekly
+  // cron would be six weeks and no months at all.
+  const kinds: Array<"week" | "month"> = kind ? [kind] : ["week", "month"];
+  const out: Record<string, unknown[]> = {};
+  for (const k of kinds) {
+    const rows = await env.DB.prepare(
+      `SELECT kind, period_key, week_start, narrative, facts, status, detail,
+              model_id, prompt_version, generated_at
+         FROM hf_insights
+        WHERE kind = ?1 AND taxonomy_version = ?2
+        ORDER BY period_key DESC
+        LIMIT ?3`,
+    )
+      .bind(k, TAXONOMY_VERSION, limit)
+      .all<{
+        kind: string; period_key: string; week_start: string | null;
+        narrative: string; facts: string; status: string; detail: string | null;
+        model_id: string | null; prompt_version: string | null; generated_at: string;
+      }>();
+
+    out[k] = (rows.results ?? []).map((r) => ({
+      kind: r.kind,
+      periodKey: r.period_key,
+      weekStart: r.week_start,
+      narrative: r.narrative,
+      status: r.status,
+      detail: r.detail,
+      // The pack the prose was written from, so every figure in it is
+      // traceable to the fact it came from. Parsed here rather than shipped as
+      // a string, because a caller that has to JSON.parse a field of a JSON
+      // response will one day forget to.
+      facts: safeParse(r.facts),
+      model: r.model_id,
+      promptVersion: r.prompt_version,
+      generatedAt: r.generated_at,
+    }));
+  }
+
+  return Response.json({ taxonomyVersion: TAXONOMY_VERSION, ...out });
+}
+
+function safeParse(text: string): unknown {
+  try {
+    return JSON.parse(text);
+  } catch {
+    return [];
+  }
+}
+
 const MAX_USE_CASE_SPACES = 50;
 
 /**

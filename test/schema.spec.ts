@@ -23,9 +23,10 @@ beforeEach(async () => {
 });
 
 describe("migration", () => {
-  it("creates the six tables", async () => {
+  it("creates the seven tables", async () => {
     expect(await tableNames()).toEqual([
       "hf_classifications",
+      "hf_insights",
       "hf_models",
       "hf_raw_records",
       "hf_runs",
@@ -38,7 +39,7 @@ describe("migration", () => {
     const { results } = await DB.prepare(
       "select name, sql from sqlite_master where type = 'table' and name like 'hf_%'",
     ).all<{ name: string; sql: string }>();
-    expect(results.length).toBe(6);
+    expect(results.length).toBe(7);
     for (const t of results) {
       expect(t.sql.toUpperCase(), `${t.name} must be STRICT`).toMatch(/\)\s*STRICT\s*$/);
     }
