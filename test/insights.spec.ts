@@ -1,6 +1,7 @@
 import { SELF, env } from "cloudflare:test";
 import { beforeEach, describe, expect, it } from "vitest";
 import {
+  MAX_COVERAGE_GAP,
   MIN_COVERAGE,
   MIN_DENOMINATOR,
   MIN_FACTS,
@@ -792,5 +793,59 @@ describe("the open-period gate is pinned to one instant", () => {
     const b = insightPeriodsFor("2026-08-10", at);
     expect(a).toEqual(b);
     expect(a.map((p) => p.kind)).toEqual(["week"]);
+  });
+});
+
+
+// ── comparing two periods classified to different depths ────────────────────
+
+describe("a change needs both periods classified alike", () => {
+  it("withholds the comparison, keeping the figure", async () => {
+    // The real case this run would have hit: the week of 10 Aug is 100%
+    // classified and the week of 3 Aug is 21.7%, because the LLM stage never
+    // ran there. A ratio between them is arithmetic on two populations, and it
+    // turns rises into falls — Agentic went 112 Spaces to 332 and read as down
+    // 33.5% everywhere this was allowed.
+    await seedWeek("2026-08-03", [["spaces_by_use_case", "coding", 50, 100, 21.7]]);
+    await seedWeek("2026-08-10", [["spaces_by_use_case", "coding", 300, 300, 100]]);
+    const pack = await buildFactPack(DB, weekPack("2026-08-10", "2026-08-03"));
+    const coding = pack.facts.find((f) => f.what.includes("coding"))!;
+    expect(coding.value).toBe(300);
+    // The figure survives; the comparison does not.
+    expect(coding.prev).toBeNull();
+    expect(coding.changePct).toBeNull();
+    expect(coding.changePts).toBeNull();
+    expect(slotsOf(coding).change).toBeNull();
+    expect(pack.omitted.join(" ")).toMatch(/ratio of the classifier/);
+  });
+
+  it("keeps the comparison when both periods were classified alike", async () => {
+    await seedWeek("2026-08-03", [["spaces_by_use_case", "coding", 100, 200, 96]]);
+    await seedWeek("2026-08-10", [["spaces_by_use_case", "coding", 150, 300, 99]]);
+    const pack = await buildFactPack(DB, weekPack("2026-08-10", "2026-08-03"));
+    const coding = pack.facts.find((f) => f.what.includes("coding"))!;
+    expect(coding.prev).toBe(100);
+    expect(coding.changePct).toBeCloseTo(50, 5);
+  });
+
+  it("does not withhold a figure that never depended on classification", async () => {
+    // models_by_family comes from hf_models. A classifier that did not run has
+    // no bearing on it, so its comparison must survive.
+    await seedWeek("2026-08-03", [
+      ["spaces_by_use_case", "coding", 50, 100, 21.7],
+      ["models_by_family", "qwen", 2527, 2527, null],
+    ]);
+    await seedWeek("2026-08-10", [
+      ["spaces_by_use_case", "coding", 300, 300, 100],
+      ["models_by_family", "qwen", 3849, 3849, null],
+    ]);
+    const pack = await buildFactPack(DB, weekPack("2026-08-10", "2026-08-03"));
+    const qwen = pack.facts.find((f) => f.what.includes("Qwen"))!;
+    expect(qwen.prev).toBe(2527);
+    expect(qwen.changePct).toBeCloseTo(52.3, 0);
+  });
+
+  it("the gap it allows is the gap it documents", () => {
+    expect(MAX_COVERAGE_GAP).toBe(10);
   });
 });

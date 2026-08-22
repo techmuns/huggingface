@@ -35,6 +35,24 @@ export const INSIGHT_PROMPT_VERSION = "insight-1";
 export const MIN_COVERAGE = 40;
 /** A percentage over fewer than this many Spaces is not a rate, it is a rumour. */
 export const MIN_DENOMINATOR = 30;
+/**
+ * How far two periods' coverage may differ before a change between them is a
+ * change in the classifier rather than in the Hub.
+ *
+ * The floor above decides whether a period's classification figures may be
+ * REPORTED. This decides whether two of them may be COMPARED, which is a
+ * different question and was not being asked. The week of 10 Aug 2026 is 100%
+ * classified; the week before it is 21.7%, because the LLM stage never ran
+ * (`bySource {rule: 1250, model: 0}`), so its classified set is the
+ * keyword-settleable subset. A ratio between those two is arithmetic on two
+ * different populations, and it produced falls out of rises everywhere it was
+ * allowed to: Agentic went from 112 Spaces to 332 and read as down 33.5%.
+ *
+ * Grounding does not protect against this. The figure genuinely comes from the
+ * pack; the pack is what is wrong. So the change slots are withheld and the
+ * model cannot cite what it was never given.
+ */
+export const MAX_COVERAGE_GAP = 10;
 /** How many categories of each cut are worth putting in front of a model. */
 export const TOP_N = 6;
 
@@ -208,6 +226,15 @@ export async function buildFactPack(db: D1Database, opts: BuildPackOptions): Pro
   const totalSpaces = covRows.reduce((s, r) => s + r.value, 0);
   const classifiable = coverage != null && coverage >= MIN_COVERAGE;
 
+  // The same figure for the period being compared against. Reporting and
+  // comparing are two questions and only the first was being asked.
+  const prevCovRows = rows.filter((r) => r.metric_cut === "spaces_by_use_case" && inPrev(r));
+  const prevCoverage = prevCovRows.length
+    ? prevCovRows.reduce((s, r) => s + (r.coverage ?? 0), 0) / prevCovRows.length
+    : null;
+  const comparable = classifiable && prevCoverage != null
+    && Math.abs(coverage! - prevCoverage) <= MAX_COVERAGE_GAP;
+
   add({
     what: "the share of new Spaces we were able to classify",
     unit: "percent",
@@ -219,6 +246,12 @@ export async function buildFactPack(db: D1Database, opts: BuildPackOptions): Pro
     omitted.push(
       `every classification-derived figure: coverage was ${
         coverage == null ? "not recorded" : coverage.toFixed(1) + "%"}, below the ${MIN_COVERAGE}% floor`,
+    );
+  } else if (!comparable) {
+    omitted.push(
+      `every classification-derived CHANGE: this period was ${coverage!.toFixed(1)}% classified and the one before it ${
+        prevCoverage == null ? "not recorded" : prevCoverage.toFixed(1) + "%"
+      }, so a ratio between them would be a ratio of the classifier rather than of the Hub`,
     );
   }
 
@@ -270,7 +303,11 @@ export async function buildFactPack(db: D1Database, opts: BuildPackOptions): Pro
         continue;
       }
       const value = s.now.value as number;
-      const prev = s.prev.value;
+      // A classification-derived cut gets no comparison at all when the two
+      // periods were classified to different depths: no prev, no change, no
+      // points. Withheld by ABSENCE from the pack rather than by an instruction
+      // in the prompt, so the model cannot cite what it was never given.
+      const prev = NEEDS_COVERAGE.has(cut) && !comparable ? null : s.prev.value;
       add({
         what: (WHAT[cut] ?? ((d: string) => `${cut} ${label(d)}`))(s.dim),
         unit: kind === "percent" ? "percent" : "count",
