@@ -756,3 +756,15 @@ describe("the pipeline refuses an open period as well", () => {
       .some((p) => p.kind === "month")).toBe(false);
   });
 });
+
+describe("the original narrator is gated too", () => {
+  it("buildSnapshot receives no prose for a week still running", async () => {
+    // narrateWeek has none of the guards the insight path has — no grounding,
+    // no coverage floor — and its output reaches the summary card through the
+    // GitHub archive, because /api/narrative falls back to the snapshot when
+    // D1 holds no insight. Gating one road and leaving the other open is not a
+    // gate. Asserted through periodIsOpen, which is the test the run makes.
+    expect(periodIsOpen("week", "2026-08-10", Date.parse("2026-08-12T10:00:00Z"))).toBe(true);
+    expect(periodIsOpen("week", "2026-08-10", Date.parse("2026-08-17T00:30:00Z"))).toBe(false);
+  });
+});

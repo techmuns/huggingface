@@ -382,14 +382,26 @@ export class WeeklyPipeline extends WorkflowEntrypoint<Env, WeeklyPipelineParams
       region: this.env.BEDROCK_REGION,
     });
 
-    const narrate = await step.do("narrate", PAGE_RETRY, async () => {
-      return narrateWeek(
-        this.env.DB,
-        bedrockNarrate,
-        this.env.BEDROCK_NARRATE_MODEL_ID,
-        config.weekStart,
-      );
-    });
+    // narrateWeek is the ORIGINAL narrator and it has none of the guards the
+    // insight path has: no grounding, no coverage floor, no open-period test.
+    // Its output reaches the dashboard through the GitHub archive, because
+    // /api/narrative falls back to the snapshot when D1 holds no insight — so
+    // gating the insight and leaving this ungated protected one road into the
+    // summary card and left the other open.
+    //
+    // Aggregating an open week is NOT the problem and is deliberately left
+    // alone: the dashboard shows the current week on purpose and marks it "so
+    // far". Writing PROSE about a week two days old is the problem.
+    const narrate = periodIsOpen("week", config.weekStart)
+      ? { narrative: "", inputTokens: 0, outputTokens: 0 }
+      : await step.do("narrate", PAGE_RETRY, async () => {
+          return narrateWeek(
+            this.env.DB,
+            bedrockNarrate,
+            this.env.BEDROCK_NARRATE_MODEL_ID,
+            config.weekStart,
+          );
+        });
 
     // The written insight, stored in D1 rather than only in the GitHub
     // archive. The archive is an archive; a read path the dashboard depends on
