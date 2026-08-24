@@ -199,8 +199,25 @@ function stepsFor(stage: keyof typeof STEP_BUDGET): number {
   return STEP_BUDGET[stage];
 }
 
+/**
+ * Retry policy for a D1-bound step.
+ *
+ * Widened from 3 attempts over 35 s to 5 over ~5 minutes, which is the span a
+ * transient D1 problem — a rate-limited write window, a storage hiccup, a
+ * timeout under load — actually takes to clear. It was the thinnest policy in
+ * the file while covering the steps that do the most database work.
+ *
+ * What this deliberately does NOT do is make a run survive a step that is too
+ * expensive. `resolve-models-14` failed all four of its attempts on
+ * 2026-08-24 with "Worker exceeded CPU time limit", and a fifth and sixth
+ * would have failed identically: a step's result is durable, so every retry
+ * resumes from the same cursor and re-reads the same rows, and CPU is not a
+ * resource that frees up while you wait. Retries buy time for the world to
+ * change, and a computation that does not fit is not the world changing. The
+ * fix for that class is always to make the step cheaper — never to ask again.
+ */
 const SQL_RETRY = {
-  retries: { limit: 3, delay: "5 seconds", backoff: "exponential" },
+  retries: { limit: 5, delay: "10 seconds", backoff: "exponential" },
   timeout: "5 minutes",
 } as const;
 

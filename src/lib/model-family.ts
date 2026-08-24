@@ -213,6 +213,25 @@ export const RESOLVE_PAGE = 2_000;
  * published it as "unknown" — indistinguishable from a row that was checked
  * and could not be placed.
  */
+/**
+ * Rows per D1 round trip inside one resolver pass.
+ *
+ * Each sub-chunk is one uninterrupted synchronous block — the await between
+ * them is what ends the run of computation a step's 10 ms CPU budget measures
+ * — so this, not RESOLVE_PAGE, is the number that decides whether a pass fits.
+ *
+ * It was 500, and 500 is what `resolve-models-14` died on: the architecture
+ * rung's scan cost 6-7 ms in-loop at 40 tags a row and 17 ms at 80, because a
+ * pass can land wholly inside one author's block of unplaceable records. The
+ * scan itself is now ~3x cheaper, which is the real fix; halving the chunk is
+ * the backstop, so the worst page the Hub can produce still has room.
+ *
+ * It costs only wall clock: sub-chunks loop inside ONE step, so twice as many
+ * of them is twice the D1 round trips and not one extra step against the
+ * 1,024-step instance limit.
+ */
+export const RESOLVE_SUBCHUNK = 250;
+
 async function paginateUnresolved<T extends { repo_id: string }>(
   db: D1Database,
   sql: (cursorParam: string, limitParam: string) => string,
@@ -226,7 +245,7 @@ async function paginateUnresolved<T extends { repo_id: string }>(
   let exhausted = false;
 
   while (seen < limit) {
-    const page = Math.min(500, limit - seen);
+    const page = Math.min(RESOLVE_SUBCHUNK, limit - seen);
     const rows = await db
       .prepare(sql("?1", "?2"))
       .bind(cursor, page)
@@ -411,23 +430,62 @@ async function resolveByChain(db: D1Database, limit: number): Promise<number> {
  * carries ("inkling_mm_model", "Gr00tN1d7") fall through rather than being
  * forced into a bucket.
  */
-const FAMILY_BY_MODEL_TYPE: ReadonlyArray<[RegExp, string]> = [
-  [/^qwen/i, "qwen"],
-  [/^llama/i, "llama"],
-  [/^deepseek/i, "deepseek"],
-  [/^gemma/i, "gemma"],
-  [/^(?:mistral|mixtral)/i, "mistral"],
-  [/^(?:glm|chatglm)/i, "glm-zhipu"],
-  [/^(?:kimi|moonshot)/i, "kimi-moonshot"],
-  [/^nemotron/i, "nvidia-nemotron"],
-];
+/**
+ * Architecture prefix -> family. Every entry is a PREFIX match, anchored and
+ * case-insensitive, exactly as the eight separate regexes it replaces were.
+ */
+const FAMILY_BY_PREFIX: ReadonlyMap<string, string> = new Map([
+  ["qwen", "qwen"],
+  ["llama", "llama"],
+  ["deepseek", "deepseek"],
+  ["gemma", "gemma"],
+  ["mistral", "mistral"],
+  ["mixtral", "mistral"],
+  ["glm", "glm-zhipu"],
+  ["chatglm", "glm-zhipu"],
+  ["kimi", "kimi-moonshot"],
+  ["moonshot", "kimi-moonshot"],
+  ["nemotron", "nvidia-nemotron"],
+]);
+
+/**
+ * The same eight rules as ONE anchored alternation.
+ *
+ * This was eight separate `re.test()` calls in a loop, and it is the hottest
+ * code in the pipeline: `matchFamilyByArchitecture` returns on the first tag
+ * that matches, so a model it can place is cheap and a model it CANNOT pay the
+ * full scan — roughly 30 tags x 8 regexes, ~240 regex executions, for every
+ * unplaceable row. The rung is most expensive exactly where it achieves least.
+ *
+ * That is what killed `resolve-models-14` on 2026-08-24: a run reaches one
+ * author's block of near-identical, fat-tagged, `model_type`-less records —
+ * repo_id is "author/name" and every rung walks ORDER BY repo_id, so a pass
+ * sits inside one or two authors — and the whole 500-row sub-chunk is
+ * unplaceable at once. Measured in workerd inside the real loop: 6-7 ms at 40
+ * tags a row, 15 ms at 60, 17 ms at 80, against a 10 ms step budget.
+ */
+const FAMILY_ARCH_RE =
+  /^(qwen|llama|deepseek|gemma|mistral|mixtral|chatglm|glm|kimi|moonshot|nemotron)/i;
+
+/**
+ * First characters that can begin a family prefix, as lower-case char codes.
+ *
+ * Checked before `toLowerCase()` so the common case — a tag that cannot match
+ * anything — costs one char-code compare and allocates nothing. `| 0x20`
+ * lower-cases an ASCII letter; anything else lands on a code the set does not
+ * hold, or falls through to the regex, which rejects it correctly either way.
+ */
+const FAMILY_FIRST_CHARS: ReadonlySet<number> = new Set(
+  ["q", "l", "d", "g", "m", "c", "k", "n"].map((c) => c.charCodeAt(0)),
+);
 
 export function matchFamilyByModelType(modelType: string | null): string | null {
   if (!modelType) return null;
-  for (const [re, family] of FAMILY_BY_MODEL_TYPE) {
-    if (re.test(modelType)) return family;
-  }
-  return null;
+  if (!FAMILY_FIRST_CHARS.has(modelType.charCodeAt(0) | 0x20)) return null;
+  const hit = FAMILY_ARCH_RE.exec(modelType);
+  if (!hit) return null;
+  // Only allocates on a match, which is the rare branch.
+  return FAMILY_BY_PREFIX.get(hit[1]!.toLowerCase()) ?? null;
 }
 
 /**
@@ -501,7 +559,11 @@ export function matchFamilyByArchitecture(
   const fromConfig = matchFamilyByModelType(modelType);
   if (fromConfig) return fromConfig;
   for (const tag of tags) {
-    if (typeof tag !== "string") continue;
+    if (typeof tag !== "string" || tag.length === 0) continue;
+    // The first-character gate comes before everything else that costs
+    // anything. A real model carries ~30 tags and almost none of them can
+    // begin a family prefix, so this is the branch that runs 30 times a row.
+    if (!FAMILY_FIRST_CHARS.has(tag.charCodeAt(0) | 0x20)) continue;
     // Namespaced tags (`base_model:`, `license:`, `dataset:`, `arxiv:`) are
     // metadata, not architectures, and some of them contain family names.
     if (tag.includes(":")) continue;
