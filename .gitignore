@@ -11,3 +11,10 @@ __pycache__/
 # pretypecheck/pretest hooks, so committing it would only ever add a stale
 # 500 KB file that disagrees with the config.
 worker-configuration.d.ts
+
+# Throwaway CPU benchmarks. Step bodies get 10 ms on Workers Free, so measuring
+# one in real workerd is a routine part of changing this pipeline — and those
+# scratch specs are written, read once and deleted. The permanent measurements
+# live in test/cpu-budget.spec.ts; anything named _bench_* is working scaffolding
+# and must not be committed.
+test/_bench_*
