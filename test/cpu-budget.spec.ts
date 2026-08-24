@@ -50,12 +50,32 @@ function signals(i: number): SpaceSignals {
   };
 }
 
-/** Runs `fn` `reps` times and returns the mean, after one warm-up pass. */
+/**
+ * The cost of one `fn`, measured as the FASTEST of several timed blocks.
+ *
+ * Not the mean. Scheduling noise, GC and a machine running fifteen other test
+ * files are all one-sided — they can only ever make a block look slower, never
+ * faster — so the minimum converges on the true cost while the mean tracks how
+ * busy the box was. Measured both ways here, the same 150-README batch came
+ * out at 3.5 ms alone and 14.8 ms under full-suite load; by minimum it is 3.5
+ * either way. A flaky red is worse than no test, because it teaches people to
+ * ignore the colour.
+ *
+ * Each block runs `batch` iterations so the result keeps sub-millisecond
+ * precision against workerd's coarse clock.
+ */
 function perRun(fn: () => void, reps: number): number {
-  fn();
-  const t0 = performance.now();
-  for (let r = 0; r < reps; r++) fn();
-  return (performance.now() - t0) / reps;
+  const batch = Math.max(1, Math.round(reps / 4));
+  for (let i = 0; i < batch; i++) fn(); // warm the JIT
+
+  let best = Infinity;
+  for (let block = 0; block < 6; block++) {
+    const t0 = performance.now();
+    for (let i = 0; i < batch; i++) fn();
+    const ms = (performance.now() - t0) / batch;
+    if (ms < best) best = ms;
+  }
+  return best;
 }
 
 function report(label: string, ms: number): number {

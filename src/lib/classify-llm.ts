@@ -12,7 +12,6 @@
 import { D1_BATCH } from "./raw-store";
 
 import { BedrockClient, type BedrockRequest, firstText } from "./bedrock";
-import { contentHash } from "./enrich";
 import {
   clampConfidence,
   type Classification,
@@ -203,7 +202,7 @@ export async function classifySpacesByLlm(
     const rows = await db
       .prepare(
         `SELECT s.space_id, s.title, s.short_description, s.sdk,
-                s.tags, s.linked_models, s.readme_text
+                s.tags, s.linked_models, s.readme_hash, s.readme_text
          FROM hf_spaces s
          LEFT JOIN hf_classifications c
            ON c.space_id = s.space_id AND c.taxonomy_version = ?1
@@ -220,6 +219,7 @@ export async function classifySpacesByLlm(
         sdk: string | null;
         tags: string;
         linked_models: string;
+        readme_hash: string | null;
         readme_text: string | null;
       }>();
 
@@ -238,6 +238,15 @@ export async function classifySpacesByLlm(
       readmeText: r.readme_text,
     }));
 
+    // The README hash already stored on the row. `content_hash` is written by
+    // this file and by classify-rules and read by nothing in src/ or
+    // migrations/, so computing a fresh SHA-256 of the whole space+result
+    // object per row — README included — bought nothing. classify-rules spent
+    // 21 ms of a 39.6 ms page doing it.
+    const readmeHashOf = new Map(
+      rows.results.map((r) => [r.space_id, r.readme_hash] as const),
+    );
+
     try {
       const { results, usage } = await classifyBatch(client, modelId, spaces);
       summary.inputTokens += usage.input;
@@ -250,10 +259,6 @@ export async function classifySpacesByLlm(
       for (const result of results) {
         const space = spaces.find((s) => s.spaceId === result.spaceId);
         if (!space) continue;
-
-        const hash = await contentHash(
-          JSON.stringify({ space, result }),
-        );
 
         // Clamped rather than trusted: the schema can no longer bound these,
         // so a model returning 1.4 would otherwise sail past every threshold.
@@ -305,7 +310,7 @@ export async function classifySpacesByLlm(
               modelId,
               "v1",
               result.rationale,
-              hash,
+              readmeHashOf.get(result.spaceId) ?? null,
             ),
         );
         summary.classified++;
