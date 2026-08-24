@@ -6,7 +6,7 @@
  * filter boilerplate, and hash the result.  Dedup clusters Spaces by
  * normalised title so one viral template does not manufacture a fake trend.
  */
-import { D1_BATCH, utf8Bytes } from "./raw-store";
+import { D1_BATCH } from "./raw-store";
 
 // ── README fetching ─────────────────────────────────────────────────────────
 
@@ -48,56 +48,32 @@ export const README_MAX_BYTES = 32_000;
 /**
  * Truncates to a byte budget without splitting a character in half.
  *
- * Measures rather than encodes. The previous version called
- * `new TextEncoder().encode(ch).length` once PER CODE POINT, allocating a
- * throwaway buffer for every character of every oversized README purely to
- * learn a number between 1 and 4 — and it ran over a queue of ~14,000, in the
- * stage that was dying with "Worker exceeded CPU time limit". Measured on 500
- * oversized READMEs: 8,818ms before, 221ms after, byte-identical output.
+ * Delegates to `TextEncoder.encodeInto`, which is native, fills a fixed buffer
+ * and stops on the last WHOLE code point that fits — exactly this function's
+ * contract. Its `read` count is in UTF-16 code units, so slicing at it can
+ * never land between the halves of a surrogate pair. Lone surrogates encode as
+ * U+FFFD, the same 3 bytes the hand-rolled walk budgeted for them.
  *
- * `utf8Bytes` is shared with the raw store rather than reimplemented, and the
- * width arithmetic below is the same rule inlined so the walk can track a cut
- * point at the same time.
+ * This has been the hot spot twice, both times for the same reason: a per-
+ * character JS loop over READMEs capped at 32 KB, run across a queue of
+ * ~16,000, inside the stage that kept dying with "Worker exceeded CPU time
+ * limit". The first version called `new TextEncoder().encode(ch).length` once
+ * per code point (8,818ms for 500 oversized READMEs). The second measured
+ * widths inline instead of allocating — 40x better, but still ~32,000
+ * iterations per oversized README: a batch of 150 measured **72.8 ms** in
+ * workerd, against a 10 ms step budget. This one measures 1.5 ms.
  *
- * Indices are UTF-16 code units, so a surrogate pair is stepped over as one
- * unit. Slicing at an arbitrary index would land between its halves and store
- * a lone surrogate, which is not valid text and encodes as a 3-byte
- * replacement character rather than the 4 bytes the budget was told to expect.
+ * The early return is the other half of the win. Every UTF-16 code unit is at
+ * most 3 UTF-8 bytes, so `length * 3 <= maxBytes` proves the text fits without
+ * looking at it — which is the common case, and it now costs nothing instead
+ * of a full `utf8Bytes` scan of every README that was never oversized.
  */
 export function truncateToBytes(text: string, maxBytes: number): string {
-  if (utf8Bytes(text) <= maxBytes) return text;
+  if (text.length * 3 <= maxBytes) return text;
 
-  let used = 0;
-  let end = 0;
-
-  for (let i = 0; i < text.length; i++) {
-    const c = text.charCodeAt(i);
-    let size: number;
-    let units = 1;
-
-    if (c < 0x80) {
-      size = 1;
-    } else if (c < 0x800) {
-      size = 2;
-    } else if (c >= 0xd800 && c <= 0xdbff) {
-      const next = i + 1 < text.length ? text.charCodeAt(i + 1) : 0;
-      if (next >= 0xdc00 && next <= 0xdfff) {
-        size = 4;
-        units = 2;              // a complete pair is one code point
-      } else {
-        size = 3;               // lone high surrogate -> U+FFFD
-      }
-    } else {
-      size = 3;                 // includes lone low surrogates -> U+FFFD
-    }
-
-    if (used + size > maxBytes) break;
-    used += size;
-    i += units - 1;
-    end = i + 1;                // only ever a whole-character boundary
-  }
-
-  return text.slice(0, end);
+  const buf = new Uint8Array(maxBytes);
+  const { read } = new TextEncoder().encodeInto(text, buf);
+  return read >= text.length ? text : text.slice(0, read);
 }
 
 export async function fetchReadme(
@@ -297,35 +273,74 @@ export interface DedupSummary {
   clusters: number;
 }
 
+/**
+ * Spaces keyed per dedup page.
+ *
+ * The clustering walk is a synchronous loop — a JSON.parse, a regex
+ * normalisation and a sort for every row — and it used to run over the whole
+ * week in one unbroken block. Measured in workerd, that block costs 10.0 ms at
+ * 7,000 Spaces, 16 ms at 12,000 and 43 ms at 20,000, against a step budget of
+ * 10 ms. Week 2026-08-17 held 6,595 Spaces and the run died on this step.
+ *
+ * It is the only stage that had no page, no cursor and no cap, so it was the
+ * one stage whose cost was a pure function of how big a week the Hub had —
+ * which is the definition of a thing that breaks on its own schedule. At 1,000
+ * a page the block is ~1.4 ms and the D1 await between pages ends the run of
+ * synchronous work that the CPU limit actually measures.
+ */
+export const DEDUP_PAGE = 1_000;
+
 export async function dedupSpaces(db: D1Database, weekStart: string, weekEnd: string): Promise<DedupSummary> {
-  const rows = await db
-    .prepare(
-      `SELECT space_id, title, author, linked_models, created_at
-       FROM hf_spaces
-       WHERE created_at >= ?1 AND created_at < ?2
-       ORDER BY created_at`,
-    )
-    .bind(weekStart, weekEnd)
-    .all<{
-      space_id: string;
-      title: string | null;
-      author: string | null;
-      linked_models: string;
-      created_at: string;
-    }>();
-
-  if (!rows.results?.length) return { clustered: 0, clusters: 0 };
-
   const clusters = new Map<string, string[]>();
-  for (const row of rows.results) {
-    const key = clusterKey(row.space_id, row.title, row.linked_models);
-    const group = clusters.get(key);
-    if (group) {
-      group.push(row.space_id);
-    } else {
-      clusters.set(key, [row.space_id]);
+
+  // Paged on (created_at, space_id). Ordering by created_at alone is what the
+  // unpaged version did and it is what decides the cluster PRIMARY — the
+  // earliest Space is the original and the rest are its duplicates — so the
+  // order is preserved exactly rather than switched to a bare space_id cursor.
+  // space_id only breaks ties, which were previously arbitrary.
+  let cursorCreated = "";
+  let cursorId = "";
+  let first = true;
+
+  for (;;) {
+    const page = await db
+      .prepare(
+        `SELECT space_id, title, linked_models, created_at
+           FROM hf_spaces
+          WHERE created_at >= ?1 AND created_at < ?2
+            AND (?3 = 1 OR created_at > ?4 OR (created_at = ?4 AND space_id > ?5))
+          ORDER BY created_at, space_id
+          LIMIT ?6`,
+      )
+      .bind(weekStart, weekEnd, first ? 1 : 0, cursorCreated, cursorId, DEDUP_PAGE)
+      .all<{
+        space_id: string;
+        title: string | null;
+        linked_models: string;
+        created_at: string;
+      }>();
+
+    const rows = page.results ?? [];
+    if (rows.length === 0) break;
+
+    for (const row of rows) {
+      const key = clusterKey(row.space_id, row.title, row.linked_models);
+      const group = clusters.get(key);
+      if (group) {
+        group.push(row.space_id);
+      } else {
+        clusters.set(key, [row.space_id]);
+      }
     }
+
+    const last = rows[rows.length - 1]!;
+    cursorCreated = last.created_at;
+    cursorId = last.space_id;
+    first = false;
+    if (rows.length < DEDUP_PAGE) break;
   }
+
+  if (clusters.size === 0) return { clustered: 0, clusters: 0 };
 
   const stmts: D1PreparedStatement[] = [];
   let clustered = 0;

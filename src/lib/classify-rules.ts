@@ -12,7 +12,6 @@
  */
 import { D1_BATCH } from "./raw-store";
 
-import { contentHash } from "./enrich";
 import type {
   Classification,
   ModelFamily,
@@ -402,23 +401,32 @@ export interface ClassifyRulesSummary {
 
 const LOW_CONFIDENCE_THRESHOLD = 0.6;
 
-/** Rows examined per call. Bounds the statements issued in one invocation. */
 /**
  * Spaces examined per rule-classification step.
  *
- * 40 steps (STEP_BUDGET.rules) x 400 = 16,000 against a measured ~6,800 new
- * Spaces a week. It was 120, giving 4,800 — so roughly 2,000 Spaces a week
- * were never examined by either pass while still counting in the denominator,
- * dragging coverage down every week and leaving those Spaces out of every
- * chart. The budget comment beside STEP_BUDGET.rules already said "400 Spaces
- * a page: 16,000"; the constant simply never matched it.
+ * Sized against the one limit that actually binds: a Workflow step on Workers
+ * Free gets **10 ms of CPU**, and `classifyByRules` is a regex sweep costing a
+ * flat ~0.046 ms a row. Measured inside real workerd:
  *
- * Raised here rather than by adding steps, deliberately: step count is what
- * exhausts the orchestration's CPU and killed several runs, and
- * test/step-budget.spec.ts holds the ceiling. Measured cost of a page at this
- * size is ~47ms against ~13ms at 120 — linear, and far below a step's budget.
+ *       50 a page    2.3 ms
+ *      100 a page    4.6 ms      <- here, under half the ceiling
+ *      150 a page    7.4 ms
+ *      200 a page    9.0 ms      no margin
+ *      400 a page   18.6 ms      over, on its own
+ *
+ * It was 400, and the comment that set it read "~47ms ... far below a step's
+ * budget". 47 ms is not below a 10 ms budget, it is 4.7x over it; the sentence
+ * budgeted against step COUNT, which is not what runs out. The page was raised
+ * on 2026-08-20 and never executed: both runs after it had nothing left to
+ * classify, and the first run to hand it a real page — week 2026-08-17, with
+ * 4,374 Spaces queued — died with "Worker exceeded CPU time limit".
+ *
+ * Steps are the cheap resource here. Cloudflare's own limit is that an
+ * instance runs as long as no STEP exceeds its CPU and the instance stays
+ * under 1,024 steps; a smaller page spends more of the plentiful one to stay
+ * clear of the scarce one.
  */
-export const RULES_PAGE_SIZE = 400;
+export const RULES_PAGE_SIZE = 100;
 
 export async function classifySpacesByRules(
   db: D1Database,
@@ -442,7 +450,11 @@ export async function classifySpacesByRules(
   const rows = await db
     .prepare(
       `SELECT s.space_id, s.title, s.short_description, s.sdk,
-              s.tags, s.linked_models, s.linked_datasets, s.readme_text
+              s.tags, s.linked_models, s.linked_datasets, s.readme_hash,
+              -- Only the prefix textOf reads. READMEs are stored up to
+              -- 32 KB, so selecting the column whole moved ~12 MB into the
+              -- isolate per 400-row page to look at the first 2 KB of each.
+              substr(s.readme_text, 1, 2000) AS readme_text
        FROM hf_spaces s
        LEFT JOIN hf_classifications c
          ON c.space_id = s.space_id AND c.taxonomy_version = ?1
@@ -461,6 +473,7 @@ export async function classifySpacesByRules(
       tags: string;
       linked_models: string;
       linked_datasets: string;
+      readme_hash: string | null;
       readme_text: string | null;
     }>();
 
@@ -486,8 +499,6 @@ export async function classifySpacesByRules(
       summary.deferredToLlm++;
       continue;
     }
-
-    const hash = await contentHash(JSON.stringify(signals));
 
     stmts.push(
       db
@@ -532,7 +543,7 @@ export async function classifySpacesByRules(
           result.useCaseConfidence < LOW_CONFIDENCE_THRESHOLD ? 1 : 0,
           result.rationale,
           result.rationale,
-          hash,
+          row.readme_hash,
         ),
     );
     summary.classified++;

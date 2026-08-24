@@ -1,0 +1,43 @@
+# Runs the test suite on every push and pull request.
+#
+# There was no CI here until 2026-08-24. Cloudflare Workers Builds deploys on
+# every push to main, so a push went straight to production with nothing having
+# run `vitest` except whoever remembered to. The suite takes ~10 seconds and it
+# runs inside real workerd against real D1, so it is worth far more than that.
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+# A newer push to the same branch makes an in-flight run redundant.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+
+      - run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Test
+        run: npm test
+
+      # Catches the class of failure that has cost this repo the most: a
+      # wrangler.jsonc the account's plan will not accept. `--dry-run` builds
+      # and validates the config without deploying.
+      - name: Validate the Worker build
+        run: npx wrangler deploy --dry-run

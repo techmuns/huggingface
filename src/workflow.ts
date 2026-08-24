@@ -112,58 +112,65 @@ const LLM_RETRY = {
 /**
  * The step budget — enforced here, not described in a comment.
  *
- * Cloudflare caps a Workflow instance at 1,024 steps on Free and 10,000 on
- * Paid — this account deploys on Free, so 1,024 is the hard ceiling — but
- * that is not the limit that bites. Workflows replays the orchestration from
- * the top at every step boundary, so a run's overhead grows with the NUMBER of
- * steps; the instance is killed with WorkflowFatalError ("exceeded CPU or
- * memory limits outside of a step") long before 10,000. Measured: a run
- * spending roughly 800 steps died at 23 minutes. 700 is the working ceiling.
+ * Cloudflare's rule is narrow and worth quoting, because the previous version
+ * of this comment got it backwards: an instance "can run forever, as long as
+ * each step does not take more than the CPU time limit and the maximum number
+ * of steps per Workflow is not reached". Two limits, and only two. On Free
+ * that is **10 ms of CPU per step** and **1,024 steps per instance**.
  *
- * The previous version of this comment set that ceiling out as a table and
- * left every loop to respect it on the honour system — and the table mixed
- * MEASURED figures for two stages with CAPS for the others, so it added up to
- * ~663 while the caps actually allowed 2,845:
+ * What this comment used to say — that replaying the orchestration makes a
+ * run's overhead grow with the NUMBER of steps, so ~700 was a working ceiling
+ * — is false, and it was expensive. Measured in workerd: re-entering every
+ * memoised `step.do` call site at 630 steps costs 0.1 ms in total, and
+ * rehydrating 1,000 cached step results costs 1.6 ms. There is no meaningful
+ * per-step tax. A single run has since been observed completing 300-400 steps
+ * and dying anyway — on a step whose own body was over 10 ms.
  *
- *     ingest      2 walks x 900 = 1,800   (documented as ~100)
- *     rule pages            500           (documented as ~18)
+ * The belief did real damage. It said steps were scarce and bodies were free,
+ * so pages were made BIGGER to spend fewer of them: RULES_PAGE_SIZE went 120
+ * -> 400 (18.6 ms of CPU a page, over the ceiling on its own) and enrich
+ * batches to 150. Every one of those trades moved work in the wrong direction.
+ * The correct trade is the opposite: steps are plentiful, so spend them to
+ * keep each body small.
  *
- * A week that ran hot would therefore sail past the ceiling with nothing to
- * stop it, which is what a fatal error is: the absence of a budget, not the
- * presence of a big week.
- *
- * So the caps below are shares of the ceiling and SUM to less than it. Every
- * loop stops when its share is gone and reports `truncated`, which the run
- * already carries end to end. A week that covers 90% of a surge and LANDS is
- * worth incomparably more than a week that reaches for all of it and is
- * killed — the first leaves a point on every chart and a note saying it is
- * light; the second leaves a gap and a dashboard that has silently stopped.
+ * So the caps below are still shares of a ceiling and still SUM to less than
+ * it, and every loop still stops when its share is gone and reports
+ * `truncated` — a week that covers 90% of a surge and LANDS is worth
+ * incomparably more than a week that reaches for all of it and is killed. But
+ * they are now sized so each stage's BODY fits comfortably inside 10 ms, and
+ * the ceiling is the real one rather than an invented one.
  */
-const WORKING_STEPS = 700;
+const WORKING_STEPS = 900;
 
 const STEP_BUDGET = {
-  /** Per walk, and there are two — models and Spaces. 400 records a page (see
-      MAX_PAGE_SIZE: 1,000 cost 7.8ms of a 10ms step budget), so 150 pages is
-      60,000 records; the deepest walk observed needed 103. */
+  /** Per walk, and there are two — models and Spaces. 400 records a page, so
+      150 pages is 60,000 records; the deepest walk observed needed 103. */
   ingestPerWalk: 150,
-  /** 150 READMEs a batch: 15,000 against a standing queue of ~14,300. */
-  enrich: 100,
-  /** 400 Spaces a page: 16,000 against a measured ~7,000 a week. */
-  rules: 40,
+  /** 150 READMEs a batch: 21,000 against a queue observed at 16,494 and
+      growing. It was 100 batches = 15,000, i.e. below the queue — so enrich
+      truncated every week, and the READMEs it never fetched are exactly the
+      signal the rule and LLM passes are then asked to classify without. */
+  enrich: 140,
+  /** 100 Spaces a page (18.6 ms at 400, 4.6 ms here): 12,000 against ~7,000
+      new Spaces a week. */
+  rules: 120,
   /** Two Bedrock calls a step at 20 Spaces each: 6,000 against ~5,500
       unsettled a week. */
   llm: 150,
-  /** Phases with a fixed step each, plus the per-week aggregate and narrate. */
-  terminal: 30,
+  /** resolve-window, ensure-derived-schema, parse, up to 40 resolve passes,
+      enrich-reset, dedup, aggregate, narrate, insight and snapshot. It was 30,
+      which the resolve loop alone can exhaust. */
+  terminal: 60,
 } as const;
 
 /**
  * What a run may spend if every stage exhausts its share at once.
  *
- * 2 x 150 + 100 + 40 + 150 + 30 = 620, inside the 700 ceiling. Exported and
- * asserted in the tests rather than written in a comment, because the last
- * version of this budget WAS a comment and it was wrong by a factor of four —
- * a number nothing checks is a number that drifts.
+ * 2 x 150 + 140 + 120 + 150 + 60 = 770, inside the 900 ceiling and well inside
+ * Cloudflare's hard 1,024. Exported and asserted in the tests rather than
+ * written in a comment, because the last version of this budget WAS a comment
+ * and it was wrong by a factor of four — a number nothing checks is a number
+ * that drifts.
  */
 export const WORST_CASE_STEPS =
   STEP_BUDGET.ingestPerWalk * 2 + STEP_BUDGET.enrich + STEP_BUDGET.rules +

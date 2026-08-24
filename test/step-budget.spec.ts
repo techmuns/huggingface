@@ -118,7 +118,12 @@ describe("the workflow step budget", () => {
 
   it("gives enrichment enough steps to drain the standing queue", () => {
     const READMES_PER_STEP = 150;
-    const STANDING_QUEUE = 14312;
+    // Observed on the live database on 2026-08-24, and growing: it was 14,312
+    // when this test was written and the cap of 100 steps x 150 = 15,000 had
+    // already slipped underneath it, so enrich truncated every week and the
+    // READMEs it never fetched are the signal the classifiers then work
+    // without. The number is a floor to budget above, not a constant.
+    const STANDING_QUEUE = 16_494;
     expect(stepsFor("enrich") * READMES_PER_STEP).toBeGreaterThanOrEqual(STANDING_QUEUE);
   });
 });
