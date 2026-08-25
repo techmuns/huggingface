@@ -4,7 +4,10 @@
     "lib": ["es2022"],
     "module": "es2022",
     "moduleResolution": "bundler",
-    "types": ["@cloudflare/vitest-pool-workers/types"],
+    // Both runtimes in one program. The pipeline library is shared: it runs
+    // inside workerd against a D1 binding, and on a Node runner against a local
+    // SQLite file (src/lib/d1-sqlite.ts). Neither set of globals is optional.
+    "types": ["@cloudflare/vitest-pool-workers/types", "node"],
 
     "strict": true,
     "noUncheckedIndexedAccess": true,
@@ -21,5 +24,15 @@
     "noEmit": true
   },
   "include": ["src/**/*.ts", "test/**/*.ts", "vitest.config.ts", "worker-configuration.d.ts"],
-  "exclude": ["node_modules"]
+  "exclude": [
+    "node_modules",
+    // Throwaway measurement specs, same patterns .gitignore covers. They are
+    // written against whatever binding the question needs and deleted the same
+    // afternoon; type-checking them fails the build for code nobody kept.
+    "test/_bench_*",
+    "test/_*.spec.ts",
+    "test/zz-*",
+    "test/scratch-*",
+    "test/*-scratch.spec.ts"
+  ]
 }
