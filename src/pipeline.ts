@@ -6,12 +6,14 @@
  * That is what put every stage inside a 10 ms CPU budget and every query
  * against a 5-million-rows-a-day ceiling.
  *
- * So the orchestration is now a plain function over two small interfaces.
- * `src/workflow.ts` supplies Cloudflare's implementations of them, and
- * `src/runner/` supplies a Node process with a local SQLite file. Both drive
- * exactly this code — not a port of it, and not a fork that will drift, which
- * matters because the drift would be silent: two runtimes that agree on every
- * test and disagree on the week they publish.
+ * So the orchestration is now a plain function over two small interfaces, and
+ * `src/runner/` supplies the only implementation that runs in production: a
+ * Node process on a GitHub-hosted runner, against a local SQLite file. The
+ * Cloudflare driver is gone with the Worker's database.
+ *
+ * The interfaces stay because the tests use them — test/pipeline-run.spec.ts
+ * drives exactly this code against real D1 in workerd, which is what keeps the
+ * SQLite shim honest.
  */
 
 /**
@@ -341,12 +343,12 @@ export async function runWeeklyPipeline(
     // Schema this deployment adds and can safely add itself: two idempotent
     // CREATEs over tables it already owns, no ALTER and no data movement.
     //
-    // D1 has no migrate-on-deploy — `git push` ships the Worker and a human
-    // runs `wrangler d1 migrations apply` — and this repo has paid for that gap
-    // twice already. Anything that alters an existing table still belongs in
-    // migrations/ and is still gated before this run starts; this is only the
-    // additive tail that would otherwise leave a feature dark or a query
-    // unindexed until someone remembered.
+    // The runner applies migrations/ before this function is called, so the
+    // gap this was written for — a deployed Worker running ahead of a human
+    // remembering `wrangler d1 migrations apply`, which cost this repo twice —
+    // is closed. It is kept because a database restored from an older state
+    // branch can still arrive without the additive tail, and because anything
+    // that ALTERS an existing table belongs in migrations/ and nowhere else.
     //
     // Non-fatal on purpose: an index that failed to build is a slower
     // drill-down, not a failed pipeline.
@@ -489,10 +491,11 @@ export async function runWeeklyPipeline(
 
     // narrateWeek is the ORIGINAL narrator and it has none of the guards the
     // insight path has: no grounding, no coverage floor, no open-period test.
-    // Its output reaches the dashboard through the GitHub archive, because
-    // /api/narrative falls back to the snapshot when D1 holds no insight — so
-    // gating the insight and leaving this ungated protected one road into the
-    // summary card and left the other open.
+    // Its output used to reach the dashboard through the GitHub archive, which
+    // the summary card read when the database held no insight — so gating the
+    // insight and leaving this ungated protected one road into the card and
+    // left the other open. The card reads published files now, but the archive
+    // is still written and the gate still belongs here.
     //
     // Aggregating an open week is NOT the problem and is deliberately left
     // alone: the dashboard shows the current week on purpose and marks it "so

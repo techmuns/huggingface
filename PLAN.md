@@ -1,5 +1,28 @@
 # Hugging Face Developer-Activity Dashboard — Cloudflare Build Plan
 
+> **This document is the original build plan and is now partly historical.**
+> It is kept because its measurements and its reasoning are still the record of
+> why the schema, the taxonomy and the stage boundaries look the way they do.
+> Three of its architectural decisions did not survive contact with the free
+> plan, and everything below should be read against these:
+>
+> | The plan said | What runs now | Why it changed |
+> |---|---|---|
+> | The weekly pipeline is a Cloudflare Workflow started by a Cron Trigger | `.github/workflows/weekly-runner.yml` runs `src/runner/` as a Node process | A Workflow step gets **10 ms of CPU** on Workers Free. Four step bodies were measured and cut to fit it and runs still died — six times in one month, each on a different step. A GitHub-hosted runner has no CPU limit. |
+> | D1 is the single store | A SQLite file, `data/pipeline.sqlite`, carried on the `pipeline-state` orphan branch | D1 Free allows **5 million rows read a day**; one run read 19.5 million. The row caps follow the data, so they arrive again as the data grows. A file has none. |
+> | The dashboard reads `GET /api/*`, D1-backed, on the same Worker | The page fetches static files under `/data`, written by the run | Every figure is settled for a week at a time and none of it is per-reader, so those endpoints were a metered query re-deriving a fixed answer for each visitor. |
+>
+> What did NOT change: the schema in `migrations/`, the taxonomy, the eight
+> weekly outputs, the stage sequence, the rate-limit arithmetic, and the
+> archive-to-GitHub rule. The pipeline code itself is the same code — it was
+> lifted out of the Workflow into `src/pipeline.ts` unchanged, and
+> `test/pipeline-run.spec.ts` still drives it against real D1 in workerd so the
+> SQLite shim cannot quietly drift from it.
+>
+> The Worker still exists and still serves the page. It has no database, no
+> Workflow, no cron and no secrets — see `wrangler.jsonc`.
+
+
 ## Context
 
 **The ask.** Track **where developer activity is moving** on Hugging Face — explicitly *not* model downloads — along four axes:

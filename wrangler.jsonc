@@ -6,34 +6,27 @@
   "workers_dev": true,
 
   // ---------------------------------------------------------------------
-  // No "limits" block, and it is not an oversight.
+  // What this Worker is, now.
   //
-  // `limits.cpu_ms` is a Workers PAID feature. Setting it on this account
-  // fails the deploy outright — not with a warning, with:
+  // A page and a health check. It has no database, no Workflow, no cron and
+  // no secrets, because it no longer computes anything: the weekly run does
+  // that on a GitHub-hosted runner and writes its answers into public/data,
+  // which ships with this deploy as static assets.
+  //
+  // That is why there is no "limits" block. `limits.cpu_ms` is a Workers PAID
+  // feature and setting it on this account fails the deploy outright —
   //
   //     CPU limits are not supported for the Free plan  [code: 100328]
   //
-  // and a failed deploy blocks every other fix in the same push. That is how
-  // it was found: four unrelated fixes sat undeployed behind one line.
-  //
-  // It was added to raise the 30s default, because deep runs were dying with
-  // "Worker exceeded CPU time limit" — steps failing in 1-2s as the
-  // orchestration replay ate the budget before the step body ran. That
-  // problem is real and this was the wrong lever for it on this plan. The
-  // right lever is fewer, cheaper steps, which is what STEP_BUDGET in
-  // src/workflow.ts enforces and what the enrich/raw-store allocation fixes
-  // reduce.
-  //
-  // Re-add this ONLY after confirming the deploying account is on Workers
-  // Paid — the account that builds this Worker, which is not necessarily the
-  // one holding the D1 database.
+  // — which is how it was found, with four unrelated fixes sitting undeployed
+  // behind one line. It was added to buy CPU for the pipeline. The pipeline
+  // left instead, and serving a file needs none.
   // ---------------------------------------------------------------------
 
-  // Which code is actually live. Deploys land minutes after a push, and with
-  // nothing reporting the deployed version the only way to tell was to infer
-  // it from behaviour — which produced several wrong conclusions today, most
-  // expensively a run blamed on a bug that had already been fixed but not yet
-  // deployed. /health reports this so the question is answerable.
+  // Which code is actually live. A push and its deploy are minutes apart, and
+  // reading the dashboard inside that gap shows the previous build with
+  // nothing on the page to say so. /health reports this so the question is
+  // answerable.
   "version_metadata": { "binding": "CF_VERSION_METADATA" },
 
   "observability": {
@@ -41,37 +34,16 @@
   },
 
   // ---------------------------------------------------------------------
-  // D1 — the single working store (SQLite). Raw records, typed entities,
-  // classifications and precomputed weekly metrics all live here.
+  // Static assets — the dashboard page and the data it reads.
   //
-  // Local dev and the vitest pool use a per-project simulated D1 and ignore
-  // the id below; it matters only for `--remote` and for deploys.
-  // ---------------------------------------------------------------------
-  "d1_databases": [
-    {
-      "binding": "DB",
-      "database_name": "huggingface-activity",
-      "database_id": "c9e602d6-86fd-45e6-aae9-42e6077b61e4",
-      "migrations_dir": "migrations"
-    }
-  ],
-
-  // ---------------------------------------------------------------------
-  // Workflows — the weekly pipeline. Durable per-step state and independent
-  // step retries; classification alone outlives a single Worker invocation.
-  // ---------------------------------------------------------------------
-  "workflows": [
-    {
-      "name": "hf-weekly-pipeline",
-      "binding": "WEEKLY_PIPELINE",
-      "class_name": "WeeklyPipeline"
-    }
-  ],
-
-  // ---------------------------------------------------------------------
-  // Static assets — the dashboard page, served by this same Worker.
-  // `not_found_handling: "none"` lets unmatched paths (e.g. /api/*) fall
-  // through to the fetch handler instead of returning the asset 404.
+  // `not_found_handling: "none"` lets unmatched paths fall through to the
+  // fetch handler instead of returning the asset 404. Two paths depend on
+  // that: /health, and the 410 for the retired /api/* routes.
+  //
+  // A missing file under /data IS the 404 the page expects — a week with no
+  // narrative has no narrative file, and the card hides itself on a 404. So
+  // the asset router answering those directly is the intended behaviour, not
+  // a gap.
   // ---------------------------------------------------------------------
   "assets": {
     "directory": "./public/",
@@ -80,52 +52,22 @@
   },
 
   // ---------------------------------------------------------------------
-  // No "triggers" block, deliberately.
+  // No "triggers" block, and now nothing to trigger.
   //
-  // The weekly schedule lives in .github/workflows/weekly-pipeline.yml. This
-  // file used to declare the identical cron as well, which was harmless only
-  // by accident: all five Free-plan cron slots are in use, so the deploy
-  // silently dropped the schedule — and marked every Workers Build failed for
-  // it, even though the code went live.
-  //
-  // The accident stops protecting us the moment the account moves to Workers
-  // Paid: the slot cap lifts, the next deploy registers 30 0 * * 1 for real,
-  // and it fires alongside the GitHub Actions cron. The two use different
-  // instance ids (weekly-<week> vs a random uuid), so they would not collide
-  // and dedupe — they would both run the same week and double the D1 writes.
-  //
-  // The scheduled() handler in src/index.ts is kept and is simply dormant, so
-  // re-adding a trigger here is all it would take to move the schedule back.
+  // The schedule is .github/workflows/weekly-runner.yml. This file used to
+  // declare an identical cron, which was harmless only by accident: all five
+  // Free-plan cron slots were in use, so the deploy silently dropped the
+  // schedule — and marked every Workers Build failed for it, even though the
+  // code went live. The Worker has no scheduled() handler any more, so a
+  // trigger here would fire into nothing.
   // ---------------------------------------------------------------------
 
-  // Declared so a missing value fails loudly at deploy rather than at 03:00
-  // on a Monday. Set each with `wrangler secret put <NAME>`.
-  "secrets": {
-    "required": [
-      "HF_TOKEN",
-      "BEDROCK_API_KEY",
-      "GITHUB_TOKEN",
-      "ADMIN_TOKEN"
-    ]
-  },
+  // No "secrets" block either. HF_TOKEN, BEDROCK_API_KEY and GITHUB_TOKEN
+  // moved to GitHub Actions secrets with the pipeline; ADMIN_TOKEN guarded
+  // the admin endpoints and went with them. Nothing this Worker does needs a
+  // credential.
 
   "vars": {
-    "TAXONOMY_VERSION": "1",
-    "GITHUB_REPO": "techmuns/huggingface",
-
-    // Verified against this account: `anthropic.claude-opus-5` and the Haiku
-    // 4.5 release are both INFERENCE_PROFILE-only, so they must be invoked
-    // through a regional profile id (the `us.` prefix), not the bare model id.
-    // us-east-1 is the region that resolves both; ap-south-1 rejects the
-    // `apac.` profile for Opus 5, and Sonnet 4.6 returns 403 on this account.
-    "BEDROCK_REGION": "us-east-1",
-
-    // Cost split. Classification is the only high-volume LLM call (~175
-    // batched requests/week), so it runs on Haiku 4.5 at $1/$5 per 1M rather
-    // than Opus 5 at $5/$25. Narration is a single call per week over already
-    // computed metrics, where the prose is what the stakeholder actually
-    // reads, so it keeps the stronger model at negligible cost.
-    "BEDROCK_CLASSIFY_MODEL_ID": "us.anthropic.claude-haiku-4-5-20251001-v1:0",
-    "BEDROCK_NARRATE_MODEL_ID": "us.anthropic.claude-opus-5"
+    "TAXONOMY_VERSION": "1"
   }
 }

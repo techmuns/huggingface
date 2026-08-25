@@ -24,22 +24,30 @@ describe("worker", () => {
     expect(res.status).toBe(200);
     expect(await res.text()).toContain("<title>HF Developer Activity Dashboard</title>");
   });
-});
 
-describe("bindings", () => {
-  it("exposes a working D1 database", async () => {
-    const row = await env.DB.prepare("select 1 as n").first<{ n: number }>();
-    expect(row?.n).toBe(1);
+  it("serves the published data files", async () => {
+    // The dashboard reads these instead of an API. A missing series.json is
+    // the one failure that empties the whole page, and it is invisible from
+    // the Worker's own code — nothing here references it.
+    const res = await SELF.fetch("https://example.com/data/series.json");
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { weeks: string[]; series: unknown[] };
+    expect(body.weeks.length).toBeGreaterThan(0);
+    expect(body.series.length).toBeGreaterThan(0);
   });
 
-  it("exposes the weekly pipeline workflow binding", () => {
-    expect(typeof env.WEEKLY_PIPELINE?.create).toBe("function");
+  it("tells a caller of the retired API where the data went", async () => {
+    // 410 rather than 404: these paths existed for months, and a bookmark or
+    // a runbook hitting one should learn that it moved, not that it never was.
+    const res = await SELF.fetch("https://example.com/api/series?weeks=12");
+    expect(res.status).toBe(410);
+    const body = (await res.json()) as { error: string; detail: string };
+    expect(body.error).toBe("gone");
+    expect(body.detail).toContain("/data");
   });
 
-  it("carries the plaintext vars the pipeline reads", () => {
-    expect(env.BEDROCK_REGION).toBe("us-east-1");
-    // Classification is the high-volume path and must stay on the cheap model.
-    expect(env.BEDROCK_CLASSIFY_MODEL_ID).toContain("haiku");
-    expect(env.BEDROCK_NARRATE_MODEL_ID).toContain("opus");
+  it("does not answer /api/* with the dashboard HTML", async () => {
+    const res = await SELF.fetch("https://example.com/api/nope");
+    expect(res.headers.get("content-type")).toContain("application/json");
   });
 });

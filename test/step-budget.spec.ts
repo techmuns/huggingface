@@ -4,7 +4,7 @@ import {
   WORKING_STEPS,
   WORST_CASE_STEPS,
   stepsFor,
-} from "../src/workflow";
+} from "../src/pipeline";
 import { RULES_PAGE_SIZE } from "../src/lib/classify-rules";
 import { MAX_PAGE_SIZE } from "../src/lib/hf-api";
 

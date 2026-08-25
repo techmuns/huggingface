@@ -9,8 +9,6 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
-    "migrate:local": "wrangler d1 migrations apply huggingface-activity --local",
-    "migrate:remote": "wrangler d1 migrations apply huggingface-activity --remote",
     "cf-typegen": "wrangler types",
     "pretypecheck": "wrangler types",
     "pretest": "wrangler types",

@@ -49,3 +49,16 @@ test/*-check.spec.ts
 
 # Build output for the Node runner. Rebuilt from source on every run.
 dist/
+
+# The runner's working directory: the SQLite database and the run summary.
+#
+# The database is not thrown away — it is force-pushed to the `pipeline-state`
+# orphan branch after every run, because classifications are paid Bedrock
+# calls and resolved model families are weeks of accumulated work. It is kept
+# out of the main history because a 40 MB file committed weekly would be two
+# gigabytes a year, for versions nobody will ever read.
+#
+# Anchored with a leading slash. A bare `data/` matches a directory of that
+# name at ANY depth, which silently swallowed public/data — the files the
+# dashboard is built to read.
+/data/

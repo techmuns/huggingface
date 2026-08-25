@@ -1,4 +1,4 @@
-import { SELF, env } from "cloudflare:test";
+import { env } from "cloudflare:test";
 import { beforeEach, describe, expect, it } from "vitest";
 import {
   MAX_COVERAGE_GAP,
@@ -19,7 +19,7 @@ import {
   slotsOf,
   type Fact,
 } from "../src/lib/insights";
-import { insightPeriodsFor } from "../src/workflow";
+import { insightPeriodsFor } from "../src/pipeline";
 import { TAXONOMY_VERSION } from "../src/lib/taxonomy";
 import { aggregateWeeklyMetrics } from "../src/lib/aggregate";
 import type { BedrockClient, BedrockResponse } from "../src/lib/bedrock";
@@ -358,104 +358,7 @@ describe("insightPeriodsFor", () => {
   });
 });
 
-// ── the read API ────────────────────────────────────────────────────────────
 
-describe("/api/insights", () => {
-  const save = (kind: "week" | "month", key: string, status = "ok", narrative = "Something happened.") =>
-    saveInsight(
-      DB,
-      { kind, periodKey: key, narrative, facts: [fact()], status: status as "ok", detail: null,
-        inputTokens: 1, outputTokens: 2 },
-      { weekStart: kind === "week" ? key : null, modelId: "m", generatedAt: "2026-08-11T00:00:00.000Z" },
-    );
-
-  it("answers with both kinds, newest first", async () => {
-    await save("week", "2026-08-03");
-    await save("week", "2026-08-10");
-    await save("month", "2026-07");
-    const res = await SELF.fetch("http://localhost/api/insights");
-    expect(res.status).toBe(200);
-    const d = (await res.json()) as { week: Array<{ periodKey: string }>; month: Array<{ periodKey: string }> };
-    expect(d.week.map((x) => x.periodKey)).toEqual(["2026-08-10", "2026-08-03"]);
-    expect(d.month.map((x) => x.periodKey)).toEqual(["2026-07"]);
-  });
-
-  it("does not let one kind crowd out the other", async () => {
-    // Asking for six of each is not the same as the six most recent overall,
-    // which on a weekly cron would be six weeks and no month at all.
-    for (const w of ["2026-07-06", "2026-07-13", "2026-07-20", "2026-07-27", "2026-08-03", "2026-08-10"]) {
-      await save("week", w);
-    }
-    await save("month", "2026-07");
-    const d = (await (await SELF.fetch("http://localhost/api/insights?limit=6")).json()) as
-      { week: unknown[]; month: unknown[] };
-    expect(d.week).toHaveLength(6);
-    expect(d.month).toHaveLength(1);
-  });
-
-  it("returns a period it could not write, with the reason", async () => {
-    await save("week", "2026-08-10", "ungrounded", "");
-    const d = (await (await SELF.fetch("http://localhost/api/insights?kind=week")).json()) as
-      { week: Array<{ status: string; narrative: string }> };
-    expect(d.week[0]!.status).toBe("ungrounded");
-    expect(d.week[0]!.narrative).toBe("");
-  });
-
-  it("hands back the facts the prose was written from", async () => {
-    await save("week", "2026-08-10");
-    const d = (await (await SELF.fetch("http://localhost/api/insights?kind=week")).json()) as
-      { week: Array<{ facts: Array<{ id: string; value: number }> }> };
-    expect(d.week[0]!.facts[0]).toMatchObject({ id: "F1", value: 1462 });
-  });
-
-  it("re-writing a period replaces it rather than adding a second", async () => {
-    await save("week", "2026-08-10", "ok", "First.");
-    await save("week", "2026-08-10", "ok", "Second.");
-    const d = (await (await SELF.fetch("http://localhost/api/insights?kind=week")).json()) as
-      { week: Array<{ narrative: string }> };
-    expect(d.week).toHaveLength(1);
-    expect(d.week[0]!.narrative).toBe("Second.");
-  });
-
-  it("rejects an unknown kind and a limit outside the cap", async () => {
-    expect((await SELF.fetch("http://localhost/api/insights?kind=decade")).status).toBe(400);
-    expect((await SELF.fetch("http://localhost/api/insights?limit=0")).status).toBe(400);
-    expect((await SELF.fetch("http://localhost/api/insights?limit=13")).status).toBe(400);
-  });
-
-  it("rejects a non-GET method", async () => {
-    expect((await SELF.fetch("http://localhost/api/insights", { method: "POST" })).status).toBe(405);
-  });
-});
-
-// ── the summary card no longer depends on a GitHub write ────────────────────
-
-describe("/api/narrative", () => {
-  it("answers from the database when the archive never landed", async () => {
-    await saveInsight(
-      DB,
-      { kind: "week", periodKey: "2026-08-10", narrative: "The week went like this.",
-        facts: [], status: "ok", detail: null, inputTokens: 0, outputTokens: 0 },
-      { weekStart: "2026-08-10", modelId: "m", generatedAt: "2026-08-11T00:00:00.000Z" },
-    );
-    const res = await SELF.fetch("http://localhost/api/narrative?week=2026-08-10");
-    expect(res.status).toBe(200);
-    const d = (await res.json()) as { narrative: string; source: string };
-    expect(d.narrative).toBe("The week went like this.");
-    expect(d.source).toBe("database");
-  });
-
-  it("does not serve a period whose insight could not be written", async () => {
-    await saveInsight(
-      DB,
-      { kind: "week", periodKey: "2026-08-10", narrative: "", facts: [],
-        status: "ungrounded", detail: "wrote a digit", inputTokens: 0, outputTokens: 0 },
-      { weekStart: "2026-08-10", modelId: "m", generatedAt: "2026-08-11T00:00:00.000Z" },
-    );
-    const res = await SELF.fetch("http://localhost/api/narrative?week=2026-08-10");
-    expect(res.status).not.toBe(200);
-  });
-});
 
 // ── a deployment that shipped ahead of its migration ────────────────────────
 
@@ -514,14 +417,12 @@ describe("the schema bootstrap", () => {
     expect(calls).toBe(1);
   });
 
-  it("heals the read path: the tab works on the first request", async () => {
+  it("heals the read path: a select works on the first attempt", async () => {
     await DB.prepare("DROP TABLE hf_insights").run();
-    const res = await SELF.fetch("http://localhost/api/insights");
-    expect(res.status).toBe(200);
-    const d = (await res.json()) as { week: unknown[]; month: unknown[]; unavailable?: string };
-    // No "not applied" message: it made the table and answered normally.
-    expect(d.unavailable).toBeUndefined();
-    expect(d.week).toEqual([]);
+    const row = await withInsightsSchema(DB, () =>
+      DB.prepare("SELECT COUNT(*) AS n FROM hf_insights").first<{ n: number }>());
+    // It made the table and answered, rather than surfacing "no such table".
+    expect(row?.n).toBe(0);
     expect(await schemaOf()).toHaveLength(2);
   });
 
@@ -538,72 +439,6 @@ describe("the schema bootstrap", () => {
     expect(row?.narrative).toBe("It worked.");
   });
 
-  it("heals /api/narrative too, rather than falling through to GitHub forever", async () => {
-    await DB.prepare("DROP TABLE hf_insights").run();
-    await saveInsight(
-      DB,
-      { kind: "week", periodKey: "2026-08-10", narrative: "The week went like this.",
-        facts: [], status: "ok", detail: null, inputTokens: 0, outputTokens: 0 },
-      { weekStart: "2026-08-10", modelId: "m", generatedAt: "2026-08-11T00:00:00.000Z" },
-    );
-    const res = await SELF.fetch("http://localhost/api/narrative?week=2026-08-10");
-    expect(res.status).toBe(200);
-    expect((await res.json() as { source: string }).source).toBe("database");
-  });
-});
-
-describe("a deployment where the table cannot be created at all", () => {
-  it("answers with empty lists and says why, rather than a 500", async () => {
-    // The lesson of /api/narrative, which spent weeks answering not_found for
-    // every week on record while the card hid itself. An empty list with no
-    // explanation is indistinguishable from a feature nobody has built.
-    await DB.prepare("DROP TABLE hf_insights").run();
-    // A view of the same name: CREATE TABLE IF NOT EXISTS will not replace it,
-    // and every SELECT against it still fails. Stands in for a database the
-    // Worker cannot write to.
-    await DB.prepare("CREATE VIEW hf_insights AS SELECT 1 AS narrative WHERE 0").run();
-    try {
-      const res = await SELF.fetch("http://localhost/api/insights");
-      expect(res.status).toBe(200);
-      const d = (await res.json()) as { week: unknown[]; month: unknown[]; unavailable?: string };
-      expect(d.week).toEqual([]);
-      expect(d.month).toEqual([]);
-      expect(d.unavailable).toBeTruthy();
-    } finally {
-      await DB.prepare("DROP VIEW IF EXISTS hf_insights").run();
-      await DB.exec(
-        "CREATE TABLE IF NOT EXISTS hf_insights (id INTEGER PRIMARY KEY, kind TEXT NOT NULL CHECK (kind IN ('week','month')), period_key TEXT NOT NULL, week_start TEXT, taxonomy_version TEXT NOT NULL, narrative TEXT NOT NULL, facts TEXT NOT NULL DEFAULT '[]' CHECK (json_valid(facts)), status TEXT NOT NULL DEFAULT 'ok' CHECK (status IN ('ok','ungrounded','insufficient','error')), detail TEXT, model_id TEXT, prompt_version TEXT, input_tokens INTEGER, output_tokens INTEGER, generated_at TEXT NOT NULL, UNIQUE (kind, period_key, taxonomy_version)) STRICT",
-      );
-    }
-  });
-
-  it("is reported as degraded, and does NOT stop the weekly run", async () => {
-    // The distinction that matters. A missing hf_models column breaks a write a
-    // third of the way into a run and must stop it before it starts. A missing
-    // hf_insights costs one paragraph — gating on it would have blocked
-    // ingest, classification and aggregation, four hours of the only work that
-    // matters, the first Monday after this shipped.
-    const { missingColumns } = await import("../src/index");
-    await DB.prepare("DROP TABLE hf_insights").run();
-    try {
-      const missing = await missingColumns(DB, [["hf_insights", "narrative"]]);
-      expect(missing).toEqual(["hf_insights.narrative"]);
-
-      const res = await SELF.fetch("http://localhost/api/admin/stats", {
-        headers: { authorization: `Bearer ${env.ADMIN_TOKEN}` },
-      });
-      expect(res.status).toBe(200);
-      const d = (await res.json()) as { schema: { ok: boolean; missingColumns: string[]; degraded: string[] } };
-      // Degraded, not missing: the gate stays green and CI raises a warning.
-      expect(d.schema.degraded).toContain("hf_insights.narrative");
-      expect(d.schema.missingColumns).not.toContain("hf_insights.narrative");
-      expect(d.schema.ok).toBe(true);
-    } finally {
-      await DB.exec(
-        "CREATE TABLE IF NOT EXISTS hf_insights (id INTEGER PRIMARY KEY, kind TEXT NOT NULL CHECK (kind IN ('week','month')), period_key TEXT NOT NULL, week_start TEXT, taxonomy_version TEXT NOT NULL, narrative TEXT NOT NULL, facts TEXT NOT NULL DEFAULT '[]' CHECK (json_valid(facts)), status TEXT NOT NULL DEFAULT 'ok' CHECK (status IN ('ok','ungrounded','insufficient','error')), detail TEXT, model_id TEXT, prompt_version TEXT, input_tokens INTEGER, output_tokens INTEGER, generated_at TEXT NOT NULL, UNIQUE (kind, period_key, taxonomy_version)) STRICT",
-      );
-    }
-  });
 });
 
 // ── the repair endpoint ─────────────────────────────────────────────────────
@@ -648,31 +483,6 @@ describe("periodSpec", () => {
     // Two answers is how a repaired month disagrees with the month beside it.
     const fromRun = insightPeriodsFor("2026-08-31", Date.parse("2026-09-07T00:30:00Z")).find((p) => p.kind === "month")!;
     expect(fromRun).toEqual(periodSpec("month", "2026-08"));
-  });
-});
-
-describe("POST /api/admin/insight", () => {
-  const auth = { authorization: `Bearer ${env.ADMIN_TOKEN}` };
-  const post = (q: string, headers: Record<string, string> = auth) =>
-    SELF.fetch(`http://localhost/api/admin/insight?${q}`, { method: "POST", headers });
-
-  it("refuses without the admin token", async () => {
-    expect((await post("kind=week&period=2026-08-10", {})).status).toBe(401);
-    expect((await post("kind=week&period=2026-08-10", { authorization: "Bearer wrong" })).status).toBe(401);
-  });
-
-  it("refuses a GET, because it spends money and overwrites a row", async () => {
-    const res = await SELF.fetch("http://localhost/api/admin/insight?kind=week&period=2026-08-10", {
-      headers: auth,
-    });
-    expect(res.status).toBe(405);
-  });
-
-  it("rejects a bad kind or period before calling any model", async () => {
-    expect((await post("kind=decade&period=2026")).status).toBe(400);
-    expect((await post("kind=week")).status).toBe(400);
-    expect((await post("kind=week&period=2026-08-11")).status).toBe(400);
-    expect((await post("kind=month&period=2026-13")).status).toBe(400);
   });
 });
 
@@ -726,42 +536,6 @@ describe("periodIsOpen", () => {
   it("treats a malformed key as open, never as finished", () => {
     expect(periodIsOpen("month", "2026-13")).toBe(true);
     expect(periodIsOpen("week", "not-a-date")).toBe(true);
-  });
-});
-
-describe("POST /api/admin/insight refuses a period still running", () => {
-  const auth = { authorization: `Bearer ${env.ADMIN_TOKEN}` };
-  const post = (q: string) =>
-    SELF.fetch(`http://localhost/api/admin/insight?${q}`, { method: "POST", headers: auth });
-
-  it("409s on the current week, and says which week it would take", async () => {
-    const thisMonday = (() => {
-      const d = new Date();
-      d.setUTCDate(d.getUTCDate() - ((d.getUTCDay() + 6) % 7));
-      return d.toISOString().slice(0, 10);
-    })();
-    const res = await post(`kind=week&period=${thisMonday}`);
-    expect(res.status).toBe(409);
-    const d = (await res.json()) as { error: string; detail: string; latestWritable: string };
-    expect(d.error).toBe("period_not_finished");
-    expect(d.detail).toMatch(/has not finished yet/);
-    // Actionable: the 409 names a period that would be accepted.
-    expect(d.latestWritable).toMatch(/^\d{4}-\d{2}-\d{2}$/);
-    expect(periodIsOpen("week", d.latestWritable)).toBe(false);
-  });
-
-  it("409s on the current month", async () => {
-    const now = new Date();
-    const thisMonth = `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, "0")}`;
-    const res = await post(`kind=month&period=${thisMonth}`);
-    expect(res.status).toBe(409);
-    const d = (await res.json()) as { latestWritable: string };
-    expect(d.latestWritable).toMatch(/^\d{4}-\d{2}$/);
-    expect(periodIsOpen("month", d.latestWritable)).toBe(false);
-  });
-
-  it("rejects the rolled-over date before it reaches the model", async () => {
-    expect((await post("kind=week&period=2026-02-30")).status).toBe(400);
   });
 });
 

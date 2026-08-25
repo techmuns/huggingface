@@ -1,21 +1,24 @@
 import { env } from "cloudflare:test";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { WeeklyPipeline } from "../src/workflow";
+import { runWeeklyPipeline } from "../src/pipeline";
 
 /**
  * The first test that drives the orchestrator.
  *
- * src/workflow.ts is 796 lines and, until this file, nothing executed a single
- * one of them. Every stage it calls is covered; the code that decides WHICH
- * stages run, in what order, with which window, and what the run reports at
- * the end, was not. That is also the code about to be lifted out so a Node
- * runner can share it, and refactoring 796 untested lines is how this project
- * has repeatedly shipped silent wrongness.
+ * Every stage the orchestrator calls is covered on its own; the code that
+ * decides WHICH stages run, in what order, with which window, and what the run
+ * reports at the end, was not — until this file. That is also the code that
+ * was lifted out of the Workflow so a Node runner could share it, and
+ * refactoring untested orchestration is how this project has repeatedly
+ * shipped silent wrongness.
  *
- * It runs the real `run()` against real D1 in workerd. Only two things are
- * substituted: the Workflow step, which becomes a plain call so there is no
- * durability or retry in the way, and `fetch`, so the Hub and Bedrock answer
- * from fixtures instead of the network.
+ * It runs the real `runWeeklyPipeline` against real D1 in workerd. Only two
+ * things are substituted: the step, which becomes a plain call so there is no
+ * retry in the way, and `fetch`, so the Hub and Bedrock answer from fixtures
+ * instead of the network.
+ *
+ * D1 here is the oracle, not the deployment: the pipeline runs on SQLite in
+ * Actions now. The two are held together by test/d1-conformance.ts.
  */
 const DB = env.DB;
 const realFetch = globalThis.fetch;
@@ -104,15 +107,10 @@ async function drive(weekStart: string) {
     timestamp: new Date("2026-08-24T00:30:00.000Z"),
     instanceId: "test-instance",
   };
-  // A real instance without running the WorkflowEntrypoint constructor, which
-  // needs a Cloudflare execution context we do not have. The prototype carries
-  // walk/enrichBlind/classifyWithLlm, so `this` has to be built from it rather
-  // than from a bare object.
-  const instance = Object.create(WeeklyPipeline.prototype) as { env: unknown };
-  instance.env = env;
-  return await (instance as unknown as {
-    run(e: unknown, s: unknown): Promise<Record<string, unknown>>;
-  }).run(event, fakeStep);
+  return (await runWeeklyPipeline(fakeStep, env as never, event)) as unknown as Record<
+    string,
+    unknown
+  >;
 }
 
 describe("the weekly pipeline, end to end", () => {

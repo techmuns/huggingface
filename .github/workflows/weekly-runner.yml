@@ -12,6 +12,11 @@
 # Spaces in 150 seconds. The same ingest on Cloudflare took ~18 minutes and kept
 # dying.
 #
+# WHAT IT PUBLISHES. Two things, to two places. The dashboard's figures go to
+# public/data on this branch, committed after a successful run — Cloudflare
+# rebuilds the Worker on that push and serves them as static files, which is
+# why the page no longer queries anything. The database goes elsewhere:
+#
 # WHERE THE DATABASE LIVES. On an orphan branch, `pipeline-state`, force-pushed
 # after every run. It has to persist: classifications are paid Bedrock calls,
 # and resolved model families and README hashes are weeks of accumulated work.
@@ -138,6 +143,48 @@ jobs:
             --out data/last-run.json \
             --deadline-minutes 300 \
             ${{ github.event.inputs.dryRun == 'true' && '--dry-run' || '' }}
+
+      # ── Publishing ────────────────────────────────────────────────────
+      #
+      # The dashboard reads files, not an API. It used to ask a Worker, which
+      # asked D1, on every page load — a metered query re-deriving, per
+      # visitor, an answer that had been fixed since Monday. The run writes
+      # those answers into public/data and commits them; Cloudflare rebuilds
+      # the Worker on the push and serves them as static assets.
+      #
+      # Only on success. A run that died halfway has a database describing half
+      # a week, and publishing it would put that half on the page in place of a
+      # week that is currently correct. The database is saved either way, so a
+      # re-run publishes the whole thing.
+      - name: Publish the dashboard data
+        if: success() && github.event.inputs.dryRun != 'true'
+        run: |
+          set -euo pipefail
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add public/data
+          if git diff --cached --quiet; then
+            echo "Nothing changed; not committing."
+            exit 0
+          fi
+
+          git commit -q -m "data: ${{ steps.week.outputs.week }}"
+
+          # The publisher merges rather than overwrites, so a rebase onto
+          # someone else's push is safe: the file on the branch and the file
+          # here describe different weeks.
+          for attempt in 1 2 3 4; do
+            if git push origin "HEAD:${{ github.ref_name }}"; then
+              echo "Published."
+              exit 0
+            fi
+            echo "Push failed; rebasing and retrying (attempt $attempt)."
+            sleep $((2 ** attempt))
+            git pull --rebase origin "${{ github.ref_name }}"
+          done
+          echo "Could not publish after four attempts."
+          exit 1
 
       - name: Save the pipeline database
         # Always: a failed run still advanced the database, and throwing that

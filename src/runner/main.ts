@@ -3,6 +3,7 @@ import { dirname, resolve } from "node:path";
 import { asD1, openSqliteD1 } from "../lib/d1-sqlite";
 import { type PipelineEnv, runWeeklyPipeline } from "../pipeline";
 import { applyMigrations } from "./migrate";
+import { publishSnapshot } from "./publish-files";
 import { createRunnerStep, type StepEvent } from "./step";
 
 /**
@@ -26,6 +27,7 @@ interface Args {
   dbPath: string;
   outPath: string;
   migrationsDir: string;
+  dataDir: string;
   dryRun: boolean;
   deadlineMinutes: number;
 }
@@ -59,6 +61,7 @@ function parseArgs(argv: readonly string[]): Args {
     dbPath: resolve(get("db") ?? "data/pipeline.sqlite"),
     outPath: resolve(get("out") ?? "data/last-run.json"),
     migrationsDir: resolve(get("migrations") ?? "migrations"),
+    dataDir: resolve(get("data") ?? "public/data"),
     dryRun: argv.includes("--dry-run"),
     deadlineMinutes: deadline,
   };
@@ -141,6 +144,7 @@ export async function main(argv: readonly string[] = process.argv.slice(2)): Pro
   let exitCode = 0;
   let result: unknown;
   let failure: string | undefined;
+  let publishedWeeks: string[] = [];
 
   try {
     result = await runWeeklyPipeline(step, env, {
@@ -153,6 +157,20 @@ export async function main(argv: readonly string[] = process.argv.slice(2)): Pro
       instanceId: runId,
     });
     console.log(`complete in ${Math.round((Date.now() - startedAt) / 1000)}s`);
+
+    // Only on success, and never on a dry run. Publishing is what the page
+    // reads; a run that died halfway has a database describing half a week,
+    // and the merge would happily write that half over a week the page is
+    // currently showing correctly. A failed run keeps its database, so the
+    // re-run publishes the whole thing.
+    if (!args.dryRun) {
+      const published = await publishSnapshot(env.DB, args.dataDir, new Date().toISOString());
+      publishedWeeks = published.weeks;
+      console.log(
+        `published ${published.written.length} files to ${args.dataDir} ` +
+          `(${published.weeks.length} weeks)`,
+      );
+    }
   } catch (err) {
     failure = err instanceof Error ? err.message : String(err);
     exitCode = 1;
@@ -180,6 +198,7 @@ export async function main(argv: readonly string[] = process.argv.slice(2)): Pro
         finishedAt: new Date().toISOString(),
         durationSeconds: Math.round((Date.now() - startedAt) / 1000),
         ok: exitCode === 0,
+        publishedWeeks,
         ...(failure === undefined ? {} : { error: failure }),
         stages: Object.fromEntries([...stages].map(([k, v]) => [k, v])),
         result: result ?? null,

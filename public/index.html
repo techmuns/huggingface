@@ -895,6 +895,55 @@ const getJSON = (path) =>
   fetch(path, { cache: "no-store", headers: { "cache-control": "no-cache" } })
     .then((r) => (r.ok ? r.json() : Promise.reject(new Error(String(r.status)))));
 
+/**
+ * Where the figures come from.
+ *
+ * Files, not an API. Every number on this page is settled for a week at a
+ * time, and it used to be recomputed for every visitor by a Worker querying a
+ * row-metered database — which is what put the pipeline on a plan whose limits
+ * it kept hitting. The weekly run writes these files instead. The shapes are
+ * the shapes the endpoints returned, so everything below reads them unchanged.
+ */
+const DATA = "/data";
+
+/** What the drill-down card shows. The files keep more, so this can rise. */
+const DRILL_LIMIT = 20;
+
+/**
+ * The drill-down card, for one selection of weeks.
+ *
+ * The file holds one entry per week, and the card can be opened on any set of
+ * them. Counts add up. The top twenty of a set of weeks is drawn from the
+ * per-week top twenties — a Space beaten by twenty others inside its own week
+ * cannot lead the union — so re-ranking the weeks asked for gives exactly what
+ * the old query over the whole span gave.
+ *
+ * The comparator has to match the SQL it replaces, ties included: likes down,
+ * then newest first, then the id. Two weeks with the same figures would
+ * otherwise present them in a different order than one.
+ */
+function drillForWeeks(file, weeks, limit) {
+  let total = 0, withTraction = 0, likes = 0;
+  const spaces = [];
+  for (const week of weeks) {
+    const w = file.weeks && file.weeks[week];
+    if (!w) continue;
+    total += w.total;
+    withTraction += w.withTraction;
+    likes += w.likes;
+    spaces.push(...w.spaces);
+  }
+  spaces.sort((a, b) =>
+    b.likes - a.likes ||
+    (a.createdAt < b.createdAt ? 1 : a.createdAt > b.createdAt ? -1 : 0) ||
+    (a.spaceId < b.spaceId ? -1 : a.spaceId > b.spaceId ? 1 : 0));
+  return {
+    useCase: file.useCase, weeks, limit,
+    total, withTraction, likes,
+    spaces: spaces.slice(0, limit),
+  };
+}
+
 const CUTS = {
   usecase:  'spaces_by_use_case',
   share:    'share_by_use_case',
@@ -1067,10 +1116,10 @@ const state = {
 
 let printing = false;
 let seriesFailed = false;
-let seriesRaw = null;    // /api/series payload, every cut, up to three years
-let matrixSeries = null; // /api/series?cut=family_share_by_use_case, lazily
+let seriesRaw = null;    // series.json, every cut, up to three years
+let matrixSeries = null; // series-matrix.json, lazily
 let matrixPending = null; // the in-flight request for it, shared by every render
-let coverage = null;     // /api/coverage for the newest period on screen
+let coverage = null;     // coverage/<week>.json for the newest period on screen
 let coverageWeek = null;
 let coverageSeq = 0;
 let totalsCache = null;
@@ -1583,8 +1632,8 @@ function prepareSeries(weeks, rows, { zeroFill = false, isCount = false, payload
       const v = i === undefined ? null : r.values[i];
       const filled = v == null && zeroFill && measured[k];
       values.push(v != null ? v : (filled ? 0 : null));
-      // Order matters, and the obvious `??` does not work here: /api/series
-      // pads an absent category's suppression slot with a real 0, so a nullish
+      // Order matters, and the obvious `??` does not work here: the series
+      // file pads an absent category's suppression slot with a real 0, so a nullish
       // fallback never reaches the week's own flag. A filled point takes the
       // week's base and the week's flag; only a point that has its own row
       // keeps its own.
@@ -2542,8 +2591,10 @@ function rankedBars(cols, { unit = '', chartId = '', whole = false, drill = fals
 
 let drillSeq = 0;
 const drillCache = new Map();
+/** Per use case, the whole file. One fetch each, however often it is opened. */
+const drillFiles = new Map();
 
-/** The half-open window a selection covers, as the API wants it. */
+/** The half-open window a selection covers. */
 function drillWindow(periods) {
   const idx = pickedIndexes(periods);
   if (!idx.length) return null;
@@ -2601,10 +2652,15 @@ async function renderDrill(cols) {
   if (!drillCache.has(key)) {
     setHTML(host, '<p class="empty">Loading…</p>');
     try {
-      drillCache.set(key, await getJSON(
-        `/api/use-case-spaces?useCase=${encodeURIComponent(state.drill)}` +
-        `&from=${win.from}&to=${win.to}&limit=20` +
-        `&weeks=${encodeURIComponent(win.weeks.join(','))}`));
+      // One file per use case, holding every week. Fetched once and kept:
+      // changing the selected period re-ranks what is already here rather
+      // than asking for anything.
+      let file = drillFiles.get(state.drill);
+      if (!file) {
+        file = await getJSON(`${DATA}/use-case-spaces/${encodeURIComponent(state.drill)}.json`);
+        drillFiles.set(state.drill, file);
+      }
+      drillCache.set(key, drillForWeeks(file, win.weeks, DRILL_LIMIT));
     } catch {
       if (seq === drillSeq) setHTML(host, '<p class="empty">That list could not be loaded just now.</p>');
       return;
@@ -3040,7 +3096,7 @@ function renderTiles() {
   const scope = idxNow.length === 1 ? periods[idxNow[0]].label
     : `${periods[idxNow[0]].label}–${periods[idxNow[idxNow.length - 1]].label}`;
 
-  // /api/coverage is per-week and always describes the newest week on screen.
+  // Coverage is per-week and always describes the newest week on screen.
   // Printed under a quarter's numerator it read "70% · 613 by rule · 1,608 by
   // LLM" — 2,221 rows, one week, beneath 14,715. There is no multi-week
   // substitute to splice in, so the split only appears where it is true of the
@@ -3361,7 +3417,7 @@ async function renderMatrix() {
       // while this payload — the largest the page ever asks for — is in
       // flight, matrixSeries is still null: without this each of those renders
       // would start its own copy of the same download.
-      matrixPending ||= getJSON(`/api/series?cut=${encodeURIComponent(CUTS.matrix)}&weeks=${HISTORY_WEEKS}`);
+      matrixPending ||= getJSON(`${DATA}/series-matrix.json`);
       matrixSeries = await matrixPending;
     } catch {
       matrixPending = null;
@@ -3483,20 +3539,21 @@ function renderProvenance() {
   const byLlm = cov.bySource?.model ?? 0;
 
   /**
-   * The week's figures as the METRICS have them, not as /api/coverage counts
-   * them live.
+   * The week's figures as the METRICS have them, not as the coverage file
+   * counts them.
    *
-   * These are two different instants and both are true. /api/coverage runs
-   * COUNT(*) against hf_spaces now; every other figure on this page comes from
-   * hf_weekly_metrics, written when the aggregate last ran. For a week still
-   * being ingested the gap is large — on the live database, 3,473 against
-   * 2,632 — and printing the live total here put "2,221 of 3,473" (64%) one
-   * line above a Coverage tile reading 84% of the same week. Both correct,
-   * side by side, contradicting each other.
+   * These are two different instants and both are true. Coverage is COUNT(*)
+   * over the Spaces held when the snapshot was written; every other figure on
+   * this page comes from hf_weekly_metrics, written by the aggregate step
+   * before it. A run that ingested more than it managed to aggregate moves one
+   * and not the other, and back when coverage was counted live per page load
+   * the gap was large enough to print "2,221 of 3,473" (64%) one line above a
+   * Coverage tile reading 84% of the same week. Both correct, side by side,
+   * contradicting each other.
    *
-   * The tile cannot move to the live figure: /api/coverage is per-week and the
-   * tile has to answer for quarters too. So this line moves to the snapshot,
-   * and the ingest that has run ahead of it is reported as what it is.
+   * The tile cannot move to the counted figure: coverage is per-week and the
+   * tile has to answer for quarters too. So this line stays on the snapshot,
+   * and an ingest that has run ahead of it is reported as what it is.
    */
   const t2 = weeklyTotals();
   const ci = t2.weeks.indexOf(coverageWeek);
@@ -3677,7 +3734,7 @@ async function renderInsights() {
     try {
       // Shared, like the cross-tab's payload: three renders of this tab before
       // the first response lands would otherwise fire three requests.
-      insightPending ||= getJSON('/api/insights?limit=12');
+      insightPending ||= getJSON(`${DATA}/insights.json`);
       insightData = await insightPending;
     } catch {
       insightFailed = true;
@@ -4228,9 +4285,6 @@ function wireTabStrip(strip, onPick) {
 
 /* ── Loading ──────────────────────────────────────────────────────────── */
 
-/** Three years. Quarters need years behind them before they say anything. */
-const HISTORY_WEEKS = 156;
-
 /**
  * One request buys the whole page.
  *
@@ -4241,7 +4295,7 @@ const HISTORY_WEEKS = 156;
  */
 async function loadSeries() {
   try {
-    seriesRaw = await getJSON(`/api/series?weeks=${HISTORY_WEEKS}`);
+    seriesRaw = await getJSON(`${DATA}/series.json`);
     seriesFailed = false;
   } catch {
     // Kept apart from an empty answer. "No weeks have been processed yet" is a
@@ -4287,8 +4341,8 @@ async function loadWeekDetail() {
   card.classList.add('stale');
 
   const [cov, narr] = await Promise.all([
-    getJSON(`/api/coverage?week=${encodeURIComponent(week)}`).catch(() => null),
-    getJSON(`/api/narrative?week=${encodeURIComponent(week)}`).catch(() => null),
+    getJSON(`${DATA}/coverage/${encodeURIComponent(week)}.json`).catch(() => null),
+    getJSON(`${DATA}/narrative/${encodeURIComponent(week)}.json`).catch(() => null),
   ]);
   if (seq !== coverageSeq) return;   // a later pick already won
 

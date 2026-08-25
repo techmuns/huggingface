@@ -33,18 +33,12 @@ jobs:
       - name: Typecheck
         run: npm run typecheck
 
-      # The suite runs inside workerd against the bindings wrangler.jsonc
-      # declares, and a few tests assert on the admin endpoints' auth. Locally
-      # that token comes from `.env`, which a runner does not have — without
-      # it those tests get 401 where they expect 400/409.
-      #
-      # This value is a placeholder, not a secret: nothing here reaches a real
-      # service, and the tests only need the request token and the binding to
-      # agree with each other.
+      # No credentials. The admin endpoints that needed one are gone, and
+      # every binding the suite uses is declared in vitest.config.ts with a
+      # placeholder value — so this runs the same on a runner as it does on a
+      # machine with a populated .env.
       - name: Test
         run: npm test
-        env:
-          ADMIN_TOKEN: ci-placeholder-not-a-secret
 
       # Catches the class of failure that has cost this repo the most: a
       # wrangler.jsonc the account's plan will not accept. `--dry-run` builds

@@ -8,10 +8,14 @@ const migrations = await readD1Migrations("./migrations");
 /**
  * Two runtimes, one library.
  *
- * `src/lib` runs in two places now — inside workerd against a D1 binding, and
- * on a Node runner against a local SQLite file — so it is tested in both. The
- * workers project is unchanged and still the source of truth: it exercises the
- * code the deployed dashboard actually runs, against real D1.
+ * `src/lib` runs against a local SQLite file in production now — the weekly
+ * run is a Node process on a GitHub-hosted runner. It is still tested in both
+ * places, and the workers project is why: D1 is the oracle the SQLite shim was
+ * written against, and the only way to know the two have not drifted is to
+ * keep running the same code against the real thing.
+ *
+ * The deployed Worker has no database at all. So D1 lives in this harness and
+ * nowhere else — see the miniflare block below.
  *
  * The node project exists for the parts workerd cannot host: `node:sqlite` is
  * not available there. test/d1-conformance.ts is written once and run by both,
@@ -25,12 +29,25 @@ export default defineConfig({
       {
         plugins: [
           cloudflareTest({
-            // Tests run inside the real workerd runtime against the bindings
-            // declared in wrangler.jsonc, so D1 under test is actual SQLite
-            // rather than a mock that quietly disagrees with production.
+            // Tests run inside the real workerd runtime, so D1 under test is
+            // actual D1 rather than a mock that quietly disagrees with it.
             wrangler: { configPath: "./wrangler.jsonc" },
             miniflare: {
-              bindings: { TEST_MIGRATIONS: migrations },
+              // Test-only, every one of them. wrangler.jsonc declares no
+              // database and no credentials, because the deployed Worker needs
+              // neither. The pipeline these tests drive needs both, so the
+              // harness supplies them and a deploy cannot inherit them.
+              d1Databases: { DB: "hf-activity-test" },
+              bindings: {
+                TEST_MIGRATIONS: migrations,
+                HF_TOKEN: "test-hf-token",
+                BEDROCK_API_KEY: "test-bedrock-key",
+                BEDROCK_REGION: "us-east-1",
+                BEDROCK_CLASSIFY_MODEL_ID: "us.anthropic.claude-haiku-4-5-20251001-v1:0",
+                BEDROCK_NARRATE_MODEL_ID: "us.anthropic.claude-opus-5",
+                GITHUB_TOKEN: "test-github-token",
+                GITHUB_REPO: "techmuns/huggingface",
+              },
             },
           }),
         ],
