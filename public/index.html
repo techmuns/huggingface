@@ -310,7 +310,28 @@ button.bar-row:focus-visible { outline: 2px solid var(--series); outline-offset:
 .bar-row.open { background: color-mix(in srgb, var(--series) 10%, transparent); }
 .bar-row.open .bar-label { font-weight: 600; }
 
-.insight-cols { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(380px, 100%), 1fr)); gap: 18px; }
+/* The week and the month are stacked, not set side by side.
+   
+   They were two columns of a grid, which stretches its items — so the month
+   card, usually three lines saying no month has closed yet, was drawn the full
+   height of the week's summary beside it: a 960px box holding 60px of text.
+   `align-items: start` fixes that box, and leaves the hole it was filling.
+   
+   The deeper problem is that these are not peers. A week summary is several
+   hundred words; a month is that or one sentence, and for most of any month it
+   is the sentence. Any side-by-side layout is therefore mostly empty, and no
+   column ratio repairs it. Stacked, each is as wide as the page and as tall as
+   what it holds, and the prose gets the same two columns as the overview
+   summary — so a full month reads like one too. */
+.insight-cols { display: grid; gap: 18px; align-items: start; }
+
+@media (min-width: 1080px) {
+  .insight-body { columns: 2; column-gap: 46px; }
+  .insight-body p { max-width: none; orphans: 3; widows: 3; }
+}
+@media print {
+  .insight-body { columns: 1; }
+}
 .insight-body p { margin: 0 0 12px; max-width: 74ch; line-height: 1.62; }
 .insight-body p:last-child { margin-bottom: 0; }
 .insight-meta { font-size: 12px; color: var(--ink-muted); margin-top: 14px; }
@@ -500,8 +521,34 @@ tbody tr:last-child td { border-bottom: 0; }
 .glossary dd { font-size: 12.5px; color: var(--ink-muted); margin-top: 1px; }
 
 /* ── Narrative ────────────────────────────────────────────────────────── */
-.narrative p { font-size: 14px; color: var(--ink-2); max-width: 68ch; }
-.narrative p + p { margin-top: 10px; }
+.narrative p { font-size: 14px; color: var(--ink-2); max-width: 68ch; line-height: 1.62; }
+.narrative p + p { margin-top: 12px; }
+
+/* The summary is three or four dense paragraphs in a full-width card. Held to
+   a single 68ch column it left roughly half the card empty on any normal
+   screen — a wall of text on the left and nothing on the right.
+   
+   Two columns fill it without giving up the measure: at 1080px each column is
+   about 68ch, the same reading width as before.
+   
+   Paragraphs are allowed to break across the boundary, which looks wrong
+   written down and is right on the page. Keeping them whole was tried first
+   and the summary's three paragraphs are too unequal for it: the balancer put
+   one on the left and two on the right, and the left column ended halfway up.
+   Columns read down and then across, so a paragraph continuing at the top of
+   the second column is simply the next line. `orphans`/`widows` stop the break
+   stranding one or two lines on their own. */
+@media (min-width: 1080px) {
+  #narrative-body { columns: 2; column-gap: 46px; }
+  #narrative-body p { max-width: none; orphans: 3; widows: 3; }
+  #narrative-body p:first-child { margin-top: 0; }
+}
+
+/* One column on paper: a printed page is narrower than the screen it was laid
+   out for, and columns there would be ~34ch. */
+@media print {
+  #narrative-body { columns: 1; }
+}
 
 /* ── Empty / loading ──────────────────────────────────────────────────── */
 .empty { font-size: 13px; color: var(--ink-muted); padding: 26px 0; text-align: center; }
