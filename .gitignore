@@ -46,3 +46,6 @@ test/*bench*
 test/*measure*
 test/*cost*
 test/*-check.spec.ts
+
+# Build output for the Node runner. Rebuilt from source on every run.
+dist/

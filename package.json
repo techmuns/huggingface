@@ -13,10 +13,14 @@
     "migrate:remote": "wrangler d1 migrations apply huggingface-activity --remote",
     "cf-typegen": "wrangler types",
     "pretypecheck": "wrangler types",
-    "pretest": "wrangler types"
+    "pretest": "wrangler types",
+    "build:runner": "esbuild src/runner/main.ts --bundle --platform=node --format=esm --target=node22 --external:node:* --outfile=dist/runner.mjs",
+    "runner": "npm run build:runner && node --no-warnings dist/runner.mjs"
   },
   "devDependencies": {
     "@cloudflare/vitest-pool-workers": "^0.21.3",
+    "@types/node": "^26.3.0",
+    "esbuild": "^0.28.1",
     "typescript": "^5.9.3",
     "vitest": "^4.1.10",
     "wrangler": "^4.123.0"
