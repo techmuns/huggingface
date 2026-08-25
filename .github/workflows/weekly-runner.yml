@@ -66,6 +66,54 @@ jobs:
     timeout-minutes: 340
 
     steps:
+      # Fail here, in three seconds, rather than two minutes in.
+      #
+      # The runner has its own guard and it works — the first run of this
+      # workflow died on it in 0.2 seconds having spent nothing. But it dies as
+      # a stack trace in the log, and the page a person actually opens is the
+      # summary, which said only "Process completed with exit code 1". This
+      # step puts the reason and the remedy on that page.
+      - name: Check the secrets are visible to this workflow
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          BEDROCK_API_KEY: ${{ secrets.BEDROCK_API_KEY }}
+        run: |
+          set -uo pipefail
+          MISSING=""
+          [ -n "${HF_TOKEN:-}" ]        || MISSING="$MISSING HF_TOKEN"
+          [ -n "${BEDROCK_API_KEY:-}" ] || MISSING="$MISSING BEDROCK_API_KEY"
+
+          if [ -z "$MISSING" ]; then
+            echo "Both secrets are present."
+            exit 0
+          fi
+
+          # Leading space stripped: Markdown will not bold "** NAME**".
+          MISSING="${MISSING# }"
+
+          echo "::error::Missing repository secrets: $MISSING — see this run's summary."
+          {
+            echo "## This run could not start"
+            echo
+            echo "Missing or empty: **$MISSING**"
+            echo
+            echo "Add them at <https://github.com/${{ github.repository }}/settings/secrets/actions>"
+            echo "under **Repository secrets**, named exactly as above."
+            echo
+            echo "Three ways a secret looks added but is not visible here:"
+            echo
+            echo "1. It was added on the **Dependabot** or **Codespaces** tab of that page."
+            echo "   Actions reads only the Actions tab."
+            echo "2. It was added to an **Environment**. A job sees those only if it"
+            echo "   declares \`environment:\`, and this one does not."
+            echo "3. It is an **organization** secret whose repository access does not"
+            echo "   include this repository."
+            echo
+            echo "\`GITHUB_TOKEN\` needs no setup — Actions provides it, which is why it"
+            echo "showed as \`***\` while these two showed as blank."
+          } >> "$GITHUB_STEP_SUMMARY"
+          exit 1
+
       - uses: actions/checkout@v4
         with:
           # Full history. The publish step may have to rebase onto a push that
