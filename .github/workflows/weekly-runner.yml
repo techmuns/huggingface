@@ -1,0 +1,179 @@
+# The weekly pipeline, run here rather than on Cloudflare.
+#
+# WHY. The pipeline used to be a Cloudflare Workflow, and on the free plan a
+# Workflow step gets 10 ms of CPU. Four separate step bodies had to be measured
+# and cut to fit inside it, and a run still died — six times this month, each on
+# a different step, each a real bug that was only a bug because of the ceiling.
+# D1 added two more: 5 million rows read a day, against a single run that read
+# 19.5 million, and 500 MB of storage against 305 MB and growing.
+#
+# A GitHub-hosted runner has no CPU limit, and a SQLite file has no row limits.
+# Measured: pointed at the real Hub, the runner ingested 31,599 models and 8,400
+# Spaces in 150 seconds. The same ingest on Cloudflare took ~18 minutes and kept
+# dying.
+#
+# WHERE THE DATABASE LIVES. On an orphan branch, `pipeline-state`, force-pushed
+# after every run. It has to persist: classifications are paid Bedrock calls,
+# and resolved model families and README hashes are weeks of accumulated work.
+# An orphan branch keeps it in the repository, as intended, while force-pushing
+# means history never accumulates — a 40 MB database committed weekly to main
+# would be two gigabytes of history a year, for a file whose old versions nobody
+# will ever read.
+
+name: Weekly pipeline (runner)
+
+on:
+  schedule:
+    # Monday 00:30 UTC, the week that just closed.
+    - cron: "30 0 * * 1"
+  workflow_dispatch:
+    inputs:
+      weekStart:
+        description: "Monday of the week to process (YYYY-MM-DD). Blank = the week that just closed."
+        required: false
+        type: string
+      backfillWeeks:
+        description: "How many weeks back to ingest. Leave at 1 unless repairing history."
+        required: false
+        default: "1"
+        type: string
+      dryRun:
+        description: "Run everything but do not publish the snapshot"
+        required: false
+        default: false
+        type: boolean
+
+# One run at a time. A second run would fight the first over the state branch,
+# and the loser's work would be force-pushed away.
+concurrency:
+  group: weekly-pipeline
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    # GitHub kills a job at 360 minutes with nothing preserved. Stopping at 340
+    # leaves room for the state to be saved, which is the part that must not be
+    # lost — the pipeline can be re-run, but only if it still has its database.
+    timeout-minutes: 340
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+
+      - run: npm ci
+
+      - name: Work out which week to process
+        id: week
+        run: |
+          set -euo pipefail
+          if [ -n "${{ github.event.inputs.weekStart }}" ]; then
+            WEEK="${{ github.event.inputs.weekStart }}"
+          else
+            # Monday of the current week, then back one. Derived from the
+            # calendar rather than "7 days ago", so a delayed run still lands on
+            # a Monday.
+            DOW=$(date -u +%u)
+            THIS_MON=$(date -u -d "-$((DOW - 1)) days" +%Y-%m-%d)
+            WEEK=$(date -u -d "$THIS_MON -7 days" +%Y-%m-%d)
+          fi
+
+          # The scheduled run is always exactly one week. Backfill depth is an
+          # operator's tool for repairing history, never something the cron
+          # reaches for: a wider window multiplies Hub requests and Bedrock
+          # spend, and re-processes weeks that are already correct.
+          if [ "${{ github.event_name }}" = "schedule" ]; then
+            BACKFILL=1
+          else
+            BACKFILL="${{ github.event.inputs.backfillWeeks || '1' }}"
+          fi
+
+          echo "week=$WEEK"         >> "$GITHUB_OUTPUT"
+          echo "backfill=$BACKFILL" >> "$GITHUB_OUTPUT"
+          echo "Processing week $WEEK, backfill $BACKFILL"
+
+      - name: Restore the pipeline database
+        id: restore
+        run: |
+          set -euo pipefail
+          mkdir -p data
+          if git fetch --depth=1 origin pipeline-state 2>/dev/null; then
+            git show FETCH_HEAD:pipeline.sqlite.gz > data/pipeline.sqlite.gz
+            gunzip -f data/pipeline.sqlite.gz
+            SIZE=$(stat -c%s data/pipeline.sqlite)
+            echo "restored=$SIZE" >> "$GITHUB_OUTPUT"
+            echo "Restored database: $((SIZE / 1024 / 1024)) MB"
+          else
+            # First run, or the branch was reset. The runner applies every
+            # migration to an empty file, so this is a valid state rather than
+            # an error — it just means the first week does more work.
+            echo "restored=0" >> "$GITHUB_OUTPUT"
+            echo "No existing state; starting from an empty database."
+          fi
+
+      - name: Run the pipeline
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          BEDROCK_API_KEY: ${{ secrets.BEDROCK_API_KEY }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Plain configuration, not secrets — the same values wrangler.jsonc
+          # declares as vars.
+          BEDROCK_REGION: us-east-1
+          BEDROCK_CLASSIFY_MODEL_ID: us.anthropic.claude-haiku-4-5-20251001-v1:0
+          BEDROCK_NARRATE_MODEL_ID: us.anthropic.claude-opus-5
+          GITHUB_REPO: ${{ github.repository }}
+        run: |
+          npm run build:runner
+          node --no-warnings dist/runner.mjs \
+            --week "${{ steps.week.outputs.week }}" \
+            --backfill "${{ steps.week.outputs.backfill }}" \
+            --db data/pipeline.sqlite \
+            --out data/last-run.json \
+            --deadline-minutes 300 \
+            ${{ github.event.inputs.dryRun == 'true' && '--dry-run' || '' }}
+
+      - name: Save the pipeline database
+        # Always: a failed run still advanced the database, and throwing that
+        # away means the next run redoes work — including paid Bedrock calls.
+        if: always()
+        run: |
+          set -euo pipefail
+          [ -f data/pipeline.sqlite ] || { echo "No database to save."; exit 0; }
+
+          # Fold the write-ahead log back in, so the single file is complete.
+          node --no-warnings -e "
+            const { DatabaseSync } = require('node:sqlite');
+            const db = new DatabaseSync('data/pipeline.sqlite');
+            db.exec('PRAGMA wal_checkpoint(TRUNCATE)');
+            db.close();
+          "
+          gzip -9 -c data/pipeline.sqlite > pipeline.sqlite.gz
+          echo "State: $(stat -c%s pipeline.sqlite.gz | awk '{print int($1/1024/1024)}') MB compressed"
+
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          # An orphan branch with exactly one commit. Force-pushed, so the
+          # repository carries one copy of the database rather than a year of
+          # them.
+          git checkout --orphan pipeline-state-tmp
+          git rm -rf --cached . >/dev/null 2>&1 || true
+          git add -f pipeline.sqlite.gz
+          git commit -q -m "pipeline state after ${{ steps.week.outputs.week }} ($(date -u +%Y-%m-%dT%H:%M:%SZ))"
+          git push -f origin pipeline-state-tmp:pipeline-state
+
+      - name: Publish the run summary
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: run-${{ steps.week.outputs.week }}
+          path: data/last-run.json
+          if-no-files-found: warn
+          retention-days: 90

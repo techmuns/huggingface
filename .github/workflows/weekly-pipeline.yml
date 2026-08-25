@@ -19,12 +19,18 @@
 # costs nothing.
 name: Weekly pipeline
 
+# NO SCHEDULE. This path is kept for one reason: it still works, and until the
+# runner has completed several weeks it is the fallback.
+#
+# The weekly cron now lives in weekly-runner.yml, which executes the pipeline on
+# the runner itself against a SQLite file instead of dispatching it to a
+# Cloudflare Workflow. Leaving a schedule here as well would fire both on the
+# same Monday, and they would process the same week concurrently — two runs
+# racing over the same rows, each seeing a queue the other was draining.
+#
+# Dispatch it by hand if the runner path is unavailable. Delete this file once
+# the runner has three green weeks behind it.
 on:
-  schedule:
-    # 00:30 UTC Monday = 06:00 IST Monday. GitHub may delay scheduled runs
-    # under load; the week is computed from the calendar rather than from the
-    # firing time, so a late run still processes the right week.
-    - cron: "30 0 * * 1"
   workflow_dispatch:
     inputs:
       weekStart:
