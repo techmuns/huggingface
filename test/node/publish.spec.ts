@@ -242,12 +242,6 @@ describe("publishing a snapshot from a database", () => {
     root = mkdtempSync(join(tmpdir(), "publish-"));
   });
 
-  it("derives the publishable weeks from the Spaces it holds, as Mondays", async () => {
-    insertSpace("a/one", "2026-08-13T10:00:00.000Z", 3); // a Thursday
-    insertSpace("a/two", "2026-08-17T10:00:00.000Z", 1); // the next Monday
-
-    expect(await publishableWeeks(asD1(db))).toEqual(["2026-08-10", "2026-08-17"]);
-  });
 
   it("writes the files the dashboard asks for", async () => {
     insertSpace("a/one", "2026-08-12T10:00:00.000Z", 7);
@@ -320,6 +314,126 @@ describe("publishing a snapshot from a database", () => {
 
     const drill: DrillPayload = JSON.parse(readFileSync(join(root, "use-case-spaces/coding.json"), "utf8"));
     expect(Object.keys(drill.weeks)).toEqual(["2026-08-03", "2026-08-10"]);
+  });
+
+  /**
+   * Run #2, exactly as it happened.
+   *
+   * Asked for week 2026-08-17. Its ingest window also caught 11 Spaces
+   * belonging to 2026-08-10 — a week already published as 5,572 Spaces at
+   * 99.96% coverage — and the publisher rewrote that week as 11 Spaces at 0%.
+   * The drill lists for it went to zero at the same time.
+   */
+  it("does not overwrite a complete week with a partial view of it", async () => {
+    // The complete week, as an earlier run published it.
+    for (let i = 0; i < 30; i++) {
+      insertSpace(`a/old-${i}`, "2026-08-12T10:00:00.000Z", i);
+      classify(`a/old-${i}`, "coding");
+    }
+    metric("2026-08-10", "coding", 30);
+    await publishSnapshot(asD1(db), root, "2026-08-17T00:00:00.000Z");
+
+    const complete = readFileSync(join(root, "coverage/2026-08-10.json"), "utf8");
+    const completeDrill = readFileSync(join(root, "use-case-spaces/coding.json"), "utf8");
+
+    // A later run, from a database that holds only the tail of that week plus
+    // the week it was actually asked for.
+    const partial = openSqliteD1(":memory:");
+    applyMigrations(partial, MIGRATIONS);
+    const p = (sql: string, ...args: (string | number)[]) => partial.handle.prepare(sql).run(...args);
+    p(`INSERT INTO hf_spaces (space_id, author, created_at, likes, title, sdk,
+                              is_cluster_primary, first_seen_at, updated_at)
+       VALUES ('a/old-0','a','2026-08-12T10:00:00.000Z',0,'t','gradio',1,'x','x')`);
+    p(`INSERT INTO hf_spaces (space_id, author, created_at, likes, title, sdk,
+                              is_cluster_primary, first_seen_at, updated_at)
+       VALUES ('a/new','a','2026-08-19T10:00:00.000Z',5,'t','gradio',1,'x','x')`);
+    p(`INSERT INTO hf_classifications (space_id, taxonomy_version, primary_use_case,
+                                       low_confidence, source_kind, source_ref, classified_at)
+       VALUES ('a/new','1','coding',0,'rule','r','x')`);
+    // Both weeks aggregated — which is how the week leaked through the first
+    // guard: the aggregate step wrote rows for it from those few Spaces.
+    for (const [week, value] of [["2026-08-10", 1], ["2026-08-17", 1]] as const) {
+      p(`INSERT INTO hf_weekly_metrics (week_start, metric_cut, dimension, value,
+                                        denominator, suppressed, taxonomy_version, computed_at)
+         VALUES (?, 'spaces_by_use_case', 'coding', ?, 100, 0, '1', 'x')`, week, value);
+    }
+
+    await publishSnapshot(asD1(partial), root, "2026-08-24T00:00:00.000Z");
+    partial.close();
+
+    // The complete week is exactly as it was.
+    expect(readFileSync(join(root, "coverage/2026-08-10.json"), "utf8")).toBe(complete);
+
+    const drill: DrillPayload = JSON.parse(readFileSync(join(root, "use-case-spaces/coding.json"), "utf8"));
+    expect(drill.weeks["2026-08-10"]).toEqual(
+      (JSON.parse(completeDrill) as DrillPayload).weeks["2026-08-10"],
+    );
+    // And the week it really did process is published.
+    expect(drill.weeks["2026-08-17"]!.total).toBe(1);
+  });
+
+  /**
+   * The other half of the rule, and the one a count test alone gets wrong.
+   *
+   * Run #2 published week 2026-08-17 as 5,842 Spaces at 100% coverage against
+   * 6,613 at 33.6% from the old pipeline. Fewer Spaces, a far better answer —
+   * the count fell to deduplication and to Spaces that no longer exist. A week
+   * the run was asked for wins in either direction.
+   */
+  it("lets the run's own week win even when its count goes down", async () => {
+    for (let i = 0; i < 20; i++) {
+      insertSpace(`a/s-${i}`, "2026-08-12T10:00:00.000Z", i);
+      classify(`a/s-${i}`, "coding");
+    }
+    metric("2026-08-10", "coding", 20);
+    await publishSnapshot(asD1(db), root, "2026-08-17T00:00:00.000Z", ["2026-08-10"]);
+    expect(
+      JSON.parse(readFileSync(join(root, "coverage/2026-08-10.json"), "utf8")).totalSpaces,
+    ).toBe(20);
+
+    // The same week re-run after deduplication removed half of them.
+    for (let i = 0; i < 10; i++) {
+      db.handle.prepare("UPDATE hf_spaces SET is_cluster_primary = 0 WHERE space_id = ?").run(`a/s-${i}`);
+    }
+
+    await publishSnapshot(asD1(db), root, "2026-08-24T00:00:00.000Z", ["2026-08-10"]);
+    expect(
+      JSON.parse(readFileSync(join(root, "coverage/2026-08-10.json"), "utf8")).totalSpaces,
+    ).toBe(10);
+
+    // But without that claim, the same shrink is refused.
+    for (let i = 10; i < 20; i++) {
+      db.handle.prepare("UPDATE hf_spaces SET is_cluster_primary = 0 WHERE space_id = ?").run(`a/s-${i}`);
+    }
+    await publishSnapshot(asD1(db), root, "2026-08-31T00:00:00.000Z");
+    expect(
+      JSON.parse(readFileSync(join(root, "coverage/2026-08-10.json"), "utf8")).totalSpaces,
+    ).toBe(10);
+  });
+
+  it("still lets a more complete run correct a week", async () => {
+    insertSpace("a/one", "2026-08-12T10:00:00.000Z", 1);
+    metric("2026-08-10", "coding", 1);
+    await publishSnapshot(asD1(db), root, "2026-08-17T00:00:00.000Z");
+    expect(
+      JSON.parse(readFileSync(join(root, "coverage/2026-08-10.json"), "utf8")).totalSpaces,
+    ).toBe(1);
+
+    // The same week, re-run, now holding all of it.
+    for (let i = 0; i < 10; i++) insertSpace(`a/more-${i}`, "2026-08-12T11:00:00.000Z", i);
+    await publishSnapshot(asD1(db), root, "2026-08-24T00:00:00.000Z");
+
+    expect(
+      JSON.parse(readFileSync(join(root, "coverage/2026-08-10.json"), "utf8")).totalSpaces,
+    ).toBe(11);
+  });
+
+  it("speaks only for weeks it aggregated, not weeks it merely has a Space from", async () => {
+    insertSpace("a/edge", "2026-08-12T10:00:00.000Z", 1); // week 2026-08-10
+    insertSpace("a/target", "2026-08-19T10:00:00.000Z", 1); // week 2026-08-17
+    metric("2026-08-17", "coding", 1); // only this one was aggregated
+
+    expect(await publishableWeeks(asD1(db))).toEqual(["2026-08-17"]);
   });
 
   it("publishes a narrative file only for a week that has one", async () => {

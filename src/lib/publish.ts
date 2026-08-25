@@ -313,31 +313,33 @@ async function readSeries(db: D1Database, matrix: boolean): Promise<SeriesPayloa
 /**
  * The weeks this database can speak for.
  *
- * Only weeks with Spaces of their own. A run that ingested one week into an
- * empty database can compute a coverage figure for every week in history and
- * every one of them would read zero — which, written to a file, is not an
- * empty answer but a wrong one. Publishing is therefore restricted to weeks
- * with something in them, and the rest keep whatever was last written.
+ * Weeks it AGGREGATED, not weeks it has a Space from. The difference is the
+ * whole guard, and getting it wrong cost real data: run #2 ingested week
+ * 2026-08-17 and, at the edge of its window, picked up 11 Spaces belonging to
+ * 2026-08-10. The old rule here was "any week with at least one Space", so it
+ * republished 2026-08-10 — a week that was complete at 5,572 Spaces and 99.96%
+ * coverage — as 11 Spaces and 0%.
+ *
+ * hf_weekly_metrics is written only by the aggregate step, and the aggregate
+ * step runs only for the week the run was asked to process. So a row here
+ * means "this run computed this week", which is exactly the claim a per-week
+ * file makes. It is also why series.json survived that run untouched: it was
+ * already built from this table.
+ *
+ * The caller applies a second guard on top — see publishSnapshot — because a
+ * week can be aggregated from a partial ingest too.
  */
 export async function publishableWeeks(db: D1Database): Promise<string[]> {
   const rows = await db
     .prepare(
-      `SELECT DISTINCT substr(created_at, 1, 10) AS day
-         FROM hf_spaces
-        WHERE is_cluster_primary = 1`,
+      `SELECT DISTINCT week_start FROM hf_weekly_metrics
+        WHERE taxonomy_version = ?1
+        ORDER BY week_start`,
     )
-    .all<{ day: string }>();
+    .bind(TAXONOMY_VERSION)
+    .all<{ week_start: string }>();
 
-  const mondays = new Set<string>();
-  for (const r of rows.results ?? []) {
-    const d = new Date(`${r.day}T00:00:00.000Z`);
-    if (Number.isNaN(d.getTime())) continue;
-    // getUTCDay: 0 is Sunday, and this pipeline's weeks start on Monday.
-    const back = (d.getUTCDay() + 6) % 7;
-    d.setUTCDate(d.getUTCDate() - back);
-    mondays.add(d.toISOString().slice(0, 10));
-  }
-  return [...mondays].sort();
+  return (rows.results ?? []).map((r) => r.week_start);
 }
 
 async function readCoverage(db: D1Database, weekStart: string): Promise<CoveragePayload | null> {

@@ -123,14 +123,35 @@ export async function main(argv: readonly string[] = process.argv.slice(2)): Pro
   const deadline = startedAt + args.deadlineMinutes * 60_000;
   const runId = crypto.randomUUID();
 
-  // One line per stage, not per attempt, unless the attempt failed. A run has
-  // a few hundred steps and the log is read by a human looking for where it
-  // stopped.
+  // Progress, as it happens.
+  //
+  // This used to print nothing until the run ended, and the first real run
+  // spent 66 minutes showing a single line. On a GitHub-hosted runner the job
+  // log is the only window into a running job — the Actions API serves logs
+  // only after a job completes — so silence is indistinguishable from a hang,
+  // and the honest answer to "is it stuck?" was an estimate rather than a
+  // reading.
+  //
+  // Still not a line per attempt: a run has a few hundred steps. A line when
+  // the stage changes, and a heartbeat inside the long ones.
+  const HEARTBEAT = 25;
   const stages = new Map<string, { attempts: number; ms: number }>();
+  let current = "";
+  const since = () => `${Math.round((Date.now() - startedAt) / 1000)}s`;
+
   const onEvent = (e: StepEvent): void => {
     const key = e.name.replace(/-\d+$/, "-N");
     const seen = stages.get(key) ?? { attempts: 0, ms: 0 };
-    stages.set(key, { attempts: seen.attempts + 1, ms: seen.ms + e.ms });
+    const attempts = seen.attempts + 1;
+    stages.set(key, { attempts, ms: seen.ms + e.ms });
+
+    if (key !== current) {
+      current = key;
+      console.log(`[${since()}] ${key}`);
+    } else if (attempts % HEARTBEAT === 0) {
+      console.log(`[${since()}] ${key} x${attempts}, ${(stages.get(key)!.ms / 1000).toFixed(0)}s in stage`);
+    }
+
     if (!e.ok) console.warn(`  ! ${e.name} attempt ${e.attempt} failed after ${e.ms}ms: ${e.error}`);
   };
 
@@ -164,7 +185,23 @@ export async function main(argv: readonly string[] = process.argv.slice(2)): Pro
     // currently showing correctly. A failed run keeps its database, so the
     // re-run publishes the whole thing.
     if (!args.dryRun) {
-      const published = await publishSnapshot(env.DB, args.dataDir, new Date().toISOString());
+      // The weeks this run computed. The publisher trusts them over whatever
+      // was published before; every other week it holds has to prove it is at
+      // least as complete first.
+      const target = (result as { weekStart?: string }).weekStart;
+      const computed: string[] = [];
+      for (let i = 0; target && i < args.backfillWeeks; i++) {
+        const d = new Date(`${target}T00:00:00.000Z`);
+        d.setUTCDate(d.getUTCDate() - i * 7);
+        computed.push(d.toISOString().slice(0, 10));
+      }
+
+      const published = await publishSnapshot(
+        env.DB,
+        args.dataDir,
+        new Date().toISOString(),
+        computed,
+      );
       publishedWeeks = published.weeks;
       console.log(
         `published ${published.written.length} files to ${args.dataDir} ` +
