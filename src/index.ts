@@ -713,7 +713,15 @@ async function handleStats(request: Request, env: Env): Promise<Response> {
     (await env.DB.prepare(sql).first<{ n: number }>())?.n ?? 0;
 
   const [raw, models, spaces, blind, enriched, classified, metrics, weeks] = await Promise.all([
-    one("SELECT COUNT(*) AS n FROM hf_raw_records"),
+    // Existence, not a count. `COUNT(*) FROM hf_raw_records` read 223,000 rows
+    // — measured, and the single most expensive line in this handler — to
+    // answer a question the stage ladder below asks as `raw === 0`, and to
+    // fill a `rawRecords` field that NOTHING in this repository reads: not the
+    // dashboard, not the tests, not the workflow, which takes only `.stage`.
+    //
+    // SQLite has no cheap exact count, so the honest fix is to stop asking for
+    // one. This is an index-free early exit and reads a single row.
+    one("SELECT 1 AS n FROM hf_raw_records LIMIT 1"),
     one("SELECT COUNT(*) AS n FROM hf_models"),
     one("SELECT COUNT(*) AS n FROM hf_spaces"),
     one("SELECT COUNT(*) AS n FROM hf_spaces WHERE signal_tier = 'blind'"),
@@ -723,9 +731,14 @@ async function handleStats(request: Request, env: Env): Promise<Response> {
     one("SELECT COUNT(DISTINCT week_start) AS n FROM hf_weekly_metrics"),
   ]);
 
-  const oldest = await env.DB
-    .prepare("SELECT MIN(created_at) AS a, MAX(created_at) AS b FROM hf_spaces")
-    .first<{ a: string | null; b: string | null }>();
+  // Two queries rather than one. MIN and MAX over an indexed column are each
+  // a single seek to one end of idx_spaces_created; asking for both in one
+  // statement makes SQLite walk the index instead.
+  const [oldestAt, newestAt] = await Promise.all([
+    env.DB.prepare("SELECT MIN(created_at) AS a FROM hf_spaces").first<{ a: string | null }>(),
+    env.DB.prepare("SELECT MAX(created_at) AS b FROM hf_spaces").first<{ b: string | null }>(),
+  ]);
+  const oldest = { a: oldestAt?.a ?? null, b: newestAt?.b ?? null };
 
   // Code and schema are deployed by different mechanisms — `git push` ships
   // the Worker, a human runs the migration — so they drift, and the drift is
@@ -741,7 +754,9 @@ async function handleStats(request: Request, env: Env): Promise<Response> {
       : classified === 0 ? "classifying"
       : metrics === 0 ? "aggregating"
       : "complete or idle",
-    rawRecords: raw,
+    // Whether ingest has written anything, not how much. The exact count cost
+    // 223,000 rows read per call and had no reader.
+    rawRecordsPresent: raw === 1,
     models,
     spaces,
     blindSpaces: blind,

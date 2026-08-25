@@ -60,6 +60,22 @@ describe("the resolver seeks the unresolved set instead of scanning it", () => {
     }
   });
 
+  it("the enrich queue seeks its page instead of sorting the whole backlog", async () => {
+    // The query orders by (created_at DESC, space_id) and the index used to
+    // stop at (signal_tier, readme_status), so SQLite sorted the entire blind
+    // backlog to hand back 150 rows — 24,001 read per batch, ~110 batches a
+    // run. It was nearly free only because the README fetch was broken and the
+    // stage died on its first batch; fixing the fetch arms the full cost.
+    const detail = await plan(
+      `SELECT space_id, readme_hash FROM hf_spaces
+        WHERE signal_tier = 'blind' AND readme_status IS NULL
+        ORDER BY created_at DESC, space_id
+        LIMIT 150 OFFSET 0`,
+    );
+    expect(detail).toContain("idx_spaces_enrich");
+    expect(detail).not.toContain("TEMP B-TREE FOR ORDER BY");
+  });
+
   it("the aggregate's family breakdown still has an index to use", async () => {
     // The index this replaces was (family, created_at). Nothing filtered on a
     // family VALUE — every `family =` in src/ is a SET inside an UPDATE — but

@@ -215,11 +215,25 @@ jobs:
                   -H "Authorization: Bearer $TOKEN" | jq '.status.error'
                 exit 1 ;;
             esac
-            # Progress every 5 minutes, so a stalled stage is visible in the log
-            # rather than looking identical to a slow one.
-            if [ $((i % 10)) -eq 0 ]; then
+            # Progress every 15 minutes, so a stalled stage is visible in the
+            # log rather than looking identical to a slow one.
+            #
+            # It was every 5, and that cost more than the pipeline. Each
+            # /api/admin/stats call read ~438,000 rows — eight COUNT(*) scans
+            # over the whole database — and at 30 calls a run that is 10-13
+            # MILLION rows read against a free-plan ceiling of 5 million a DAY,
+            # spent entirely on printing a status string. The pipeline's own
+            # work, after the index fixes, is under 3 million.
+            #
+            # The status in $STATUS above is free: /api/admin/run/:id reads the
+            # Workflows control plane and touches no table at all. Only the
+            # human-readable stage needs the database, so it is fetched a third
+            # as often, and handleStats no longer counts hf_raw_records.
+            if [ $((i % 30)) -eq 0 ]; then
               echo "[$((i / 2)) min] $STATUS — $(curl -sS --max-time 30 "$BASE/api/admin/stats" \
                 -H "Authorization: Bearer $TOKEN" | jq -r '.stage')"
+            elif [ $((i % 10)) -eq 0 ]; then
+              echo "[$((i / 2)) min] $STATUS"
             fi
             sleep 30
           done
