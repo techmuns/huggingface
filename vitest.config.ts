@@ -52,7 +52,6 @@ export default defineConfig({
             "test/*probe*",
             "test/*bench*",
             "test/*measure*",
-            "test/q*",
             "test/*cost*",
             "test/*-check.spec.ts",
           ],

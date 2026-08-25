@@ -8,6 +8,7 @@ import {
 } from "../src/lib/classify-rules";
 import { DEDUP_PAGE, README_MAX_BYTES, dedupSpaces, truncateToBytes } from "../src/lib/enrich";
 import { RESOLVE_SUBCHUNK, matchFamilyByArchitecture } from "../src/lib/model-family";
+import { shiftWeeks } from "../src/lib/aggregate";
 
 /**
  * What a Workflow step gets on Workers Free, and what we design against.
@@ -191,6 +192,36 @@ describe("step bodies fit inside a Workflow step's CPU", () => {
     // Namespaced metadata is not an architecture, however family-shaped.
     expect(matchFamilyByArchitecture(null, ["base_model:meta-llama/Llama-3"])).toBeNull();
     expect(matchFamilyByArchitecture(null, ["transformers", "pytorch"])).toBeNull();
+  });
+
+  it("aggregate: the date arithmetic behind the growth windows", () => {
+    // shiftWeeks is the hottest arithmetic in the pipeline, and the call site
+    // is why: computeDeltas walks every week of a span, for every growth
+    // window, for every metric row — twice, current window and preceding. At
+    // 159 metrics, three windows and a twelve-week span that is thousands of
+    // shifts inside ONE step, which gets 10 ms.
+    //
+    // Measured in workerd at exactly this call pattern: 14.33 ms when it
+    // allocated two Dates and an ISO string per call, 1.67 ms memoised. It was
+    // over the ceiling and nobody had measured it.
+    const ROWS = 159;
+    const WINDOWS = [1, 4, 12];
+    const WEEK = "2026-08-17";
+
+    const ms = report(
+      "aggregate date shifts (159 rows x 3 windows x 12 weeks, both pools)",
+      perRun(() => {
+        for (let r = 0; r < ROWS; r++) {
+          for (const span of WINDOWS) {
+            for (const which of [0, -span]) {
+              const end = shiftWeeks(WEEK, which);
+              for (let i = 0; i < span; i++) shiftWeeks(end, -i);
+            }
+          }
+        }
+      }, 12),
+    );
+    expect(ms).toBeLessThan(ASSERT_MS);
   });
 
   it("dedup is paged, so its cost does not track the size of the week", async () => {

@@ -28,6 +28,14 @@ worker-configuration.d.ts
 #
 # So: the vocabulary people actually reach for, broadly. Real suites are named
 # after what they test and contain none of these words.
+#
+# One pattern has already been removed for being too broad: `test/q*` was
+# added for qcost and qplan-probe and silently excluded query-plan.spec.ts —
+# the guard proving migrations 0007 and 0008 seek instead of scanning. The
+# suite reported green with it switched off. `*cost*` and `*probe*` already
+# caught both scratch files, so it bought nothing and cost the one test that
+# proves the quota fixes work. Prefixes that could match a real suite are not
+# worth it; match on the throwaway word instead.
 test/_*
 test/tmp*
 test/zz*
@@ -36,6 +44,5 @@ test/*scratch*
 test/*probe*
 test/*bench*
 test/*measure*
-test/q*
 test/*cost*
 test/*-check.spec.ts
