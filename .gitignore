@@ -14,22 +14,25 @@ worker-configuration.d.ts
 
 # Throwaway measurement specs.
 #
-# Measuring in real workerd against real D1 is routine here — a step body gets
-# 10 ms of CPU on Workers Free, and D1 bills rows read, so "is this fast?" and
-# "how much does this read?" are both questions you answer by running something
-# rather than by reasoning. Those specs are written, read once and deleted.
+# Measuring against real workerd and real D1 is routine here — a step body gets
+# 10 ms of CPU on Workers Free, D1 bills rows read, and "is this fast?" and
+# "how much does this read?" are both answered by running something rather than
+# by reasoning about it. Those specs live for one afternoon.
 #
-# The rule used to be `test/_bench_*` alone, which assumed everyone would reach
-# for the same prefix. They do not — a probe measuring rows_read turned up as
-# `test/zz-scratch-probe.spec.ts` and was flagged as uncommitted work. Both
-# conventions are covered now; real suites use neither prefix.
+# Six rounds of chasing names: _bench_*, zz-scratch-probe, scratch-chain,
+# qplan-probe, tmpq, aaa-measure. A whitelist was tried and reverted: ignoring
+# every spec and naming the real ones means a NEW suite is silently never
+# committed, which is invisible and costly, where a missed pattern here only
+# makes the pre-push check complain, which is visible and free. Wrong failure
+# to optimise for.
 #
-# The measurements worth keeping live in test/cpu-budget.spec.ts and
-# test/query-plan.spec.ts, which assert rather than print.
-test/_bench_*
-test/_*.spec.ts
-test/zz-*
+# So: the vocabulary people actually reach for, broadly. Real suites are named
+# after what they test and contain none of these words.
+test/_*
+test/tmp*
+test/zz*
+test/aaa*
 test/*scratch*
 test/*probe*
 test/*bench*
-test/tmp*
+test/*measure*

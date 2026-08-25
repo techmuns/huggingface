@@ -29,12 +29,13 @@
     // Throwaway measurement specs, same patterns .gitignore covers. They are
     // written against whatever binding the question needs and deleted the same
     // afternoon; type-checking them fails the build for code nobody kept.
-    "test/_bench_*",
-    "test/_*.spec.ts",
-    "test/zz-*",
+    "test/_*",
+    "test/tmp*",
+    "test/zz*",
+    "test/aaa*",
     "test/*scratch*",
     "test/*probe*",
     "test/*bench*",
-    "test/tmp*"
+    "test/*measure*"
   ]
 }

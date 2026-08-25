@@ -44,13 +44,14 @@ export default defineConfig({
             // tsconfig. Kept in step deliberately — a scratch file that is
             // ignored by one and picked up by another fails the build for
             // code nobody kept.
-            "test/_bench_*",
-            "test/_*.spec.ts",
-            "test/zz-*",
+            "test/_*",
+            "test/tmp*",
+            "test/zz*",
+            "test/aaa*",
             "test/*scratch*",
             "test/*probe*",
             "test/*bench*",
-            "test/tmp*",
+            "test/*measure*",
           ],
         },
       },
