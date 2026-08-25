@@ -12,6 +12,16 @@ import { D1_BATCH } from "./raw-store";
 
 const HF_README_BASE = "https://huggingface.co/spaces";
 
+/**
+ * Who we say we are to the Hub.
+ *
+ * An anonymous request with no User-Agent is indistinguishable from a scraper,
+ * and huggingface.co is entitled to treat it as one. Every listing request
+ * this project makes has always identified itself; the README fetch beside it
+ * did not, and it is the request that never worked.
+ */
+const HF_USER_AGENT = "huggingface-activity-dashboard/1.0 (+https://github.com/techmuns/huggingface)";
+
 const BOILERPLATE_MARKER =
   "Check out the configuration reference at https://huggingface.co/docs/hub/spaces-config-reference";
 
@@ -20,6 +30,10 @@ const MIN_USEFUL_BYTES = 250;
 export type ReadmeStatus = "ok" | "stub" | "missing" | "error";
 
 export interface ReadmeResult {
+  /** Set when the Hub answered 429. The caller slows down rather than
+      recording thousands of rows as permanently unreachable. */
+  rateLimited?: boolean;
+  retryAfterSeconds?: number | null;
   text: string | null;
   hash: string | null;
   status: ReadmeStatus;
@@ -79,21 +93,60 @@ export function truncateToBytes(text: string, maxBytes: number): string {
 export async function fetchReadme(
   spaceId: string,
   existingHash: string | null,
+  token?: string,
 ): Promise<ReadmeResult> {
   const url = `${HF_README_BASE}/${spaceId}/raw/main/README.md`;
   let response: Response;
   try {
-    response = await fetch(url);
+    // Sent with credentials and an identity, which this request did not carry
+    // for the entire life of the project. It was a bare `fetch(url)` — no
+    // Authorization, no User-Agent — while the listing requests beside it in
+    // hf-api.ts have always sent both. Two runs recorded the result:
+    //
+    //     2026-08-20 01:34   total 14,153   ok 8      error 14,109
+    //     2026-08-20 14:17   total 14,454   ok 2      error 14,433
+    //
+    // 0.01% and 0.06%. `missing` was 0 in both, which is the tell: a Hub that
+    // was answering would return 404 for the Spaces that genuinely have no
+    // README, and none did. Nothing was reaching it.
+    //
+    // README text is the primary signal the rule and LLM classifiers read, so
+    // every classification this project has ever published was made from a
+    // title, some tags and an SDK name, with the field that was supposed to
+    // carry the meaning empty. The stage reported itself complete throughout,
+    // because `readme_status` was non-NULL — it just said 'error'.
+    response = await fetch(url, {
+      headers: {
+        ...(token ? { authorization: `Bearer ${token}` } : {}),
+        "user-agent": HF_USER_AGENT,
+        accept: "text/plain",
+      },
+    });
   } catch {
     return { text: null, hash: null, status: "error" };
   }
 
   if (!response.ok) {
-    // 404/410 mean the README genuinely is not there — terminal. A 429 or a
-    // 5xx means the Hub was busy, which says nothing about the Space; marking
-    // those 'missing' retired them permanently on the first rate-limit blip
-    // and quietly shrank the enrichable population.
-    const terminal = response.status === 404 || response.status === 410;
+    // 404/410 mean the README genuinely is not there — terminal. So do 401
+    // and 403: a Space we are not allowed to read is not a Space the Hub was
+    // too busy to serve, and retrying it every week forever costs a request
+    // each time and never resolves.
+    //
+    // A 429 or a 5xx means the Hub was busy, which says nothing about the
+    // Space; marking those 'missing' retired them permanently on the first
+    // rate-limit blip and quietly shrank the enrichable population.
+    const status = response.status;
+    const terminal = status === 404 || status === 410 || status === 401 || status === 403;
+    if (!terminal && status === 429) {
+      const after = Number(response.headers.get("retry-after"));
+      return {
+        text: null,
+        hash: null,
+        status: "error",
+        retryAfterSeconds: Number.isFinite(after) && after > 0 ? after : null,
+        rateLimited: true,
+      };
+    }
     return { text: null, hash: null, status: terminal ? "missing" : "error" };
   }
 
@@ -149,10 +202,28 @@ export interface EnrichSummary {
   skippedUnchanged: number;
 }
 
+/**
+ * The Hub's authenticated budget is 5,000 requests per 300 s — 16.7 a second.
+ * At concurrency 8 a slice is 8 requests, so a slice may start no more often
+ * than every 480 ms. 520 leaves a margin for the listing walk, which draws on
+ * the same bucket.
+ */
+const SLICE_MIN_MS = 520;
+
+/** Fallback pause when the Hub sends 429 without a Retry-After. */
+const RATE_LIMIT_PAUSE_S = 30;
+
+/** Never sleep longer than this on one 429, however large Retry-After is. */
+const RATE_LIMIT_MAX_PAUSE_S = 120;
+
+const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
+
 export interface EnrichBatchParams {
   db: D1Database;
   batchSize?: number;
   offset?: number;
+  /** Hub token. Optional, but its absence is what made this stage a no-op. */
+  token?: string;
 }
 
 /**
@@ -172,7 +243,7 @@ export async function resetTransientReadmeErrors(db: D1Database): Promise<number
 }
 
 export async function enrichBlindSpaces(params: EnrichBatchParams): Promise<EnrichSummary> {
-  const { db, batchSize = 50, offset = 0 } = params;
+  const { db, batchSize = 50, offset = 0, token } = params;
   const summary: EnrichSummary = {
     total: 0,
     fetched: 0,
@@ -224,10 +295,46 @@ export async function enrichBlindSpaces(params: EnrichBatchParams): Promise<Enri
 
   for (let i = 0; i < rows.results.length; i += CONCURRENCY) {
     const slice = rows.results.slice(i, i + CONCURRENCY);
+    const startedAt = Date.now();
     const settled = await Promise.all(
-      slice.map(async (row) => ({ row, result: await fetchReadme(row.space_id, row.readme_hash) })),
+      slice.map(async (row) => ({
+        row,
+        result: await fetchReadme(row.space_id, row.readme_hash, token),
+      })),
     );
     results.push(...settled);
+
+    // Pace against the quota the Hub publishes, rather than going as fast as
+    // the network allows and calling the resulting 429s "errors".
+    //
+    // The Hub answers every request with its budget:
+    //
+    //     anonymous       ratelimit-policy: "resolvers"; q=3000; w=300
+    //     authenticated   ratelimit-policy: "resolvers"; q=5000; w=300
+    //
+    // This queue is ~16,500 READMEs. Unpaced at concurrency 8 that is roughly
+    // 40 requests a second against a sustainable 16.7, so the budget is gone
+    // in under two minutes and every remaining request comes back 429 —
+    // recorded as `error`, which is exactly the 14,433-of-14,454 that two runs
+    // reported while calling themselves complete. Worse anonymously: that
+    // bucket is keyed by IP and a Worker shares its egress with every other
+    // Worker hitting the same host, which is how a 3,000 budget yielded 2.
+    //
+    // So spend the slice's own wall clock first and only sleep the remainder.
+    // A slice that took longer than its share costs nothing extra.
+    const elapsed = Date.now() - startedAt;
+    const owed = SLICE_MIN_MS - elapsed;
+    if (owed > 0) await sleep(owed);
+
+    // A 429 despite pacing means something else is drawing on the same bucket.
+    // Honour the Hub's own Retry-After before continuing; the batch runs
+    // inside one Workflow step and step wall clock is unlimited, so waiting is
+    // free where marking rows unreachable is not.
+    const limited = settled.find((x) => x.result.rateLimited);
+    if (limited) {
+      const wait = limited.result.retryAfterSeconds ?? RATE_LIMIT_PAUSE_S;
+      await sleep(Math.min(wait, RATE_LIMIT_MAX_PAUSE_S) * 1000);
+    }
   }
 
   const stmts: D1PreparedStatement[] = [];

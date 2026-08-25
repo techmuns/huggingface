@@ -651,6 +651,7 @@ export class WeeklyPipeline extends WorkflowEntrypoint<Env, WeeklyPipelineParams
           db: this.env.DB,
           batchSize: BATCH_SIZE,
           offset: 0,
+          token: this.env.HF_TOKEN,
         }),
       );
 
