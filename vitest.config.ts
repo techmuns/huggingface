@@ -51,7 +51,7 @@ export default defineConfig({
             "test/*scratch*",
             "test/*probe*",
             "test/*bench*",
-            "test/*measure*",,
+            "test/*measure*",
             "test/q*",
             "test/*cost*",
             "test/*-check.spec.ts",
