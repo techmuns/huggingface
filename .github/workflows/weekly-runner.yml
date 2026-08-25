@@ -67,6 +67,10 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          # Full history. The publish step may have to rebase onto a push that
+          # landed mid-run, and a rebase on the default shallow clone fails.
+          fetch-depth: 0
 
       - uses: actions/setup-node@v4
         with:
