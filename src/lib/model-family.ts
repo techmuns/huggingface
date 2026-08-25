@@ -686,10 +686,30 @@ async function resolveByNamePattern(
   return { resolved, cursor, exhausted };
 }
 
+export interface ResolveOptions {
+  /**
+   * Whether to run the three end-of-pass sweeps, even if the rungs have not
+   * finished walking.
+   *
+   * The sweeps only ever matter to the FINAL state, and they are the most
+   * expensive thing in this file when repeated. Measured against real D1:
+   * 17,522 rows read for the lineage sweep and 19,921 for the derivative-type
+   * sweep, both writing zero rows on every pass after the first, times ~19
+   * passes — about 3.2 million rows read a run to change nothing.
+   *
+   * So they are skipped until the last pass. `done` is the normal trigger; the
+   * caller sets this when the loop is ending for the other reason — its pass
+   * cap — because a truncated walk still has to leave the table in a coherent
+   * state rather than mid-sweep.
+   */
+  sweep?: boolean;
+}
+
 export async function resolveModelFamilies(
   db: D1Database,
   limit: number = RESOLVE_PAGE,
   cursors: ResolveCursors = EMPTY_CURSORS,
+  options: ResolveOptions = {},
 ): Promise<ResolveSummary> {
   const tags = await resolveFromTags(db, limit, cursors.tags);
   const cardData = await resolveFromCardData(db, limit, cursors.cardData);
@@ -710,71 +730,6 @@ export async function resolveModelFamilies(
   const byArchitecture = architecture.resolved;
   const byName = name.resolved;
 
-  // Anything with a declared lineage that still couldn't be placed. Safe to
-  // run unbounded: `base_model` is written by the two lineage rungs and by
-  // nothing else — parse.ts writes `card_base_model`, never this — so a row
-  // that has one has already been through them.
-  await db
-    .prepare(
-      `UPDATE hf_models SET family = 'other-open'
-       WHERE base_model IS NOT NULL AND family IS NULL`,
-    )
-    .run();
-
-  // And anything that told us its architecture plainly, where the architecture
-  // is not one of the eight named families.
-  //
-  // This is the difference between "we could not tell what this is" and "this
-  // is a BERT". 1,107 models in 12,000 — bert 424, roberta 76, xlm-roberta 66,
-  // gpt2 62, distilbert 59, whisper 36, t5 28 — were being published as
-  // Unresolved while the row said exactly what they were. The taxonomy is the
-  // stakeholder's and is not ours to extend, but it already has the bucket for
-  // this: `other-open` is "Other open models", and an open model that is none
-  // of the eight named families is precisely that. A NULL family should mean
-  // the one thing it cannot mean today — that we could not tell.
-  //
-  // Bounded, unlike the clause above, because `model_type` is written at PARSE
-  // time: a row can carry one without any rung having looked at it. Stamping
-  // those would take them out of `family IS NULL` and no later pass would ever
-  // examine them — the exact failure the cursors exist to prevent. So it
-  // reaches only as far as BOTH remaining rungs have walked, or the whole
-  // table once both have walked it all.
-  const walkedBoth = architecture.exhausted && name.exhausted
-    ? null
-    : (architecture.cursor && name.cursor
-        ? (architecture.cursor < name.cursor ? architecture.cursor : name.cursor)
-        : "");
-  if (walkedBoth === null) {
-    await db
-      .prepare(
-        `UPDATE hf_models SET family = 'other-open'
-         WHERE family IS NULL AND base_model IS NULL AND model_type IS NOT NULL`,
-      )
-      .run();
-  } else if (walkedBoth !== "") {
-    await db
-      .prepare(
-        `UPDATE hf_models SET family = 'other-open'
-         WHERE family IS NULL AND base_model IS NULL AND model_type IS NOT NULL
-           AND repo_id <= ?1`,
-      )
-      .bind(walkedBoth)
-      .run();
-  }
-
-  // A repo that declares no parent is a base model. The brief asks for all
-  // six derivative types, and without this every repo without a base_model
-  // tag would report a NULL type — indistinguishable from "not yet resolved"
-  // and leaving the single largest bucket unlabelled.
-  const base = await db
-    .prepare(
-      `UPDATE hf_models SET derivative_type = 'base'
-       WHERE base_model IS NULL AND derivative_type IS NULL`,
-    )
-    .run();
-
-  const total = byTag + byCardData + byChain + byArchitecture + byName;
-
   // Done means every cursor-walking rung reached the end of its own set —
   // NOT that this pass happened to resolve nothing. Those differ precisely
   // when it matters: a pass landing entirely on unmatchable rows resolves
@@ -782,9 +737,96 @@ export async function resolveModelFamilies(
   const done = tags.exhausted && cardData.exhausted
     && architecture.exhausted && name.exhausted;
 
+  // The sweeps below settle the FINAL state, and repeating them is pure cost:
+  // measured against real D1 they read ~37,000 rows a pass and write nothing
+  // after the first, ~19 passes a run. So they run once — when the walk is
+  // finished, or when the caller says the loop is ending anyway.
+  const shouldSweep = done || options.sweep === true;
+  let baseChanges = 0;
+
+  if (shouldSweep) {
+    // Anything with a declared lineage that still couldn't be placed.
+    //
+    // This used to run at the end of EVERY pass, and the comment here said it
+    // was safe to because `base_model` is only written by the lineage rungs,
+    // so a row carrying one has already been through them. That reasoning has
+    // a hole: the row has been through them, but its PARENT may not have been
+    // resolved yet. A model declares a parent in pass 1, the sweep stamps it
+    // `other-open` because the parent is still NULL, the parent resolves in
+    // pass 3 — and the child has already left `family IS NULL`, so no rung
+    // ever reconsiders it. Its family was knowable and we published the bucket
+    // that means "we could not tell".
+    //
+    // Measured on a 700-model fixture: 100 rows recovered a real family once
+    // this stopped running before the chain rung had finished. That is the
+    // load-bearing reason it now runs once, at the end; the ~3 million rows a
+    // run it stops reading is the lesser half.
+    await db
+      .prepare(
+        `UPDATE hf_models SET family = 'other-open'
+         WHERE base_model IS NOT NULL AND family IS NULL`,
+      )
+      .run();
+
+    // And anything that told us its architecture plainly, where the architecture
+    // is not one of the eight named families.
+    //
+    // This is the difference between "we could not tell what this is" and "this
+    // is a BERT". 1,107 models in 12,000 — bert 424, roberta 76, xlm-roberta 66,
+    // gpt2 62, distilbert 59, whisper 36, t5 28 — were being published as
+    // Unresolved while the row said exactly what they were. The taxonomy is the
+    // stakeholder's and is not ours to extend, but it already has the bucket for
+    // this: `other-open` is "Other open models", and an open model that is none
+    // of the eight named families is precisely that. A NULL family should mean
+    // the one thing it cannot mean today — that we could not tell.
+    //
+    // Bounded, unlike the clause above, because `model_type` is written at PARSE
+    // time: a row can carry one without any rung having looked at it. Stamping
+    // those would take them out of `family IS NULL` and no later pass would ever
+    // examine them — the exact failure the cursors exist to prevent. So it
+    // reaches only as far as BOTH remaining rungs have walked, or the whole
+    // table once both have walked it all.
+    const walkedBoth = architecture.exhausted && name.exhausted
+      ? null
+      : (architecture.cursor && name.cursor
+          ? (architecture.cursor < name.cursor ? architecture.cursor : name.cursor)
+          : "");
+    if (walkedBoth === null) {
+      await db
+        .prepare(
+          `UPDATE hf_models SET family = 'other-open'
+           WHERE family IS NULL AND base_model IS NULL AND model_type IS NOT NULL`,
+        )
+        .run();
+    } else if (walkedBoth !== "") {
+      await db
+        .prepare(
+          `UPDATE hf_models SET family = 'other-open'
+           WHERE family IS NULL AND base_model IS NULL AND model_type IS NOT NULL
+             AND repo_id <= ?1`,
+        )
+        .bind(walkedBoth)
+        .run();
+    }
+
+    // A repo that declares no parent is a base model. The brief asks for all
+    // six derivative types, and without this every repo without a base_model
+    // tag would report a NULL type — indistinguishable from "not yet resolved"
+    // and leaving the single largest bucket unlabelled.
+    const base = await db
+      .prepare(
+        `UPDATE hf_models SET derivative_type = 'base'
+         WHERE base_model IS NULL AND derivative_type IS NULL`,
+      )
+      .run();
+    baseChanges = base.meta?.changes ?? 0;
+  }
+
+  const total = byTag + byCardData + byChain + byArchitecture + byName;
+
   return {
     byTag, byCardData, byChain, byArchitecture, byName,
-    byBase: base.meta?.changes ?? 0, total,
+    byBase: baseChanges, total,
     // Which rungs finished, so a run that ran out of passes can say WHICH set
     // it was still walking rather than only that it did not finish.
     unfinished: [

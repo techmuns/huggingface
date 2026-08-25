@@ -337,8 +337,14 @@ export class WeeklyPipeline extends WorkflowEntrypoint<Env, WeeklyPipelineParams
       // than a repeated re-read of the same head. Step results are durable, so
       // a retried step resumes from the same place instead of rewinding.
       const from = resolve.cursors;
+      // The end-of-pass sweeps settle the final state and cost ~37,000 rows
+      // read each time they run, writing nothing after the first. They run
+      // when the walk finishes on its own — and here, on the last pass the cap
+      // allows, so a truncated walk still leaves the table coherent rather
+      // than half-swept.
+      const lastAllowedPass = pass === MAX_RESOLVE_PASSES - 1;
       const part = await step.do(`resolve-models-${pass}`, SQL_RETRY, async () =>
-        resolveModelFamilies(this.env.DB, RESOLVE_PAGE, from),
+        resolveModelFamilies(this.env.DB, RESOLVE_PAGE, from, { sweep: lastAllowedPass }),
       );
       resolve.byTag += part.byTag;
       resolve.byCardData += part.byCardData;
