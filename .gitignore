@@ -29,5 +29,7 @@ worker-configuration.d.ts
 test/_bench_*
 test/_*.spec.ts
 test/zz-*
-test/scratch-*
-test/*-scratch.spec.ts
+test/*scratch*
+test/*probe*
+test/*bench*
+test/tmp*
