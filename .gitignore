@@ -12,9 +12,20 @@ __pycache__/
 # 500 KB file that disagrees with the config.
 worker-configuration.d.ts
 
-# Throwaway CPU benchmarks. Step bodies get 10 ms on Workers Free, so measuring
-# one in real workerd is a routine part of changing this pipeline — and those
-# scratch specs are written, read once and deleted. The permanent measurements
-# live in test/cpu-budget.spec.ts; anything named _bench_* is working scaffolding
-# and must not be committed.
+# Throwaway measurement specs.
+#
+# Measuring in real workerd against real D1 is routine here — a step body gets
+# 10 ms of CPU on Workers Free, and D1 bills rows read, so "is this fast?" and
+# "how much does this read?" are both questions you answer by running something
+# rather than by reasoning. Those specs are written, read once and deleted.
+#
+# The rule used to be `test/_bench_*` alone, which assumed everyone would reach
+# for the same prefix. They do not — a probe measuring rows_read turned up as
+# `test/zz-scratch-probe.spec.ts` and was flagged as uncommitted work. Both
+# conventions are covered now; real suites use neither prefix.
+#
+# The measurements worth keeping live in test/cpu-budget.spec.ts and
+# test/query-plan.spec.ts, which assert rather than print.
 test/_bench_*
+test/_*.spec.ts
+test/zz-*
