@@ -334,10 +334,38 @@ button.bar-row:focus-visible { outline: 2px solid var(--series); outline-offset:
 }
 .insight-body p { margin: 0 0 12px; max-width: 74ch; line-height: 1.62; }
 .insight-body p:last-child { margin-bottom: 0; }
-.insight-meta { font-size: 12px; color: var(--ink-muted); margin-top: 14px; }
-.insight-facts { margin-top: 10px; }
-.insight-facts summary { cursor: pointer; font-size: 12.5px; color: var(--ink-2); }
-.insight-facts summary:hover { text-decoration: underline; }
+/* The footer: where the prose came from, and how to check it.
+   Ruled off, because it is about the text above rather than part of it. */
+.insight-foot {
+  margin-top: 22px; padding-top: 14px; border-top: 1px solid var(--hairline);
+  display: flex; flex-wrap: wrap; align-items: center; gap: 10px 16px;
+}
+.insight-meta { font-size: 12px; color: var(--ink-muted); margin: 0; }
+.insight-facts { margin: 0; margin-left: auto; }
+
+/* A control that looks like one. This was a bare disclosure triangle against
+   body text, which is the page's most interesting idea — every figure in the
+   prose is one of these — dressed as a footnote nobody would press. */
+.insight-facts summary {
+  cursor: pointer; font-size: 12.5px; color: var(--ink-2);
+  display: inline-flex; align-items: center; gap: 8px;
+  padding: 6px 12px; border: 1px solid var(--hairline); border-radius: 999px;
+  list-style: none; transition: border-color .15s ease, color .15s ease;
+}
+.insight-facts summary::-webkit-details-marker { display: none; }
+.insight-facts summary::after {
+  content: ""; width: 5px; height: 5px; margin-left: 2px;
+  border-right: 1.5px solid currentColor; border-bottom: 1.5px solid currentColor;
+  transform: rotate(45deg) translate(-1px, -1px); transition: transform .15s ease;
+}
+.insight-facts[open] summary::after { transform: rotate(-135deg) translate(-2px, -2px); }
+.insight-facts summary:hover { color: var(--ink); border-color: var(--ink-muted); }
+.insight-facts summary:focus-visible { outline: 2px solid var(--ink-muted); outline-offset: 2px; }
+.facts-count {
+  font-variant-numeric: tabular-nums; font-weight: 600; color: var(--ink);
+}
+.insight-facts[open] { display: block; width: 100%; }
+.insight-facts[open] summary { margin-bottom: 4px; }
 .insight-facts table { margin-top: 10px; font-size: 12px; }
 /* The fact table sits inside a half-width card, so `what` has to be allowed to
    wrap. Left alone it inherits the page's nowrap table rules and pushes the
@@ -352,7 +380,11 @@ button.bar-row:focus-visible { outline: 2px solid var(--series); outline-offset:
 .insight-item { padding: 14px 0; border-top: 1px solid var(--grid); }
 .insight-item:first-child { border-top: 0; padding-top: 0; }
 .insight-item h3 { font-size: 13px; font-weight: 600; margin: 0 0 8px; }
-.insight-none { color: var(--ink-muted); font-size: 13.5px; line-height: 1.6; max-width: 74ch; }
+.insight-none {
+  color: var(--ink-muted); font-size: 13.5px; line-height: 1.6;
+  max-width: 60ch; margin: 0 auto; padding: 18px 0 22px; text-align: center;
+}
+.insight-item .insight-none { margin: 0; padding: 0; text-align: left; }
 
 .drill-list { display: grid; gap: 2px; }
 .drill-row {
@@ -3742,17 +3774,24 @@ function insightCard(entry, { heading = true } = {}) {
   // in the prose and missing here until a test went looking for it.
   const anyPts = facts.some(f => f.changePts != null);
   const anyDen = facts.some(f => f.denominator != null);
+  // Before and Change are empty for the first week a database holds — there is
+  // no earlier week to compare against — and two full columns of em-dashes
+  // read as missing data rather than as the absence of a comparison. Same rule
+  // the other two columns already followed.
+  const anyPrev = facts.some(f => f.prev != null);
+  const anyChg = facts.some(f => f.changePct != null);
   const factTable = facts.length ? `<details class="insight-facts">
-    <summary>The ${facts.length} facts this was written from &mdash; every figure above is one of these</summary>
+    <summary><span class="facts-count">${facts.length}</span> facts this was written from &mdash; every figure above is one of these</summary>
     <div class="table-scroll"><table>
-      <thead><tr><th>Fact</th><th>What</th><th>Figure</th><th>Before</th><th>Change</th>${
+      <thead><tr><th>Fact</th><th>What</th><th>Figure</th>${
+        anyPrev ? '<th>Before</th>' : ''}${anyChg ? '<th>Change</th>' : ''}${
         anyPts ? '<th>In points</th>' : ''}${anyDen ? '<th>Out of</th>' : ''}</tr></thead>
       <tbody>${facts.map(f => `<tr>
         <td>${esc(f.id)}</td>
         <td>${esc(f.what)}</td>
         <td class="fnum">${esc(fmt(f, f.value))}</td>
-        <td class="fnum">${esc(fmt(f, f.prev))}</td>
-        <td class="fnum">${f.changePct == null ? '—' : delta(f.changePct)}</td>
+        ${anyPrev ? `<td class="fnum">${esc(fmt(f, f.prev))}</td>` : ''}
+        ${anyChg ? `<td class="fnum">${f.changePct == null ? '—' : delta(f.changePct)}</td>` : ''}
         ${anyPts ? `<td class="fnum">${f.changePts == null ? '—'
           : esc(`${f.changePts >= 0 ? '+' : '\u2212'}${Math.abs(f.changePts).toFixed(1)} points`)}</td>` : ''}
         ${anyDen ? `<td class="fnum">${f.denominator == null ? '—' : num(Math.round(f.denominator))}</td>` : ''}
@@ -3760,12 +3799,18 @@ function insightCard(entry, { heading = true } = {}) {
     </table></div>
   </details>` : '';
 
+  // The byline and the facts control belong together: one is the claim about
+  // where the prose came from, the other is how you check it. They were two
+  // loose blocks under the text, and the disclosure was a bare triangle that
+  // did not read as something you could press.
   return `${title}
     <div class="insight-body">${entry.narrative.split(/\n\n+/)
       .map(p => `<p>${esc(p.trim())}</p>`).join('')}</div>
-    <p class="insight-meta">Written ${esc(shortWeek(entry.generatedAt.slice(0, 10)))}${
-      entry.model ? ` by ${esc(prettyModel(entry.model))}` : ''}, from figures it could not alter.</p>
-    ${factTable}`;
+    <div class="insight-foot">
+      <p class="insight-meta">Written ${esc(shortWeek(entry.generatedAt.slice(0, 10)))}${
+        entry.model ? ` by ${esc(prettyModel(entry.model))}` : ''}, from figures it could not alter.</p>
+      ${factTable}
+    </div>`;
 }
 
 async function renderInsights() {
