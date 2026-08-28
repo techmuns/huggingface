@@ -155,12 +155,17 @@ export async function publishSnapshot(
 
   const index = files.find((f) => f.path === "index.json");
   if (index) {
-    // Union with what was published before, for the same reason everything
-    // else here merges: the earlier weeks are still on disk and still on the
-    // page, and dropping them from the index would hide them.
-    const previous = readJson<{ weeks?: string[] }>(join(root, "index.json"));
+    // Read back from series.json, rather than unioning with the last index.
+    //
+    // A union only ever grows, so a week that should never have been published
+    // could not be taken back: 2026-08-24 was written by a run holding 1,830
+    // Spaces and no classifications, removed from every other file, and stayed
+    // in the index advertising a week nothing else had. series.json is the
+    // list the dashboard actually draws from, and it is itself merged, so
+    // deriving from it keeps old weeks AND drops retracted ones.
+    const series = readJson<{ weeks?: string[] }>(join(root, "series.json"));
     const value = index.value as { weeks: string[] };
-    const weeks = [...new Set([...(previous?.weeks ?? []), ...value.weeks])].sort();
+    const weeks = [...(series?.weeks ?? value.weeks)].sort();
     written.push(write(root, "index.json", { ...value, weeks }));
     return { written, weeks };
   }

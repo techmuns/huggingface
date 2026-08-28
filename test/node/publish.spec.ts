@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -434,6 +434,27 @@ describe("publishing a snapshot from a database", () => {
     metric("2026-08-17", "coding", 1); // only this one was aggregated
 
     expect(await publishableWeeks(asD1(db))).toEqual(["2026-08-17"]);
+  });
+
+  it("advertises exactly the weeks series.json draws, so a week can be retracted", async () => {
+    // The index used to union with its own previous value, so it only ever
+    // grew. Week 2026-08-24 was published once by a run holding a partial view,
+    // removed from every other file, and stayed in the index advertising a week
+    // nothing else had.
+    insertSpace("a/one", "2026-08-12T10:00:00.000Z", 1);
+    metric("2026-08-10", "coding", 1);
+    await publishSnapshot(asD1(db), root, "2026-08-17T00:00:00.000Z", ["2026-08-10"]);
+
+    const index = () => JSON.parse(readFileSync(join(root, "index.json"), "utf8")) as { weeks: string[] };
+    expect(index().weeks).toEqual(["2026-08-10"]);
+
+    // A week added to the index by hand is dropped on the next publish, because
+    // series.json — what the dashboard actually draws — does not have it.
+    const stale = { ...index(), weeks: [...index().weeks, "2026-08-24"] };
+    writeFileSync(join(root, "index.json"), `${JSON.stringify(stale)}\n`);
+
+    await publishSnapshot(asD1(db), root, "2026-08-24T00:00:00.000Z", ["2026-08-10"]);
+    expect(index().weeks).toEqual(["2026-08-10"]);
   });
 
   it("publishes a narrative file only for a week that has one", async () => {
