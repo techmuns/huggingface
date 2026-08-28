@@ -839,6 +839,14 @@ details.method li { margin-bottom: 7px; max-width: 82ch; }
         <div id="c-usecase"></div>
       </section>
 
+      <section class="card" id="usecase-change-card">
+        <header>
+          <h2>What moved</h2>
+          <p class="hint" id="usecase-change-hint">Week on week, and month on month, per use case.</p>
+        </header>
+        <div id="c-usecase-change"></div>
+      </section>
+
       <section class="card" id="usecase-drill-card" hidden>
         <header>
           <h2 id="drill-title">The Spaces behind it</h2>
@@ -2759,8 +2767,9 @@ async function renderDrill(cols) {
       share == null ? '' : ` — ${share.toFixed(1)}%`}.
     Likes are recorded when we first see a Space, in the hours after it is created, so this is
     which ones got noticed fastest rather than which are most popular today.
-    <a href="https://huggingface.co/spaces" target="_blank" rel="noopener">The Hub</a> has no
-    download figure for Spaces at all.</p>`;
+    <a href="https://huggingface.co/spaces" target="_blank" rel="noopener">The Hub</a> publishes
+    no usage figure for a Space at all &mdash; not downloads, not views, not runs &mdash; so
+    likes are the only signal of attention that exists.</p>`;
 
   if (!data.spaces.length) {
     setHTML(host, preamble + `<p class="empty">Not one of the ${
@@ -3038,7 +3047,12 @@ function renderCutPanel(elId, cut, { unit = '', chartId, extraNote = '', rows = 
   // equivalent list behind a technique or an industry, both of which are
   // multi-label, and no list at all behind a model family — those are model
   // repos, not Spaces.
-  const drill = cut === CUTS.usecase;
+  // The tab matters, not just the cut. #usecase-drill-card lives inside
+  // #panel-build, so on any other tab showTab() has already hidden its
+  // ancestor — and a click there flipped aria-expanded, fired a fetch for the
+  // use-case JSON, and showed nothing, forever. Trends ▸ "New Spaces by use
+  // case" draws the same cut and was doing exactly that.
+  const drill = cut === CUTS.usecase && state.tab === 'build';
 
   const list = document.createElement('div');
   list.className = 'ranked';
@@ -3687,7 +3701,10 @@ function renderAll() {
   if (state.tab === 'trends') { renderTrendsTab(); return; }
 
   if (state.tab === 'build') {
-    if (state.sub.build === 'usecase') renderCutPanel('c-usecase', CUTS.usecase, { chartId: 'usecase' });
+    if (state.sub.build === 'usecase') {
+      renderCutPanel('c-usecase', CUTS.usecase, { chartId: 'usecase' });
+      renderUseCaseChange();
+    }
     else { hideDrillCard(); renderCutPanel('c-vertical', CUTS.vertical, { unit: '%', chartId: 'vertical' }); }
     return;
   }
@@ -3719,6 +3736,7 @@ function renderEveryPanel() {
   renderMovers();
   renderTrendsTab();
   renderCutPanel('c-usecase', CUTS.usecase, { chartId: 'usecase' });
+  renderUseCaseChange();
   renderCutPanel('c-vertical', CUTS.vertical, { unit: '%', chartId: 'vertical' });
   renderCutPanel('c-family', CUTS.family, { chartId: 'family' });
   renderTechniques();
@@ -3942,13 +3960,30 @@ function coverageByPeriod(cut, period) {
   const cls = cutColumns(cut, { period });
   const all = cutColumns(CUTS.sdk, { period });
   const totals = columnTotals(all.rows, all.periods);
+
+  // A count cut and a percent cut answer this differently, and using the
+  // percent rule on a count cut reports 100% coverage for every week ever run.
+  //
+  // A percent cut's denominator IS the classified base, so den/whole is the
+  // fraction classified. A count cut's denominator is the CLASSIFIABLE base —
+  // for spaces_by_use_case it equals the SDK total exactly ([7157, 5766, 5570,
+  // 5842] in both cuts), so the ratio is 1 by construction. What was actually
+  // classified is the sum of the category values.
+  //
+  // Checked against the published coverage files: summing gives 79.3 / 21.7 /
+  // 100 / 100 for the four weeks, which is the truth to the decimal; the
+  // denominator rule gives 100 / 100 / 100 / 100 on a week that was 21.7%.
+  const counts = KIND[cut] === 'count';
+
   return cls.periods.map((_, i) => {
-    const den = cls.rows.reduce((best, r) => {
-      const d = r.denominators?.[i];
-      return d != null && d > best ? d : best;
-    }, 0);
+    const measure = counts
+      ? cls.rows.reduce((sum, r) => sum + (r.values?.[i] ?? 0), 0)
+      : cls.rows.reduce((best, r) => {
+          const d = r.denominators?.[i];
+          return d != null && d > best ? d : best;
+        }, 0);
     const whole = totals[i];
-    return whole > 0 && den > 0 ? (den / whole) * 100 : null;
+    return whole > 0 && measure > 0 ? (measure / whole) * 100 : null;
   });
 }
 
@@ -3974,7 +4009,13 @@ function changeAgainstPrevious(cut, period) {
   // them: the ratio is of the classifier, not of the Hub. Withheld rather than
   // rebased, because with three quarters of a period unclassified the true
   // share is unknown, and a rebase would publish a floor as a fact.
-  const cov = KIND[cut] === 'percent' ? coverageByPeriod(cut, period) : null;
+  // Count cuts need this guard MORE than percent cuts, not less: an unguarded
+  // use-case change table prints education +5,033%, coding +285% and
+  // chat-assistant +222% across 2026-08-03, a week that was 21.7% classified.
+  // Those are ratios of the classifier, not of the Hub.
+  const cov = KIND[cut] === 'percent' || KIND[cut] === 'count'
+    ? coverageByPeriod(cut, period)
+    : null;
   const covNow = cov?.[now] ?? null;
   const covBefore = cov?.[before] ?? null;
   const incomparable = covNow != null && covBefore != null
@@ -4019,17 +4060,22 @@ function changeAgainstPrevious(cut, period) {
  * a reader who groups that chart by quarter should not find this table has
  * quietly become a quarterly one.
  */
-function renderTechChange() {
-  const el = document.getElementById('c-tech-change');
+function renderChangeTable(hostId, hintId, cut, opts = {}) {
+  const {
+    label = 'Technique',
+    unit = '%',
+    describe = 'used that technique',
+  } = opts;
+  const el = document.getElementById(hostId);
   if (!el) return;
   if (!seriesRaw || !(seriesRaw.weeks || []).length) { setHTML(el, noSeriesNote()); return; }
 
-  const week = changeAgainstPrevious(CUTS.tech, 'week');
-  const month = changeAgainstPrevious(CUTS.tech, 'month');
+  const week = changeAgainstPrevious(cut, 'week');
+  const month = changeAgainstPrevious(cut, 'month');
 
   if (!week.ok && !month.ok) {
     setHTML(el, `<p class="empty">Nothing to compare yet &mdash; ${esc(week.why)}.</p>`);
-    document.getElementById('tech-change-hint').textContent =
+    document.getElementById(hintId).textContent =
       'Two finished weeks are needed before a change can be reported.';
     return;
   }
@@ -4040,7 +4086,7 @@ function renderTechChange() {
     .map(r => r.dimension);
   const at = (res, dim) => (res.ok ? res.rows.find(r => r.dimension === dim) : null);
 
-  document.getElementById('tech-change-hint').textContent = week.ok && month.ok
+  document.getElementById(hintId).textContent = week.ok && month.ok
     ? `${week.nowLabel} against ${week.beforeLabel}, and ${month.nowLabel} against ${month.beforeLabel}.`
     : week.ok
       ? `${week.nowLabel} against ${week.beforeLabel}. Month on month is withheld: ${month.why}.`
@@ -4053,7 +4099,7 @@ function renderTechChange() {
     if (!r || r.value == null) return '<td>&mdash;</td><td>&mdash;</td>';
     // Suppressed where it rounds to nothing: "▼ 0.7%  −0.0 pts" reads as a
     // typo, and a tenth of a point is not the part of that row worth printing.
-    const pts = r.points == null || Math.abs(r.points) < 0.05 ? '' :
+    const pts = unit !== '%' || r.points == null || Math.abs(r.points) < 0.05 ? '' :
       `<span class="suppressed" style="font-size:12px">${
         r.points >= 0 ? '+' : '\u2212'}${Math.abs(r.points).toFixed(1)} pts</span>`;
     // 'new' is a statement, not a failed comparison, so it is not greyed out
@@ -4065,7 +4111,7 @@ function renderTechChange() {
       : delta(null, { reason: r.reason ?? 'no earlier period' });
     // The points are a difference between the same two incomparable figures,
     // so they go with the ratio rather than surviving it.
-    return `<td>${esc(exact(r.value, '%'))}${r.suppressed ? '*' : ''}</td>
+    return `<td>${esc(exact(r.value, unit))}${r.suppressed ? '*' : ''}</td>
       <td>${change}${r.reason === 'coverage differs' ? '' : ' ' + pts}</td>`;
   };
 
@@ -4074,7 +4120,7 @@ function renderTechChange() {
   const shortOf = (res) => res.cols.periods[
     lastTwoFinished(res.cols.periods).now].label;
   const head = `<tr>
-    <th>Technique</th>
+    <th>${esc(label)}</th>
     ${week.ok ? `<th>${esc(shortOf(week))}</th><th>vs the week before</th>` : ''}
     ${month.ok ? `<th>${esc(shortOf(month))}</th><th>vs the month before</th>` : ''}
   </tr>`;
@@ -4088,8 +4134,8 @@ function renderTechChange() {
   const anySup = order.some(d => at(week, d)?.suppressed || at(month, d)?.suppressed);
   setHTML(el, `<div class="table-scroll"><table class="pmatrix change">
     <thead>${head}</thead><tbody>${body}</tbody></table></div>
-    <p class="hint" style="margin-top:12px">Each figure is the share of the
-    <b>classified</b> new Spaces of a <b>finished</b> period that used that technique, against the
+    <p class="hint" style="margin-top:12px">Each figure counts the
+    <b>classified</b> new Spaces of a <b>finished</b> period that ${describe}, against the
     finished period before it &mdash; a week two days old would read as a collapse rather than as a
     week that has not happened yet.${
       [week, month].filter(r => r.ok && r.incomparable).map(r =>
@@ -4101,8 +4147,26 @@ function renderTechChange() {
 }
 
 function renderTechniques() {
-  renderTechChange();
+  renderChangeTable('c-tech-change', 'tech-change-hint', CUTS.tech, {
+    label: 'Technique', unit: '%', describe: 'used that technique',
+  });
   renderCutPanel('c-tech', CUTS.tech, { unit: '%', chartId: 'tech' });
+}
+
+/**
+ * The same table, for use cases.
+ *
+ * This is "what moved inside the categories", answered at the only grain the
+ * data currently supports. Deliberately the SAME function as the Techniques
+ * table rather than a second one: that table already withholds a comparison
+ * when two periods were classified to different depths, and use cases need
+ * that guard more, not less. Across 2026-08-03 — a week 21.7% classified — an
+ * unguarded table reads education +5,033%, coding +285%, chat-assistant +222%.
+ */
+function renderUseCaseChange() {
+  renderChangeTable('c-usecase-change', 'usecase-change-hint', CUTS.usecase, {
+    label: 'Use case', unit: '', describe: 'did that job',
+  });
 }
 
 /* ── Tabs, toolbar and routing ────────────────────────────────────────── */
