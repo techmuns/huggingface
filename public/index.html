@@ -1207,6 +1207,7 @@ let seriesRaw = null;    // series.json, every cut, up to three years
 let matrixSeries = null; // series-matrix.json, lazily
 let matrixPending = null; // the in-flight request for it, shared by every render
 let coverage = null;     // coverage/<week>.json for the newest period on screen
+let classifierMix = null; // classifier.json: week -> version -> classified count
 let coverageWeek = null;
 let coverageSeq = 0;
 let totalsCache = null;
@@ -3990,6 +3991,32 @@ function coverageByPeriod(cut, period) {
 /** Below this much difference in coverage, two periods are comparable. */
 const COVERAGE_GAP = 10;
 
+/**
+ * The classifier that measured most of a period.
+ *
+ * 'unknown' is a version, not a missing value, and that is deliberate. Every
+ * week classified before the version column existed is unknown, and two
+ * unknowns are not evidence of the same classifier — they are two absences. So
+ * an old week and a freshly classified one compare as DIFFERENT, which is the
+ * honest answer, and the comparison comes back on its own once a re-run has
+ * stamped both.
+ *
+ * Returns null only when a period has no classifications at all, which the
+ * coverage guard has already caught.
+ */
+function classifierOf(periodWeeks) {
+  if (!classifierMix || !classifierMix.weeks) return 'unknown';
+  const totals = new Map();
+  for (const w of periodWeeks) {
+    const mix = classifierMix.weeks[w];
+    if (!mix) { totals.set('unknown', (totals.get('unknown') ?? 0) + 1); continue; }
+    for (const [v, n] of Object.entries(mix)) totals.set(v, (totals.get(v) ?? 0) + n);
+  }
+  let best = null, bestN = -1;
+  for (const [v, n] of totals) if (n > bestN) { best = v; bestN = n; }
+  return best;
+}
+
 /** One period's figure and its change from the one before, per category. */
 function changeAgainstPrevious(cut, period) {
   const cols = cutColumns(cut, { period });
@@ -4018,8 +4045,20 @@ function changeAgainstPrevious(cut, period) {
     : null;
   const covNow = cov?.[now] ?? null;
   const covBefore = cov?.[before] ?? null;
-  const incomparable = covNow != null && covBefore != null
+  const gapTooWide = covNow != null && covBefore != null
     && Math.abs(covNow - covBefore) > COVERAGE_GAP;
+
+  // The second reason two periods cannot be compared, and the one that has
+  // already bitten this dashboard: the same Space measured by two different
+  // classifiers. share_by_use_case scientific-tools reads 20.18 / 0.96 / 3.00 /
+  // 3.01 across four consecutive weeks — a 6.7x cliff no coverage curve can
+  // produce, because the classifier changed underneath it and nothing recorded
+  // that it had.
+  const clsNow = classifierOf(cols.periods[now].weeks || []);
+  const clsBefore = classifierOf(cols.periods[before].weeks || []);
+  const classifierChanged = clsNow !== clsBefore;
+
+  const incomparable = gapTooWide || classifierChanged;
 
   const rows = cols.rows.map(r => {
     const value = combine(r.values, r.denominators, [now], cols.kind);
@@ -4049,6 +4088,7 @@ function changeAgainstPrevious(cut, period) {
     nowLabel: cols.periods[now].full,
     beforeLabel: cols.periods[before].full,
     incomparable, covNow, covBefore,
+    gapTooWide, classifierChanged, clsNow, clsBefore,
   };
 }
 
@@ -4139,9 +4179,16 @@ function renderChangeTable(hostId, hintId, cut, opts = {}) {
     finished period before it &mdash; a week two days old would read as a collapse rather than as a
     week that has not happened yet.${
       [week, month].filter(r => r.ok && r.incomparable).map(r =>
-        ` Changes are withheld for ${esc(shortOf(r))}: ${r.covNow.toFixed(0)}% of that period was
-          classified against ${r.covBefore.toFixed(0)}% of the one before, so a ratio between them
-          would be a ratio of the classifier rather than of the Hub.`).join('')}${
+        r.gapTooWide
+          ? ` Changes are withheld for ${esc(shortOf(r))}: ${r.covNow.toFixed(0)}% of that period was
+             classified against ${r.covBefore.toFixed(0)}% of the one before, so a ratio between them
+             would be a ratio of the classifier rather than of the Hub.`
+          : ` Changes are withheld for ${esc(shortOf(r))}: it was classified by ${
+             r.clsNow === 'unknown' ? 'an unrecorded classifier' : `classifier ${esc(r.clsNow)}`
+            } and the period before it by ${
+             r.clsBefore === 'unknown' ? 'an unrecorded one' : `classifier ${esc(r.clsBefore)}`
+            }. Two classifiers can disagree about the same Space, so a change between them would
+             be a change in the measurement rather than in the Hub.`).join('')}${
       month.ok ? '' : ` Month on month needs two finished months, and ${esc(month.why)}.`}${
       anySup ? ' <b>*</b> too few behind this figure to call it a trend.' : ''}</p>`);
 }
@@ -4453,6 +4500,10 @@ async function loadSeries() {
   try {
     seriesRaw = await getJSON(`${DATA}/series.json`);
     seriesFailed = false;
+    // Absent on any dashboard published before the classifier was versioned.
+    // A missing file means every week is 'unknown', which the guard below
+    // already treats as its own version, so nothing needs a fallback here.
+    classifierMix = await getJSON(`${DATA}/classifier.json`).catch(() => null);
   } catch {
     // Kept apart from an empty answer. "No weeks have been processed yet" is a
     // statement about the database; an unreachable endpoint is a statement

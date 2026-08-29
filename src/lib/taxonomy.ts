@@ -16,6 +16,29 @@
 export const TAXONOMY_VERSION = "1";
 
 /**
+ * Which classifier produced a row — bump this whenever either classifier could
+ * return a different answer for the same Space.
+ *
+ * NOT the same thing as TAXONOMY_VERSION, and the difference is the whole
+ * point. The taxonomy versions the SHAPE of the answer, and changing it says
+ * the old rows are about something else. This versions the MEASUREMENT, and
+ * changing it says the old rows are about the same thing measured differently.
+ * A chart may not compare across either, and only this one moves when a regex
+ * is fixed.
+ *
+ * "2" because the classifier has already changed once, unrecorded. Version 1 is
+ * whatever produced the rows written before this column existed — those are
+ * stamped NULL, because naming them 1 would be a guess. The visible symptom of
+ * that change is share_by_use_case scientific-tools reading 20.18 / 0.96 / 3.00
+ * / 3.01 across four consecutive weeks.
+ *
+ * BUMP THIS WHEN: a rule regex changes, RULES_PAGE_SIZE changes what the rule
+ * pass reaches, the LLM prompt or its schema changes, or the classify model id
+ * changes. Not when a bug is fixed that could not alter output.
+ */
+export const CLASSIFIER_VERSION = "2";
+
+/**
  * "What are developers building?" — one per Space.
  *
  * Note that `agentic` is deliberately NOT here. The brief lists it as a

@@ -185,22 +185,31 @@ export async function main(argv: readonly string[] = process.argv.slice(2)): Pro
     // currently showing correctly. A failed run keeps its database, so the
     // re-run publishes the whole thing.
     if (!args.dryRun) {
-      // The weeks this run computed. The publisher trusts them over whatever
-      // was published before; every other week it holds has to prove it is at
-      // least as complete first.
+      // ONLY the target week is authoritative — not the whole backfill window.
+      //
+      // A backfill genuinely ingests and aggregates every week it covers
+      // (pipeline.ts:477), so those weeks are real. But they are captured late,
+      // and the Hub deletes Spaces. A twelve-week backfill re-computing
+      // 2026-07-27 gets whatever survived until today, which is fewer Spaces
+      // than the 7,157 published at the time — a decrease caused by the passage
+      // of time, not by a correction.
+      //
+      // Marking the whole window authoritative waved exactly that past the
+      // completeness guard. This is the same failure that rewrote a complete
+      // week as 11 Spaces, one step further upstream.
+      //
+      // So the newest week — the one the run was asked for, and the only one
+      // captured on time — may overwrite in either direction. Every older week
+      // has to prove it is at least as complete as what is already published.
+      // An older week nobody has published yet has nothing to prove against and
+      // publishes freely, which is what makes a first backfill work at all.
       const target = (result as { weekStart?: string }).weekStart;
-      const computed: string[] = [];
-      for (let i = 0; target && i < args.backfillWeeks; i++) {
-        const d = new Date(`${target}T00:00:00.000Z`);
-        d.setUTCDate(d.getUTCDate() - i * 7);
-        computed.push(d.toISOString().slice(0, 10));
-      }
 
       const published = await publishSnapshot(
         env.DB,
         args.dataDir,
         new Date().toISOString(),
-        computed,
+        target ? [target] : [],
       );
       publishedWeeks = published.weeks;
       console.log(

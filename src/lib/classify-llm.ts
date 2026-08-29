@@ -13,6 +13,7 @@ import { D1_BATCH } from "./raw-store";
 
 import { BedrockClient, type BedrockRequest, firstText } from "./bedrock";
 import {
+  CLASSIFIER_VERSION,
   clampConfidence,
   type Classification,
   BATCH_CLASSIFICATION_JSON_SCHEMA,
@@ -276,8 +277,8 @@ export async function classifySpacesByLlm(
                  technologies, technologies_confidence,
                  low_confidence, reviewed,
                  source_kind, source_ref, prompt_version,
-                 rationale, content_hash, classified_at
-               ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, 0, 'model', ?12, ?13, ?14, ?15, datetime('now'))
+                 rationale, content_hash, classifier_version, classified_at
+               ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, 0, 'model', ?12, ?13, ?14, ?15, ?16, datetime('now'))
                ON CONFLICT(space_id, taxonomy_version) DO UPDATE SET
                  primary_use_case = excluded.primary_use_case,
                  use_case_confidence = excluded.use_case_confidence,
@@ -293,6 +294,7 @@ export async function classifySpacesByLlm(
                  prompt_version = excluded.prompt_version,
                  rationale = excluded.rationale,
                  content_hash = excluded.content_hash,
+                 classifier_version = excluded.classifier_version,
                  classified_at = excluded.classified_at`,
             )
             .bind(
@@ -311,6 +313,7 @@ export async function classifySpacesByLlm(
               "v1",
               result.rationale,
               readmeHashOf.get(result.spaceId) ?? null,
+              CLASSIFIER_VERSION,
             ),
         );
         summary.classified++;

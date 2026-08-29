@@ -19,7 +19,7 @@ import type {
   UseCase,
   Vertical,
 } from "./taxonomy";
-import { TAXONOMY_VERSION } from "./taxonomy";
+import { CLASSIFIER_VERSION, TAXONOMY_VERSION } from "./taxonomy";
 
 export interface SpaceSignals {
   spaceId: string;
@@ -511,8 +511,8 @@ export async function classifySpacesByRules(
              technologies, technologies_confidence,
              low_confidence, reviewed,
              source_kind, source_ref, prompt_version,
-             rationale, content_hash, classified_at
-           ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, 0, 'rule', ?12, NULL, ?13, ?14, datetime('now'))
+             rationale, content_hash, classifier_version, classified_at
+           ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, 0, 'rule', ?12, NULL, ?13, ?14, ?15, datetime('now'))
            ON CONFLICT(space_id, taxonomy_version) DO UPDATE SET
              primary_use_case = excluded.primary_use_case,
              use_case_confidence = excluded.use_case_confidence,
@@ -527,6 +527,7 @@ export async function classifySpacesByRules(
              source_ref = excluded.source_ref,
              rationale = excluded.rationale,
              content_hash = excluded.content_hash,
+             classifier_version = excluded.classifier_version,
              classified_at = excluded.classified_at`,
         )
         .bind(
@@ -544,6 +545,7 @@ export async function classifySpacesByRules(
           result.rationale,
           result.rationale,
           row.readme_hash,
+          CLASSIFIER_VERSION,
         ),
     );
     summary.classified++;

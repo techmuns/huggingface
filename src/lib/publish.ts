@@ -114,6 +114,19 @@ export interface InsightsPayload {
   month: InsightEntry[];
 }
 
+/**
+ * Which classifier measured each week, and how much of it.
+ *
+ * A week is a mix, not a single value: a week partly re-classified after a fix
+ * carries both versions, and that is exactly the case a reader must not compare
+ * across silently. `unknown` is every row written before the column existed.
+ */
+export interface ClassifierPayload {
+  taxonomyVersion: string;
+  /** week -> version (or "unknown") -> classified Spaces */
+  weeks: Record<string, Record<string, number>>;
+}
+
 export interface IndexPayload {
   taxonomyVersion: string;
   weeks: string[];
@@ -223,6 +236,18 @@ export function mergeSeries(
   );
 
   return { taxonomyVersion: next.taxonomyVersion, weeks, series: ordered };
+}
+
+/** Weeks a run knows about replace; weeks it does not are carried forward. */
+export function mergeClassifier(
+  previous: ClassifierPayload | null,
+  next: ClassifierPayload,
+): ClassifierPayload {
+  const weeks: Record<string, Record<string, number>> = { ...(previous?.weeks ?? {}) };
+  for (const [week, mix] of Object.entries(next.weeks)) weeks[week] = mix;
+  const ordered: Record<string, Record<string, number>> = {};
+  for (const week of Object.keys(weeks).sort()) ordered[week] = weeks[week]!;
+  return { taxonomyVersion: next.taxonomyVersion, weeks: ordered };
 }
 
 /** Same rule, one use case at a time: new weeks win, old weeks survive. */
@@ -340,6 +365,39 @@ export async function publishableWeeks(db: D1Database): Promise<string[]> {
     .all<{ week_start: string }>();
 
   return (rows.results ?? []).map((r) => r.week_start);
+}
+
+/**
+ * The classifier mix for one week.
+ *
+ * Same join and same bounds as readCoverage, so the two files always describe
+ * the same population — a version breakdown that did not add up to the
+ * classified count would be worse than none.
+ */
+async function readClassifierMix(
+  db: D1Database,
+  weekStart: string,
+): Promise<Record<string, number>> {
+  const weekEnd = new Date(
+    new Date(`${weekStart}T00:00:00.000Z`).getTime() + 7 * 86_400_000,
+  ).toISOString();
+
+  const rows = await db
+    .prepare(
+      `SELECT COALESCE(c.classifier_version, 'unknown') AS v, COUNT(*) AS cnt
+         FROM hf_classifications c
+         JOIN hf_spaces s ON s.space_id = c.space_id
+        WHERE c.taxonomy_version = ?1
+          AND s.created_at >= ?2 AND s.created_at < ?3
+          AND s.is_cluster_primary = 1
+        GROUP BY v`,
+    )
+    .bind(TAXONOMY_VERSION, weekStart, weekEnd)
+    .all<{ v: string; cnt: number }>();
+
+  const out: Record<string, number> = {};
+  for (const r of rows.results ?? []) out[r.v] = r.cnt;
+  return out;
 }
 
 async function readCoverage(db: D1Database, weekStart: string): Promise<CoveragePayload | null> {
@@ -586,6 +644,16 @@ export async function buildSnapshot(
       value: { useCase, limit: DRILL_LIMIT, weeks: byWeek } satisfies DrillPayload,
     });
   }
+
+  const mix: Record<string, Record<string, number>> = {};
+  for (const week of weeks) {
+    const m = await readClassifierMix(db, week);
+    if (Object.keys(m).length > 0) mix[week] = m;
+  }
+  files.push({
+    path: "classifier.json",
+    value: { taxonomyVersion: TAXONOMY_VERSION, weeks: mix } satisfies ClassifierPayload,
+  });
 
   const insights = await readInsights(db, options.insightsLimit ?? 12);
   files.push({ path: "insights.json", value: insights });

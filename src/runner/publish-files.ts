@@ -1,12 +1,14 @@
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import {
+  type ClassifierPayload,
   type CoveragePayload,
   type DrillPayload,
   type InsightsPayload,
   type SeriesPayload,
   type SnapshotFile,
   buildSnapshot,
+  mergeClassifier,
   mergeDrill,
   mergeInsights,
   mergeSeries,
@@ -105,6 +107,9 @@ function merged(root: string, file: SnapshotFile): unknown {
   }
   if (file.path === "insights.json") {
     return mergeInsights(readJson<InsightsPayload>(path), file.value as InsightsPayload);
+  }
+  if (file.path === "classifier.json") {
+    return mergeClassifier(readJson<ClassifierPayload>(path), file.value as ClassifierPayload);
   }
   // coverage/<week>.json, narrative/<week>.json and index.json describe one
   // week, or the run itself. buildSnapshot only emits the first two for weeks

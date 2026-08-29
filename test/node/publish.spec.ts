@@ -8,6 +8,7 @@ import {
   type InsightsPayload,
   type SeriesPayload,
   buildSnapshot,
+  mergeClassifier,
   mergeDrill,
   mergeInsights,
   mergeSeries,
@@ -455,6 +456,40 @@ describe("publishing a snapshot from a database", () => {
 
     await publishSnapshot(asD1(db), root, "2026-08-24T00:00:00.000Z", ["2026-08-10"]);
     expect(index().weeks).toEqual(["2026-08-10"]);
+  });
+
+  it("publishes which classifier measured each week, unknown included", async () => {
+    // The whole point of the column: two published weeks were measured by
+    // different code and nothing said so. `unknown` is a value, not a gap — it
+    // is every row written before the column existed, and it must not silently
+    // pass as the same classifier as a freshly stamped one.
+    insertSpace("a/old", "2026-08-12T10:00:00.000Z", 1);
+    insertSpace("a/new", "2026-08-12T11:00:00.000Z", 2);
+    classify("a/old", "coding");
+    db.handle
+      .prepare("UPDATE hf_classifications SET classifier_version = '2' WHERE space_id = 'a/old'")
+      .run();
+    classify("a/new", "coding"); // left unstamped, as an old row would be
+    metric("2026-08-10", "coding", 2);
+
+    await publishSnapshot(asD1(db), root, "2026-08-17T00:00:00.000Z", ["2026-08-10"]);
+
+    const mix = JSON.parse(readFileSync(join(root, "classifier.json"), "utf8"));
+    expect(mix.weeks["2026-08-10"]).toEqual({ "2": 1, unknown: 1 });
+  });
+
+  it("carries forward a week's classifier mix that this run does not hold", () => {
+    const previous = {
+      taxonomyVersion: "1",
+      weeks: { "2026-07-27": { unknown: 100 }, "2026-08-03": { unknown: 50 } },
+    };
+    const next = { taxonomyVersion: "1", weeks: { "2026-08-10": { "2": 200 } } };
+
+    const merged = mergeClassifier(previous, next);
+
+    expect(Object.keys(merged.weeks)).toEqual(["2026-07-27", "2026-08-03", "2026-08-10"]);
+    expect(merged.weeks["2026-07-27"]).toEqual({ unknown: 100 });
+    expect(merged.weeks["2026-08-10"]).toEqual({ "2": 200 });
   });
 
   it("publishes a narrative file only for a week that has one", async () => {
