@@ -342,34 +342,10 @@ button.bar-row:focus-visible { outline: 2px solid var(--series); outline-offset:
 .insight-cols { display: grid; gap: 20px; align-items: start; margin-bottom: 20px; }
 .insight-cols .card { margin-bottom: 0; }
 
-/* Two columns fill a card that one 74ch measure would leave half empty - the
-   reasoning is written out under .narrative, and it holds for a summary of
-   three or four paragraphs.
-   
-   It does not hold for one. A single paragraph in two columns is read down to
-   the foot of the left column and then back UP to the top of the right, and
-   the break lands wherever the line happened to end - mid-sentence here, and
-   mid-WORD on the overview's copy of the same text. Columns read down and
-   then across only when there is more than one thing to read; with one
-   paragraph they are a detour. So the class is put on by the renderer, and
-   only when the summary has the paragraphs to earn it. */
-@media (min-width: 1080px) {
-  .insight-body.cols { columns: 2; column-gap: 46px; }
-  .insight-body.cols p { max-width: none; orphans: 3; widows: 3; }
-}
-@media print {
-  .insight-body.cols { columns: 1; }
-}
-/* Sized to match .narrative p, because it is the same sentence. Neither
-   declared a size before this: .narrative did, this did not, so the summary
-   rendered at the browser's 16px default in full --ink — the only running
-   text on the dashboard above 14px, two points larger than the h2 titling its
-   own card, and a shade harder than the byte-identical paragraph the overview
-   shows. Nothing chose that; it was the one rule with no font-size in it. */
-.insight-body p {
-  font-size: 14px; color: var(--ink-2); margin: 0 0 12px;
-  max-width: 68ch; line-height: 1.62;
-}
+/* Type and columns are shared with the overview's copy of this same summary
+   and set once, under Narrative. Only the paragraph spacing is this block's
+   own: the overview separates with `p + p`, this one with a bottom margin. */
+.insight-body p { margin: 0 0 12px; }
 .insight-body p:last-child { margin-bottom: 0; }
 /* The footer: where the prose came from, and how to check it.
    Ruled off, because it is about the text above rather than part of it. */
@@ -703,7 +679,17 @@ tbody tr:last-child td { border-bottom: 0; }
 .glossary dd { font-size: 12.5px; color: var(--ink-muted); margin-top: 1px; }
 
 /* ── Narrative ────────────────────────────────────────────────────────── */
-.narrative p { font-size: 14px; color: var(--ink-2); max-width: 68ch; line-height: 1.62; }
+/* One rule, two places, because it is one paragraph: the weekly summary is
+   drawn on the overview and again at the head of the Insights tab, from the
+   same string. They were separate rules and they drifted — .insight-body p
+   declared no font-size and no colour at all, so it fell through to the
+   browser's 16px in full --ink while this one rendered at 14px and --ink-2.
+   The same sentence came out two sizes and two inks on two tabs, and larger
+   than the heading above it on one of them. Folded together so it cannot
+   happen again. */
+.narrative p, .insight-body p {
+  font-size: 14px; color: var(--ink-2); max-width: 68ch; line-height: 1.62;
+}
 .narrative p + p { margin-top: 12px; }
 
 /* The summary is three or four dense paragraphs in a full-width card. Held to
@@ -720,16 +706,26 @@ tbody tr:last-child td { border-bottom: 0; }
    Columns read down and then across, so a paragraph continuing at the top of
    the second column is simply the next line. `orphans`/`widows` stop the break
    stranding one or two lines on their own. */
+/* `.cols` is put on by the renderer, and only when the summary has more than
+   one paragraph.
+   
+   The reasoning above holds for three or four paragraphs. It does not hold for
+   one: a single paragraph in two columns is read down to the foot of the left
+   column and then back UP to the top of the right, and the break lands
+   wherever the line happened to end — mid-phrase on the Insights tab, and
+   mid-WORD here, splitting "Vision-language". Columns read down and then
+   across only when there is more than one thing to read; with one paragraph
+   they are a detour. */
 @media (min-width: 1080px) {
-  #narrative-body.cols { columns: 2; column-gap: 46px; }
-  #narrative-body.cols p { max-width: none; orphans: 3; widows: 3; }
+  #narrative-body.cols, .insight-body.cols { columns: 2; column-gap: 46px; }
+  #narrative-body.cols p, .insight-body.cols p { max-width: none; orphans: 3; widows: 3; }
   #narrative-body p:first-child { margin-top: 0; }
 }
 
 /* One column on paper: a printed page is narrower than the screen it was laid
    out for, and columns there would be ~34ch. */
 @media print {
-  #narrative-body.cols { columns: 1; }
+  #narrative-body.cols, .insight-body.cols { columns: 1; }
 }
 
 /* ── Empty / loading ──────────────────────────────────────────────────── */
