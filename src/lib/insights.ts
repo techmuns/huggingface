@@ -70,6 +70,20 @@ export interface Fact {
   /** Absolute change, in points. Only meaningful for a share. */
   changePts: number | null;
   denominator: number | null;
+  /**
+   * Where the figure came from, when it came from a cut.
+   *
+   * Two jobs. It lets confidence be DERIVED rather than asserted — a figure
+   * from a classifier-derived cut inherits the classifier's uncertainty, and a
+   * headline count from hf_spaces does not. And it lets the dashboard draw a
+   * card's sparkline from the series it has already loaded, so the little chart
+   * on a card and the big chart on another tab cannot disagree.
+   *
+   * Null for figures that are not a cut row — coverage, and the headline
+   * totals.
+   */
+  cut: string | null;
+  dimension: string | null;
 }
 
 export interface FactPack {
@@ -246,7 +260,9 @@ export async function buildFactPack(db: D1Database, opts: BuildPackOptions): Pro
   const omitted: string[] = [];
   const facts: Fact[] = [];
   let n = 0;
-  const add = (f: Omit<Fact, "id">): void => { facts.push({ id: `F${++n}`, ...f }); };
+  const add = (f: Omit<Fact, "id" | "cut" | "dimension"> & { cut?: string; dimension?: string }): void => {
+    facts.push({ id: `F${++n}`, cut: null, dimension: null, ...f });
+  };
 
   const inNow = (r: MetricRow) => opts.weeks.includes(r.week_start);
   const inPrev = (r: MetricRow) => opts.previousWeeks.includes(r.week_start);
@@ -314,6 +330,9 @@ export async function buildFactPack(db: D1Database, opts: BuildPackOptions): Pro
       changePct: prev.value ? ((now.value - prev.value) / prev.value) * 100 : null,
       changePts: null,
       denominator: null,
+      // The cut it was summed from, with no dimension: this is the whole of it,
+      // not one category. A sparkline for it is the total line.
+      cut,
     });
   }
 
@@ -357,6 +376,8 @@ export async function buildFactPack(db: D1Database, opts: BuildPackOptions): Pro
         changePct: prev ? ((value - prev) / prev) * 100 : null,
         changePts: kind === "percent" && prev != null ? value - prev : null,
         denominator: s.now.denominator,
+        cut,
+        dimension: s.dim,
       });
     }
   }
@@ -474,6 +495,8 @@ export interface InsightResult {
   kind: InsightKind;
   periodKey: string;
   narrative: string;
+  /** The findings behind the narrative. Empty for a period written before cards. */
+  cards?: InsightCard[];
   facts: Fact[];
   status: "ok" | "ungrounded" | "insufficient" | "error";
   detail: string | null;
@@ -730,6 +753,23 @@ export const INSIGHTS_TABLE_SQL = `CREATE TABLE IF NOT EXISTS hf_insights (
 
 export const INSIGHTS_INDEX_SQL = `CREATE INDEX IF NOT EXISTS idx_insights_recent ON hf_insights (kind, period_key DESC);`;
 
+/**
+ * Migration 0010, repeated here for the self-healing path.
+ *
+ * It has to be a separate ALTER rather than a column in the CREATE above,
+ * because SQLite stores the text of the statement that made a table and
+ * appends to it on ALTER. A database built by the migrations holds
+ * "CREATE TABLE ... generated_at TEXT NOT NULL, ... ) STRICT, cards TEXT" —
+ * and one built from a single CREATE with the column inline would not, even
+ * though the two tables are identical in every way that matters. The test that
+ * compares them byte for byte is what keeps this file honest about the schema,
+ * so the healing path takes the same two steps the migrations take.
+ *
+ * ALTER TABLE has no IF NOT EXISTS, so running it twice is expected to fail
+ * and the failure is discarded.
+ */
+export const INSIGHTS_CARDS_SQL = `ALTER TABLE hf_insights ADD COLUMN cards TEXT;`;
+
 /** True when a D1 failure is this table simply not being there yet. */
 export function isMissingInsightsTable(err: unknown): boolean {
   const text = err instanceof Error ? err.message : String(err);
@@ -745,6 +785,13 @@ export function isMissingInsightsTable(err: unknown): boolean {
 export async function ensureInsightsSchema(db: D1Database): Promise<void> {
   await db.prepare(INSIGHTS_TABLE_SQL).run();
   await db.prepare(INSIGHTS_INDEX_SQL).run();
+  // Already there on every database the migrations have touched. The throw is
+  // the normal case, not an error worth reporting.
+  try {
+    await db.prepare(INSIGHTS_CARDS_SQL).run();
+  } catch {
+    /* duplicate column name: cards */
+  }
 }
 
 /**
@@ -778,13 +825,14 @@ export async function saveInsight(
   await withInsightsSchema(db, () => db
     .prepare(
       `INSERT INTO hf_insights
-         (kind, period_key, week_start, taxonomy_version, narrative, facts,
+         (kind, period_key, week_start, taxonomy_version, narrative, facts, cards,
           status, detail, model_id, prompt_version, input_tokens, output_tokens, generated_at)
-       VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13)
+       VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14)
        ON CONFLICT(kind, period_key, taxonomy_version) DO UPDATE SET
          week_start = excluded.week_start,
          narrative = excluded.narrative,
          facts = excluded.facts,
+         cards = excluded.cards,
          status = excluded.status,
          detail = excluded.detail,
          model_id = excluded.model_id,
@@ -796,8 +844,415 @@ export async function saveInsight(
     .bind(
       result.kind, result.periodKey, weekStart, TAXONOMY_VERSION,
       result.narrative, JSON.stringify(result.facts),
+      result.cards && result.cards.length ? JSON.stringify(result.cards) : null,
       result.status, result.detail, modelId, INSIGHT_PROMPT_VERSION,
       result.inputTokens, result.outputTokens, generatedAt,
     )
     .run());
+}
+
+/* ── Cards ───────────────────────────────────────────────────────────────── */
+
+/**
+ * The weekly summary as a set of findings rather than a paragraph.
+ *
+ * The prose version worked and stays grounded the same way, but it asked a
+ * reader to hold nine figures in their head to notice one of them mattered.
+ * A card names one thing, shows the number it rests on, and says which facts
+ * it used.
+ *
+ * THREE PROPERTIES, AND ALL THREE ARE ENFORCED HERE RATHER THAN ASKED FOR.
+ *
+ *  1. No invented figures. Every number is a {{F5.value}} slot substituted
+ *     after the fact, and `ground()` rejects any answer containing a digit the
+ *     model typed itself. Unchanged from the prose path.
+ *
+ *  2. No invented DIRECTION. A card saying something grew must cite a fact
+ *     that grew. The model cannot see this rule coming and cannot talk its way
+ *     past it: checkClaims reads the text it wrote against the numbers it was
+ *     given, and drops the card if they disagree. Grounding stops "8,398 new
+ *     models" when the figure is 8,397; this stops "up sharply" when the pack
+ *     contains no comparison at all — which is the whole of this dataset today.
+ *
+ *  3. Confidence is DERIVED, never asserted. A model asked how sure it is will
+ *     answer fluently and without information. So it is not asked. Confidence
+ *     falls out of the data the card rests on: how big the base is, and whether
+ *     the figures come from a classifier that flagged 45.3% of its own answers
+ *     as low-confidence.
+ */
+
+export const CARD_CATEGORIES = ["change", "structural", "risk", "opportunity", "watch"] as const;
+export type CardCategory = (typeof CARD_CATEGORIES)[number];
+export type CardConfidence = "high" | "medium" | "low";
+
+export interface InsightCard {
+  id: string;
+  category: CardCategory;
+  /** Grounded. One line, the finding itself. */
+  headline: string;
+  /** Grounded. Two or three sentences saying why it is the finding. */
+  body: string;
+  /** The fact whose figure is shown large. */
+  heroFact: string;
+  /** Grounded. The line under the big number. */
+  heroCaption: string;
+  /** Every fact the card used, hero included. */
+  facts: string[];
+  /** Derived here, not by the model. */
+  confidence: CardConfidence;
+  /** For the sparkline, taken from the hero fact's provenance. */
+  spark: { cut: string; dimension: string | null } | null;
+}
+
+export interface CardsResult {
+  /** A short grounded paragraph, for the overview card. */
+  summary: string;
+  cards: InsightCard[];
+  status: "ok" | "ungrounded" | "insufficient" | "error";
+  detail: string | null;
+  inputTokens: number;
+  outputTokens: number;
+}
+
+/** Below this base, a share is not a finding whatever it says. */
+const CARD_MIN_BASE = 100;
+
+/**
+ * Above this share of low-confidence classifications, anything resting on the
+ * classifier is medium at best.
+ *
+ * 0.35 rather than 0.5 because the figure it is judging is currently 0.453 —
+ * 2,647 of 5,842 — and a threshold set above the number it exists to catch is
+ * a threshold that has never been tested.
+ */
+const LOW_CONFIDENCE_CEILING = 0.35;
+
+/** Words that assert a direction, and the sign they require. */
+const CLAIM_WORDS: ReadonlyArray<readonly [RegExp, 1 | -1]> = [
+  [/\b(grew|grow|growing|rose|rising|risen|climbed|climbing|increased|increasing|gained|gaining|up|higher|more than (?:it|the previous|last)|surged|jumped)\b/i, 1],
+  [/\b(fell|fall|fallen|falling|dropped|dropping|declined|declining|shrank|shrunk|shrinking|lost|losing|down|lower|less than (?:it|the previous|last)|collapsed|slid)\b/i, -1],
+];
+
+const SUPERLATIVE = /\b(largest|biggest|most|leading|leads|led|dominant|dominates|top|highest|greatest|smallest|fewest|lowest)\b/i;
+
+/**
+ * Buckets that are the absence of an answer, not an answer.
+ *
+ * They must not be treated as peers of a real category, or the largest use case
+ * on the Hub is permanently "everything else" and no true sentence can be
+ * written about what people build. They are also not to be waved away: when one
+ * of them outranks the category being called the largest, the claim has to say
+ * so — see the qualifier rule below.
+ */
+const RESIDUAL_DIMENSIONS = new Set(["other", "unresolved", "other-open", "unknown", "none"]);
+
+/** A claim that acknowledges the residual outranks it. */
+const QUALIFIED = /\b(named|identified|recognis(?:ed|able)|classified|labelled|labeled|specific)\b/i;
+
+/**
+ * Does what the card SAYS agree with the numbers it was given?
+ *
+ * Returns the reason it does not, or null when it holds. Run before grounding,
+ * on the text with its slots still in, so a substituted figure cannot be read
+ * as prose.
+ */
+export function checkClaims(
+  card: Pick<InsightCard, "headline" | "body" | "heroCaption" | "heroFact" | "facts">,
+  facts: readonly Fact[],
+): string | null {
+  const byId = new Map(facts.map((f) => [f.id, f]));
+  const hero = byId.get(card.heroFact);
+  if (!hero) return `hero fact ${card.heroFact} is not in the pack`;
+
+  for (const id of card.facts) {
+    if (!byId.has(id)) return `cites ${id}, which is not in the pack`;
+  }
+  if (!card.facts.includes(card.heroFact)) return `hero fact ${card.heroFact} is not in its own fact list`;
+
+  const text = `${card.headline} ${card.body} ${card.heroCaption}`;
+
+  for (const [re, sign] of CLAIM_WORDS) {
+    if (!re.test(text)) continue;
+    // A direction claim needs a comparison somewhere in what it cited. When
+    // the pack has no previous period — which is every week this database
+    // currently holds — there is no such fact, and the claim is unfounded
+    // rather than merely unsupported.
+    const moved = card.facts
+      .map((id) => byId.get(id))
+      .filter((f): f is Fact => !!f && f.changePct != null);
+    if (moved.length === 0) {
+      return `says "${re.exec(text)?.[0]}" but no fact it cites has a comparison to the period before`;
+    }
+    if (!moved.some((f) => Math.sign(f.changePct as number) === sign)) {
+      return `says "${re.exec(text)?.[0]}" but every fact it cites moved the other way`;
+    }
+  }
+
+  if (SUPERLATIVE.test(text) && hero.cut) {
+    const all = facts.filter((f) => f.cut === hero.cut && f.dimension != null);
+    const named = all.filter((f) => !RESIDUAL_DIMENSIONS.has(f.dimension as string));
+    const smallest = /\b(smallest|fewest|lowest)\b/i.test(text);
+    const pick = (xs: Fact[]) =>
+      smallest ? Math.min(...xs.map((f) => f.value)) : Math.max(...xs.map((f) => f.value));
+
+    if (named.length > 1 && hero.value !== pick(named)) {
+      return `claims a superlative but ${hero.id} is not the ${smallest ? "smallest" : "largest"} of its cut in the pack`;
+    }
+    // It leads the real categories but a residual bucket is bigger. That is a
+    // true and useful thing to say, and it is only true with the qualifier —
+    // "the largest use case" would be false while "the largest named use case"
+    // is exactly right.
+    if (all.length > named.length && hero.value !== pick(all) && !QUALIFIED.test(text)) {
+      return `claims a superlative over a residual bucket that is larger; say "named" (or "identified") if the claim is about the named categories`;
+    }
+  }
+
+  return null;
+}
+
+/**
+ * How much weight a card's figures can carry.
+ *
+ * Not a judgement about the writing — a statement about the data underneath.
+ * A count of new Spaces from hf_spaces is a census; the same count split by
+ * use case has been through a classifier that flagged nearly half its own
+ * answers, and no amount of careful prose changes that.
+ */
+export function confidenceOf(
+  card: Pick<InsightCard, "facts">,
+  facts: readonly Fact[],
+  lowConfidenceShare: number | null,
+): CardConfidence {
+  const byId = new Map(facts.map((f) => [f.id, f]));
+  const cited = card.facts.map((id) => byId.get(id)).filter((f): f is Fact => !!f);
+
+  const bases = cited.map((f) => f.denominator).filter((d): d is number => d != null);
+  if (bases.length > 0 && Math.min(...bases) < CARD_MIN_BASE) return "low";
+
+  const classifierDerived = cited.some((f) => f.cut != null && NEEDS_COVERAGE.has(f.cut));
+  if (classifierDerived && lowConfidenceShare != null && lowConfidenceShare > LOW_CONFIDENCE_CEILING) {
+    return "medium";
+  }
+
+  return "high";
+}
+
+const CARDS_SYSTEM_PROMPT = `You write the weekly findings for a dashboard about what developers
+are building on Hugging Face.
+
+You are given a numbered list of facts. That list is the only thing you know.
+
+ABSOLUTE RULES
+- Never write a digit. Not one. Every figure is a slot: {{F5.value}}, {{F5.prev}},
+  {{F5.changePct}}, {{F5.changePts}}, {{F5.denominator}}. They are substituted after you finish.
+- Only use a slot for a fact that is in the list, and only for a figure that fact has. A fact
+  with no prev has no change; do not reach for one.
+- Never say something rose, fell, grew or dropped unless a fact you cite has a change figure.
+  Most weeks here have no comparison at all. When there is none, describe what IS, not what moved.
+- Do not say how confident you are, or call anything significant, notable or striking.
+  Confidence is computed from the data and added after you finish.
+
+WHAT TO WRITE ABOUT
+Lead with what people are BUILDING and for WHOM: the use cases new Spaces serve, the techniques
+they use, the industry verticals they point at. Model families are context for those, not the
+subject. A reader wants to know what is being made, not which base model won.
+
+THE CARDS
+Return between six and ten. Each is one finding, and each must stand alone.
+- category: one of change, structural, risk, opportunity, watch.
+    change      - something moved against the period before. Needs a fact with a change figure.
+    structural  - a durable property of the mix. The default when there is no comparison.
+    risk        - something that undermines a reading: thin coverage, a large residual bucket,
+                  a category resting on very few Spaces.
+    opportunity - a gap: something served far less than the surrounding activity suggests.
+    watch       - small now, worth a second look, explicitly not yet a trend.
+- headline: one line, the finding itself, specific.
+- body: two or three sentences. Say what the figure is and why it is the finding.
+- heroFact: the id of the fact whose figure is shown large.
+- heroCaption: a short line to sit under that figure.
+- facts: every fact id you used, including the hero.
+
+The "everything else" and "unresolved" buckets are residuals — the absence of a classification,
+not a category anyone chose. Never call one of them a use case or a family. If a named category
+leads the real ones while a residual is bigger, say "the largest NAMED use case", never "the
+largest use case".
+
+Do not write ten cards about the same cut. Spread them across use cases, techniques, verticals,
+tooling and volume. If the facts do not support ten, write fewer.
+
+RETURN
+A single JSON object and nothing else. No prose before it, no code fence around it.
+{"summary": "...", "cards": [{"category": "...", "headline": "...", "body": "...",
+ "heroFact": "F5", "heroCaption": "...", "facts": ["F5", "F3"]}]}
+The summary is one short paragraph for the top of the dashboard, under the same rules.`
+
+/** ```json fences and stray prose around the object. */
+export function stripFence(text: string): string {
+  const fenced = /```(?:json)?\s*([\s\S]*?)```/.exec(text);
+  const body = fenced ? fenced[1]! : text;
+  const start = body.indexOf("{");
+  const end = body.lastIndexOf("}");
+  return start >= 0 && end > start ? body.slice(start, end + 1) : body;
+}
+
+/** Kept as documentation of the shape, and asserted against in the tests. */
+const CARDS_SCHEMA = {
+  type: "object",
+  additionalProperties: false,
+  required: ["summary", "cards"],
+  properties: {
+    summary: { type: "string" },
+    cards: {
+      type: "array",
+      minItems: 4,
+      maxItems: 12,
+      items: {
+        type: "object",
+        additionalProperties: false,
+        required: ["category", "headline", "body", "heroFact", "heroCaption", "facts"],
+        properties: {
+          category: { type: "string", enum: [...CARD_CATEGORIES] },
+          headline: { type: "string" },
+          body: { type: "string" },
+          heroFact: { type: "string" },
+          heroCaption: { type: "string" },
+          facts: { type: "array", items: { type: "string" }, minItems: 1 },
+        },
+      },
+    },
+  },
+} as const;
+
+/**
+ * One call, both outputs.
+ *
+ * The overview paragraph and the cards come from the same generation on
+ * purpose: two calls would be two readings of the same week, and the day they
+ * disagreed nobody would know which to believe.
+ */
+export async function generateCards(
+  client: BedrockClient,
+  modelId: string,
+  pack: FactPack,
+  options: { attempts?: number; lowConfidenceShare?: number | null } = {},
+): Promise<CardsResult> {
+  const { attempts = 2, lowConfidenceShare = null } = options;
+  const base = { summary: "", cards: [] as InsightCard[], inputTokens: 0, outputTokens: 0 };
+
+  if (pack.facts.length < MIN_FACTS) {
+    return {
+      ...base, status: "insufficient",
+      detail: `only ${pack.facts.length} usable facts` +
+        (pack.omitted.length ? `; omitted: ${pack.omitted.join("; ")}` : ""),
+    };
+  }
+
+  const intro = `Period: ${pack.periodLabel}` +
+    (pack.previousLabel
+      ? `, compared with ${pack.previousLabel}`
+      : ", with nothing before it to compare against, so no fact has a change figure") +
+    `.\n\nFacts:\n${renderPack(pack)}`;
+
+  const messages: BedrockRequest["messages"] = [
+    { role: "user", content: [{ type: "text", text: intro }] },
+  ];
+  let inputTokens = 0, outputTokens = 0, lastError = "no attempt was made";
+
+  for (let attempt = 0; attempt < attempts; attempt++) {
+    let response;
+    try {
+      response = await client.invoke(modelId, {
+        anthropic_version: "bedrock-2023-05-31",
+        max_tokens: 8192,
+        system: [{ type: "text", text: CARDS_SYSTEM_PROMPT, cache_control: { type: "ephemeral" } }],
+        messages,
+        // No output_config. Bedrock accepts it for Haiku 4.5 and rejects it for
+        // Opus 5 with "output_config.format: Extra inputs are not permitted",
+        // and the narration model is the one that matters here. The shape is
+        // carried in the prompt instead and enforced on the way back — which
+        // this path already did, because a schema would not have caught a
+        // fabricated direction anyway.
+      });
+    } catch (err) {
+      return {
+        ...base, status: "error",
+        detail: err instanceof Error ? err.message : String(err),
+        inputTokens, outputTokens,
+      };
+    }
+    inputTokens += response.usage.input_tokens;
+    outputTokens += response.usage.output_tokens;
+
+    const raw = firstText(response).trim();
+    let parsed: { summary: string; cards: Array<Omit<InsightCard, "id" | "confidence" | "spark">> };
+    try {
+      parsed = JSON.parse(stripFence(raw));
+    } catch {
+      lastError = "the answer was not JSON";
+      messages.push(
+        { role: "assistant", content: [{ type: "text", text: raw }] },
+        { role: "user", content: [{ type: "text", text: "That was not valid JSON. Return only the object." }] },
+      );
+      continue;
+    }
+
+    const byId = new Map(pack.facts.map((f) => [f.id, f]));
+    const kept: InsightCard[] = [];
+    const rejected: string[] = [];
+
+    for (const card of parsed.cards) {
+      // Claims first: it reads the text with slots intact, and a card that
+      // fails here is wrong about the data rather than merely unformatted.
+      const claim = checkClaims(card, pack.facts);
+      if (claim) { rejected.push(`${card.headline.slice(0, 40)}: ${claim}`); continue; }
+
+      const parts = [card.headline, card.body, card.heroCaption].map((t) => ground(t, pack.facts));
+      const bad = parts.find((p) => !p.ok);
+      if (bad) { rejected.push(`${card.headline.slice(0, 40)}: ${bad.error}`); continue; }
+
+      const hero = byId.get(card.heroFact)!;
+      kept.push({
+        id: `I${kept.length + 1}`,
+        category: card.category,
+        headline: parts[0]!.text,
+        body: parts[1]!.text,
+        heroFact: card.heroFact,
+        heroCaption: parts[2]!.text,
+        facts: card.facts,
+        confidence: confidenceOf(card, pack.facts, lowConfidenceShare),
+        spark: hero.cut ? { cut: hero.cut, dimension: hero.dimension } : null,
+      });
+    }
+
+    const summary = ground(parsed.summary, pack.facts);
+
+    // Some cards surviving is a good week; none surviving means the model did
+    // not understand the pack, and half a page of findings is worse than a
+    // card saying none could be written.
+    if (summary.ok && kept.length >= 4) {
+      return {
+        summary: summary.text, cards: kept, status: "ok",
+        detail: rejected.length ? `${rejected.length} card(s) dropped: ${rejected.slice(0, 3).join("; ")}` : null,
+        inputTokens, outputTokens,
+      };
+    }
+
+    lastError = !summary.ok
+      ? `summary: ${summary.error}`
+      : `only ${kept.length} of ${parsed.cards.length} cards survived: ${rejected.slice(0, 3).join("; ")}`;
+
+    messages.push(
+      { role: "assistant", content: [{ type: "text", text: raw }] },
+      {
+        role: "user",
+        content: [{
+          type: "text",
+          text: `That did not pass: ${lastError}. Rewrite it. Every figure must be a slot from the list, ` +
+            `you must write no digits at all, and you must not say anything rose or fell unless a fact you cite has a change figure.`,
+        }],
+      },
+    );
+  }
+
+  return { ...base, status: "ungrounded", detail: lastError, inputTokens, outputTokens };
 }

@@ -31,6 +31,13 @@
   --series-soft:  #cde2fb;
   --good:         #006300;
   --bad:          #d03b3b;
+  /* Card categories. Hue is never the only signal — every card prints the word
+     beside the dot — so these need to be distinguishable, not legible alone. */
+  --cat-change:      #2563c9;
+  --cat-structural:  #7c4bc0;
+  --cat-risk:        #d03b3b;
+  --cat-opportunity: #067a45;
+  --cat-watch:       #b06f10;
   --shadow:       0 1px 2px rgba(11,11,11,0.04), 0 1px 3px rgba(11,11,11,0.03);
 
   --s1: #2a78d6;  --s2: #eb6834;  --s3: #1baf7a;  --s4: #eda100;
@@ -64,6 +71,8 @@
   --ink-2: #c3c2b7; --ink-muted: #898781; --grid: #2c2c2a; --axis: #383835;
   --hairline: rgba(255,255,255,0.10); --series: #3987e5; --series-soft: #184f95;
   --good: #0ca30c; --bad: #e66767; --shadow: none;
+  --cat-change: #6aa6f5; --cat-structural: #b28ae8; --cat-risk: #e66767;
+  --cat-opportunity: #45c489; --cat-watch: #e0a341;
   --s1: #3987e5;  --s2: #d95926;  --s3: #199e70;  --s4: #c98500;
   --s5: #d55181;  --s6: #008300;  --s7: #9085e9;  --s8: #e66767;
 }
@@ -380,6 +389,73 @@ button.bar-row:focus-visible { outline: 2px solid var(--series); outline-offset:
 .insight-item { padding: 14px 0; border-top: 1px solid var(--grid); }
 .insight-item:first-child { border-top: 0; padding-top: 0; }
 .insight-item h3 { font-size: 13px; font-weight: 600; margin: 0 0 8px; }
+.card-grid {
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(min(330px, 100%), 1fr));
+  gap: 14px;
+}
+.icard {
+  background: var(--surface); border: 1px solid var(--hairline); border-radius: 10px;
+  padding: 16px 18px 14px; display: flex; flex-direction: column; min-width: 0;
+}
+.icard-top { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; }
+.icard-cat {
+  font-size: 10.5px; font-weight: 600; letter-spacing: .07em; text-transform: uppercase;
+  display: inline-flex; align-items: center; gap: 6px; color: var(--ink-2);
+}
+.icard-cat::before {
+  content: ""; width: 7px; height: 7px; border-radius: 50%; background: var(--dot, var(--ink-muted));
+}
+.icard-conf {
+  font-size: 10.5px; letter-spacing: .06em; text-transform: uppercase; color: var(--ink-muted);
+  white-space: nowrap;
+}
+/* Only the weakest is marked in colour. A page where everything is flagged
+   flags nothing, and low is the one a reader must not skim past. */
+.icard-conf.low { color: var(--bad); font-weight: 600; }
+.icard h3 { font-size: 13.5px; font-weight: 600; line-height: 1.4; margin: 10px 0 0; }
+.icard-body { font-size: 12.5px; color: var(--ink-2); line-height: 1.55; margin: 8px 0 0; }
+.icard-hero { margin-top: 14px; display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+.icard-hero .n {
+  font-size: 26px; font-weight: 600; letter-spacing: -0.02em; font-variant-numeric: tabular-nums;
+}
+.icard-hero .cap { font-size: 11.5px; color: var(--ink-muted); line-height: 1.4; flex: 1 1 140px; }
+.icard-spark { margin-top: 10px; }
+.icard-foot {
+  margin-top: auto; padding-top: 12px; font-size: 11.5px; color: var(--ink-muted);
+  display: flex; align-items: center; gap: 8px; justify-content: space-between;
+}
+.icard-foot button {
+  font: inherit; color: var(--ink-2); background: none; border: 0; padding: 0;
+  cursor: pointer; text-decoration: underline; text-underline-offset: 2px;
+}
+.icard-foot button:hover { color: var(--ink); }
+.icard-math { margin-top: 10px; }
+.icard-math table { font-size: 11.5px; width: 100%; }
+.icard-math td { padding: 3px 0 3px 8px; vertical-align: top; }
+.icard-math td:first-child { padding-left: 0; color: var(--ink-muted); width: 1%; white-space: nowrap; }
+.icard-math .fnum { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+
+.chips { display: flex; flex-wrap: wrap; gap: 8px; margin: 0 0 16px; }
+.chip {
+  font: inherit; font-size: 12px; cursor: pointer;
+  border: 1px solid var(--hairline); border-radius: 999px; padding: 5px 12px;
+  background: none; color: var(--ink-2); display: inline-flex; align-items: center; gap: 7px;
+}
+.chip:hover { color: var(--ink); border-color: var(--ink-muted); }
+.chip[aria-pressed="true"] { background: var(--series-soft); border-color: transparent; color: var(--ink); }
+.chip .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--dot, var(--ink-muted)); }
+.chip .n { color: var(--ink-muted); font-variant-numeric: tabular-nums; }
+.chip[aria-pressed="true"] .n { color: inherit; }
+
+/* Named for the cards, not "glossary": the page already has a .glossary, the
+   methodology <details> at the foot, and a second one here would have restyled
+   it from across the stylesheet. */
+.card-legend {
+  font-size: 12px; color: var(--ink-muted); line-height: 1.7;
+  border: 1px solid var(--hairline); border-radius: 8px; padding: 10px 14px; margin: 0 0 16px;
+}
+.card-legend b { color: var(--ink-2); font-weight: 600; }
+
 .insight-none {
   color: var(--ink-muted); font-size: 13.5px; line-height: 1.6;
   max-width: 60ch; margin: 0 auto; padding: 18px 0 22px; text-align: center;
@@ -610,6 +686,10 @@ details.method li { margin-bottom: 7px; max-width: 82ch; }
   .tabs, .subtabs, .toolbar, .skip { display: none !important; }
   details.method, details.glossary { display: block; }
   .card { break-inside: avoid; }
+  /* The chips are a control, and a control printed on paper is a promise the
+     page cannot keep. Paper gets every card instead — see beforeprint. */
+  .chips { display: none !important; }
+  .icard { break-inside: avoid; }
   .pmatrix th:first-child, .pmatrix td:first-child { position: static; box-shadow: none; }
 }
 
@@ -3770,6 +3850,130 @@ const WHY_NONE = {
   error: 'The summary could not be generated for this period.',
 };
 
+/** Category -> the word a reader sees, and what it means here. */
+const CARD_CATS = {
+  change:      ['Change',      'moved against the period before'],
+  structural:  ['Structural',  'a durable property of the mix'],
+  risk:        ['Risk',        'something that undermines a reading'],
+  opportunity: ['Opportunity', 'served less than the surrounding activity suggests'],
+  watch:       ['Watch',       'small now, not yet a trend'],
+};
+
+/**
+ * Which cards are on screen, per card set. Not in the hash: it is a view of
+ * one set, not a reading of the data, and it is per-set because the week, the
+ * month and each history entry carry their own categories — one shared filter
+ * would leave a card set showing nothing, with no chip on it to say why.
+ */
+const cardFilter = new Map();
+const cardKey = entry => `${entry.kind}:${entry.periodKey}`;
+
+/**
+ * A card's sparkline, drawn from series.json rather than shipped with the card.
+ *
+ * The card names the cut and dimension its hero figure came from, and the line
+ * is drawn from the same payload every other chart on the page uses. So the
+ * little line on a card and the big one on another tab cannot disagree — there
+ * is only one series, and a card that cited a figure is pointing at it rather
+ * than carrying a copy.
+ */
+function cardSpark(spark) {
+  if (!spark || !seriesRaw) return '';
+  const rows = seriesRaw.series.filter(e =>
+    e.cut === spark.cut && (spark.dimension == null || e.dimension === spark.dimension));
+  if (!rows.length) return '';
+  const n = seriesRaw.weeks.length;
+  const vals = [];
+  for (let i = 0; i < n; i++) {
+    let sum = null;
+    for (const r of rows) {
+      const v = r.values[i];
+      if (v != null) sum = (sum ?? 0) + v;
+    }
+    vals.push(sum);
+  }
+  const present = vals.filter(v => v != null);
+  // One point is a dot, not a line, and a flat line drawn from a single week
+  // would read as stability nobody measured.
+  if (present.length < 2) return '';
+  return `<div class="icard-spark">${sparkline(vals, { w: 150, h: 26 })}</div>`;
+}
+
+/** The facts a card rests on, as the arithmetic behind it. */
+function cardMath(card, facts) {
+  const byId = new Map((facts || []).map(f => [f.id, f]));
+  const rows = card.facts.map(id => byId.get(id)).filter(Boolean);
+  if (!rows.length) return '';
+  const fmt = (f, v) => v == null ? '&mdash;' : f.unit === 'percent' ? `${v.toFixed(1)}%` : num(Math.round(v));
+  return `<div class="icard-math"><table><tbody>${rows.map(f => `<tr>
+      <td>${esc(f.id)}</td>
+      <td>${esc(f.what)}</td>
+      <td class="fnum">${fmt(f, f.value)}</td>
+    </tr>`).join('')}</tbody></table></div>`;
+}
+
+function renderCards(entry) {
+  const cards = Array.isArray(entry.cards) ? entry.cards : [];
+  if (!cards.length) return '';
+
+  const counts = { all: cards.length };
+  for (const c of cards) counts[c.category] = (counts[c.category] ?? 0) + 1;
+
+  const set = cardKey(entry);
+  // A filter can outlive the cards it was set on — a reload lands on a newer
+  // week whose set holds no risk card — so it is checked against this set
+  // rather than trusted, and falls back to showing everything.
+  const active = counts[cardFilter.get(set)] ? cardFilter.get(set) : 'all';
+
+  const chip = (key, label) => `<button class="chip" type="button" data-cat="${esc(key)}"
+      aria-pressed="${active === key}"${key === 'all' ? '' : ` style="--dot:var(--cat-${esc(key)})"`}>
+      ${key === 'all' ? '' : '<span class="dot"></span>'}${esc(label)} <span class="n">${counts[key]}</span></button>`;
+
+  const present = Object.entries(CARD_CATS).filter(([k]) => counts[k]);
+
+  const chips = `<div class="chips" data-cards="${esc(set)}">${
+    chip('all', 'All')}${
+    present.map(([k, [label]]) => chip(k, label)).join('')}</div>`;
+
+  // Only the words on screen. A legend that also defined Risk and Watch on a
+  // week holding neither taught the reader vocabulary for cards that are not
+  // there, in the one place they are looking for what these two mean.
+  const legend = `<div class="card-legend">${
+    present.map(([, [label, meaning]]) => `<b>${esc(label)}</b> = ${esc(meaning)}`).join(' &middot; ')
+  } &middot; <b>Confidence</b> is computed from the data a card rests on &mdash; how large its base
+    is, and whether it came through a classifier that flagged its own answers &mdash; never claimed
+    by the model.</div>`;
+
+  const shown = cards.filter(c => active === 'all' || c.category === active);
+  const byId = new Map((entry.facts || []).map(f => [f.id, f]));
+
+  const body = shown.map(c => {
+    const hero = byId.get(c.heroFact);
+    const heroText = hero
+      ? (hero.unit === 'percent' ? exact(hero.value, '%') : num(Math.round(hero.value)))
+      : '';
+    const [label] = CARD_CATS[c.category] ?? [c.category];
+    return `<article class="icard" style="--dot:var(--cat-${esc(c.category)})">
+      <div class="icard-top">
+        <span class="icard-cat">${esc(label)}</span>
+        <span class="icard-conf ${esc(c.confidence)}">${esc(c.confidence)} confidence</span>
+      </div>
+      <h3>${esc(c.headline)}</h3>
+      <p class="icard-body">${esc(c.body)}</p>
+      ${hero ? `<div class="icard-hero"><span class="n">${esc(heroText)}</span>
+        <span class="cap">${esc(c.heroCaption)}</span></div>` : ''}
+      ${cardSpark(c.spark)}
+      <div class="icard-foot">
+        <span>${c.facts.length} fact${c.facts.length === 1 ? '' : 's'} behind this</span>
+        <button type="button" data-math="${esc(c.id)}" aria-expanded="false">See the math</button>
+      </div>
+      <div hidden data-math-for="${esc(c.id)}">${cardMath(c, entry.facts)}</div>
+    </article>`;
+  }).join('');
+
+  return `${legend}${chips}<div class="card-grid">${body}</div>`;
+}
+
 function insightCard(entry, { heading = true } = {}) {
   if (!entry) {
     return `<p class="insight-none">Nothing written for this period yet.</p>`;
@@ -3822,9 +4026,12 @@ function insightCard(entry, { heading = true } = {}) {
   // where the prose came from, the other is how you check it. They were two
   // loose blocks under the text, and the disclosure was a bare triangle that
   // did not read as something you could press.
+  const cards = renderCards(entry);
+
   return `${title}
     <div class="insight-body">${entry.narrative.split(/\n\n+/)
       .map(p => `<p>${esc(p.trim())}</p>`).join('')}</div>
+    ${cards}
     <div class="insight-foot">
       <p class="insight-meta">Written ${esc(shortWeek(entry.generatedAt.slice(0, 10)))}${
         entry.model ? ` by ${esc(prettyModel(entry.model))}` : ''}, from figures it could not alter.</p>
@@ -4693,6 +4900,9 @@ async function init() {
       reopened = [...document.querySelectorAll('details:not([open])')];
       reopened.forEach(d => { d.open = true; });
     }
+    // Same reasoning as the collapsed <details>: a filter is a view of the
+    // cards, and printing one would silently leave the rest off the paper.
+    cardFilter.clear();
     renderAll();
   });
   window.addEventListener('afterprint', () => {
@@ -4746,6 +4956,39 @@ async function init() {
     // matches nothing inside a quoted attribute value.
     [...document.querySelectorAll('.legend-chip')]
       .find(c => c.dataset.chart === id && c.dataset.key === key)?.focus();
+  });
+
+  // Card controls, delegated for the same reason: the Insights tab is rendered
+  // wholesale from the payload every time it is shown.
+  document.addEventListener('click', e => {
+    const math = e.target.closest('button[data-math]');
+    if (math) {
+      // Scoped to the card, never looked up by id. Card ids restart at I1 in
+      // every period, so a document-wide lookup for "I1" on the history list
+      // opens the week's card instead of the one that was clicked.
+      const panel = math.closest('.icard')?.querySelector('[data-math-for]');
+      if (!panel) return;
+      const open = panel.hidden;
+      panel.hidden = !open;
+      math.setAttribute('aria-expanded', String(open));
+      math.textContent = open ? 'Hide the math' : 'See the math';
+      return;
+    }
+
+    const chip = e.target.closest('.chips[data-cards] .chip');
+    if (!chip) return;
+    const set = chip.closest('.chips').dataset.cards;
+    const cat = chip.dataset.cat;
+    // Pressing the chip that is already on is how a reader gets back to the
+    // whole set without hunting for "All".
+    cardFilter.set(set, cardFilter.get(set) === cat ? 'all' : cat);
+    renderInsights();
+    // Same as the legend: the re-render throws away the pressed button, so
+    // focus is handed to its replacement rather than dropped to the document.
+    requestAnimationFrame(() => {
+      [...document.querySelectorAll('.chips[data-cards] .chip')]
+        .find(c => c.closest('.chips').dataset.cards === set && c.dataset.cat === cat)?.focus();
+    });
   });
 
   await loadSeries();

@@ -6,18 +6,20 @@ import {
   MIN_DENOMINATOR,
   MIN_FACTS,
   buildFactPack,
+  checkClaims,
+  confidenceOf,
   ensureInsightsSchema,
+  generateInsight,
+  ground,
   isMissingInsightsTable,
   mondaysOfMonth,
   periodIsOpen,
   periodSpec,
-  withInsightsSchema,
-  generateInsight,
-  ground,
   renderPack,
   saveInsight,
   slotsOf,
   type Fact,
+  withInsightsSchema,
 } from "../src/lib/insights";
 import { insightPeriodsFor } from "../src/pipeline";
 import { TAXONOMY_VERSION } from "../src/lib/taxonomy";
@@ -36,6 +38,7 @@ beforeEach(async () => {
 const fact = (o: Partial<Fact> = {}): Fact => ({
   id: "F1", what: "new Spaces in total", unit: "count",
   value: 1462, prev: 1301, changePct: 12.4, changePts: null, denominator: null,
+  cut: null, dimension: null,
   ...o,
 });
 
@@ -753,5 +756,73 @@ describe("coverage is read in the units the aggregator stores", () => {
     const coding = pack.facts.find((f) => f.what.includes("coding"))!;
     expect(coding.value).toBe(400);
     expect(coding.prev).toBeNull();
+  });
+});
+
+describe("what a card is allowed to claim", () => {
+  const f = (o: Partial<Fact>): Fact => fact(o);
+  const card = (o: Partial<Parameters<typeof checkClaims>[0]>) => ({
+    headline: "", body: "", heroCaption: "", heroFact: "F1", facts: ["F1"], ...o,
+  });
+
+  it("refuses a direction when nothing it cites has a comparison", () => {
+    // The case that matters: every week in this database today has no previous
+    // period, so no fact has a change figure at all. A card saying anything
+    // grew is inventing the comparison, not the number.
+    const facts = [f({ id: "F1", prev: null, changePct: null })];
+    expect(checkClaims(card({ headline: "Chat assistants grew again" }), facts))
+      .toMatch(/no fact it cites has a comparison/);
+  });
+
+  it("refuses a direction that contradicts the fact", () => {
+    const facts = [f({ id: "F1", value: 80, prev: 100, changePct: -20 })];
+    expect(checkClaims(card({ body: "It rose over the week." }), facts))
+      .toMatch(/every fact it cites moved the other way/);
+  });
+
+  it("allows a direction the facts support", () => {
+    const facts = [f({ id: "F1", value: 120, prev: 100, changePct: 20 })];
+    expect(checkClaims(card({ body: "It rose over the week." }), facts)).toBeNull();
+  });
+
+  it("refuses a superlative the pack does not bear out", () => {
+    const facts = [
+      f({ id: "F1", value: 100, cut: "spaces_by_use_case", dimension: "coding" }),
+      f({ id: "F2", value: 900, cut: "spaces_by_use_case", dimension: "chat-assistant" }),
+    ];
+    expect(checkClaims(card({ headline: "Coding is the largest use case", facts: ["F1"] }), facts))
+      .toMatch(/not the largest of its cut/);
+  });
+
+  it("refuses a fact that is not in the pack", () => {
+    expect(checkClaims(card({ heroFact: "F9", facts: ["F9"] }), [f({ id: "F1" })]))
+      .toMatch(/not in the pack/);
+  });
+});
+
+describe("how confident a card is allowed to be", () => {
+  const f = (o: Partial<Fact>): Fact => fact(o);
+
+  it("is low when the base is too thin to say anything", () => {
+    const facts = [f({ id: "F1", denominator: 40 })];
+    expect(confidenceOf({ facts: ["F1"] }, facts, 0)).toBe("low");
+  });
+
+  it("is medium when it rests on a classifier that doubts itself", () => {
+    // 45.3% of this week's classifications are flagged low-confidence. A figure
+    // split by use case inherits that; the dashboard should not present it as
+    // firmly as a count of Spaces.
+    const facts = [f({ id: "F1", denominator: 5842, cut: "spaces_by_use_case", dimension: "coding" })];
+    expect(confidenceOf({ facts: ["F1"] }, facts, 0.453)).toBe("medium");
+  });
+
+  it("is high for a census count that no classifier touched", () => {
+    const facts = [f({ id: "F1", denominator: null, cut: "sdk_distribution", dimension: null })];
+    expect(confidenceOf({ facts: ["F1"] }, facts, 0.453)).toBe("high");
+  });
+
+  it("does not soften a classifier figure when the classifier was sure", () => {
+    const facts = [f({ id: "F1", denominator: 5842, cut: "vertical_penetration", dimension: "education" })];
+    expect(confidenceOf({ facts: ["F1"] }, facts, 0.02)).toBe("high");
   });
 });

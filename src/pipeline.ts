@@ -87,7 +87,7 @@ import { type NarrateSummary, narrateWeek } from "./lib/narrate";
 import {
   type BuildPackOptions,
   buildFactPack,
-  generateInsight,
+  generateCards,
   INSIGHTS_INDEX_SQL,
   INSIGHTS_TABLE_SQL,
   type InsightKind,
@@ -98,6 +98,7 @@ import {
 } from "./lib/insights";
 import { type ParseSummary, parseRawModels, parseRawSpaces } from "./lib/parse";
 import { type SnapshotSummary, buildSnapshot, commitSnapshot } from "./lib/snapshot";
+import { TAXONOMY_VERSION } from "./lib/taxonomy";
 import { addWeeks, toIsoDate, weekStart, weekStartIso } from "./lib/time";
 
 /** Parameters accepted when starting a pipeline run. */
@@ -539,11 +540,48 @@ export async function runWeeklyPipeline(
         // work as a failure.
         try {
           const pack = await buildFactPack(env.DB, period);
-          const result: InsightResult = await generateInsight(
+
+          // How much of this period the classifier doubted. It decides each
+          // card's confidence, and it is read from the data rather than asked
+          // of the model — a model asked how sure it is answers fluently and
+          // without information.
+          // A period is its weeks; its end is the Monday after the last one.
+          const lastWeek = period.weeks[period.weeks.length - 1] as string;
+          const periodEnd = new Date(
+            new Date(`${lastWeek}T00:00:00.000Z`).getTime() + 7 * 86_400_000,
+          ).toISOString();
+
+          const conf = await env.DB.prepare(
+            `SELECT COUNT(*) AS n,
+                    SUM(CASE WHEN c.low_confidence = 1 THEN 1 ELSE 0 END) AS low
+               FROM hf_classifications c
+               JOIN hf_spaces s ON s.space_id = c.space_id
+              WHERE c.taxonomy_version = ?1
+                AND s.created_at >= ?2 AND s.created_at < ?3
+                AND s.is_cluster_primary = 1`,
+          )
+            .bind(TAXONOMY_VERSION, period.weeks[0], periodEnd)
+            .first<{ n: number; low: number | null }>();
+
+          const cards = await generateCards(
             bedrockNarrate,
             env.BEDROCK_NARRATE_MODEL_ID,
             pack,
+            { lowConfidenceShare: conf?.n ? (conf.low ?? 0) / conf.n : null },
           );
+
+          const result: InsightResult = {
+            kind: pack.kind,
+            periodKey: pack.periodKey,
+            narrative: cards.summary,
+            cards: cards.cards,
+            facts: pack.facts,
+            status: cards.status,
+            detail: cards.detail,
+            inputTokens: cards.inputTokens,
+            outputTokens: cards.outputTokens,
+          };
+
           await saveInsight(env.DB, result, {
             weekStart: period.kind === "week" ? config.weekStart : null,
             modelId: env.BEDROCK_NARRATE_MODEL_ID,

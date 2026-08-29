@@ -1,0 +1,14 @@
+-- The weekly summary as findings rather than a paragraph.
+--
+-- The prose stays: it is the lead on the overview, and it is the thing that
+-- reads well when there is one sentence worth saying. The cards are the same
+-- generation split into named findings, each carrying the fact ids it rests on
+-- so a reader can open the arithmetic behind any one of them.
+--
+-- Stored as JSON in one column rather than a table of its own. Cards are only
+-- ever read whole, alongside the row that produced them, and never queried
+-- across periods — a table would buy joins nobody makes and cost a migration
+-- every time a card gains a field.
+--
+-- NULL means a period whose summary predates cards.
+ALTER TABLE hf_insights ADD COLUMN cards TEXT;

@@ -97,6 +97,8 @@ export interface DrillPayload {
 
 export interface InsightEntry {
   kind: string;
+  /** The findings. Empty for a period summarised before cards existed. */
+  cards: unknown[];
   periodKey: string;
   weekStart: string | null;
   narrative: string;
@@ -557,7 +559,7 @@ async function readInsights(db: D1Database, limit: number): Promise<InsightsPayl
     try {
       rows = await db
         .prepare(
-          `SELECT kind, period_key, week_start, narrative, facts, status, detail,
+          `SELECT kind, period_key, week_start, narrative, facts, cards, status, detail,
                   model_id, prompt_version, generated_at
              FROM hf_insights
             WHERE kind = ?1 AND taxonomy_version = ?2
@@ -567,7 +569,8 @@ async function readInsights(db: D1Database, limit: number): Promise<InsightsPayl
         .bind(kind, TAXONOMY_VERSION, limit)
         .all<{
           kind: string; period_key: string; week_start: string | null;
-          narrative: string; facts: string; status: string; detail: string | null;
+          narrative: string; facts: string; cards: string | null;
+          status: string; detail: string | null;
           model_id: string | null; prompt_version: string | null; generated_at: string;
         }>();
     } catch {
@@ -585,6 +588,7 @@ async function readInsights(db: D1Database, limit: number): Promise<InsightsPayl
       status: r.status,
       detail: r.detail,
       facts: safeParse(r.facts),
+      cards: Array.isArray(safeParse(r.cards ?? "[]")) ? (safeParse(r.cards ?? "[]") as unknown[]) : [],
       model: r.model_id,
       promptVersion: r.prompt_version,
       generatedAt: r.generated_at,
