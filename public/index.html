@@ -256,6 +256,10 @@ select:hover, .btn:hover { border-color: var(--axis); }
 .card h2 { font-size: 14px; font-weight: 600; letter-spacing: -0.005em; }
 .card .hint { font-size: 12.5px; color: var(--ink-muted); margin-top: 2px; max-width: 74ch; }
 .panel-intro { font-size: 13.5px; color: var(--ink-2); margin: 14px 0 18px; max-width: 74ch; }
+/* Scoped, not shared: on this tab the intro sits above a card whose own header
+   uses the same 18px step, so page copy and card content read as one column
+   of text. Every other tab's intro is a line or two and never reads that way. */
+#panel-insights .panel-intro { margin-bottom: 28px; }
 
 /* The composition chart and its ranked list are one reading, so the rule
    between them is a hairline rather than a card boundary. */
@@ -330,26 +334,50 @@ button.bar-row:focus-visible { outline: 2px solid var(--series); outline-offset:
    hundred words; a month is that or one sentence, and for most of any month it
    is the sentence. Any side-by-side layout is therefore mostly empty, and no
    column ratio repairs it. Stacked, each is as wide as the page and as tall as
-   what it holds, and the prose gets the same two columns as the overview
-   summary — so a full month reads like one too. */
-.insight-cols { display: grid; gap: 18px; align-items: start; }
+   what it holds, and the prose is set at the same size and measure as the
+   overview's copy of it — so the two read as one voice. */
+/* .card keeps its own 20px bottom margin inside this grid, so the grid's gap
+   was adding to it: 38px between the week and the month, 20px between the
+   month and the history card below the grid. One step, everywhere. */
+.insight-cols { display: grid; gap: 20px; align-items: start; margin-bottom: 20px; }
+.insight-cols .card { margin-bottom: 0; }
 
+/* Two columns fill a card that one 74ch measure would leave half empty - the
+   reasoning is written out under .narrative, and it holds for a summary of
+   three or four paragraphs.
+   
+   It does not hold for one. A single paragraph in two columns is read down to
+   the foot of the left column and then back UP to the top of the right, and
+   the break lands wherever the line happened to end - mid-sentence here, and
+   mid-WORD on the overview's copy of the same text. Columns read down and
+   then across only when there is more than one thing to read; with one
+   paragraph they are a detour. So the class is put on by the renderer, and
+   only when the summary has the paragraphs to earn it. */
 @media (min-width: 1080px) {
-  .insight-body { columns: 2; column-gap: 46px; }
-  .insight-body p { max-width: none; orphans: 3; widows: 3; }
+  .insight-body.cols { columns: 2; column-gap: 46px; }
+  .insight-body.cols p { max-width: none; orphans: 3; widows: 3; }
 }
 @media print {
-  .insight-body { columns: 1; }
+  .insight-body.cols { columns: 1; }
 }
-.insight-body p { margin: 0 0 12px; max-width: 74ch; line-height: 1.62; }
+/* Sized to match .narrative p, because it is the same sentence. Neither
+   declared a size before this: .narrative did, this did not, so the summary
+   rendered at the browser's 16px default in full --ink — the only running
+   text on the dashboard above 14px, two points larger than the h2 titling its
+   own card, and a shade harder than the byte-identical paragraph the overview
+   shows. Nothing chose that; it was the one rule with no font-size in it. */
+.insight-body p {
+  font-size: 14px; color: var(--ink-2); margin: 0 0 12px;
+  max-width: 68ch; line-height: 1.62;
+}
 .insight-body p:last-child { margin-bottom: 0; }
 /* The footer: where the prose came from, and how to check it.
    Ruled off, because it is about the text above rather than part of it. */
 .insight-foot {
-  margin-top: 22px; padding-top: 14px; border-top: 1px solid var(--hairline);
+  margin-top: 22px; padding-top: 14px; border-top: 1px solid var(--grid);
   display: flex; flex-wrap: wrap; align-items: center; gap: 10px 16px;
 }
-.insight-meta { font-size: 12px; color: var(--ink-muted); margin: 0; }
+.insight-meta { font-size: 12.5px; color: var(--ink-muted); margin: 0; }
 .insight-facts { margin: 0; margin-left: auto; }
 
 /* A control that looks like one. This was a bare disclosure triangle against
@@ -375,7 +403,7 @@ button.bar-row:focus-visible { outline: 2px solid var(--series); outline-offset:
 }
 .insight-facts[open] { display: block; width: 100%; }
 .insight-facts[open] summary { margin-bottom: 4px; }
-.insight-facts table { margin-top: 10px; font-size: 12px; }
+.insight-facts table { margin-top: 10px; font-size: 12.5px; }
 /* The fact table sits inside a half-width card, so `what` has to be allowed to
    wrap. Left alone it inherits the page's nowrap table rules and pushes the
    change column off the right edge of the card it is explaining. */
@@ -412,16 +440,20 @@ button.bar-row:focus-visible { outline: 2px solid var(--series); outline-offset:
 /* Only the weakest is marked in colour. A page where everything is flagged
    flags nothing, and low is the one a reader must not skim past. */
 .icard-conf.low { color: var(--bad); font-weight: 600; }
-.icard h3 { font-size: 13.5px; font-weight: 600; line-height: 1.4; margin: 10px 0 0; }
-.icard-body { font-size: 12.5px; color: var(--ink-2); line-height: 1.55; margin: 8px 0 0; }
-.icard-hero { margin-top: 14px; display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+.icard :is(h4, h5) { font-size: 13.5px; font-weight: 600; line-height: 1.4; margin: 16px 0 0; }
+.icard-body { font-size: 12.5px; color: var(--ink-2); line-height: 1.55; margin: 7px 0 0; }
+.icard-hero { margin-top: 12px; display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
 .icard-hero .n {
   font-size: 26px; font-weight: 600; letter-spacing: -0.02em; font-variant-numeric: tabular-nums;
 }
-.icard-hero .cap { font-size: 11.5px; color: var(--ink-muted); line-height: 1.4; flex: 1 1 140px; }
+.icard-hero .cap {
+  font-size: 11.5px; color: var(--ink-muted); line-height: 1.4; flex: 1 1 140px;
+  min-height: 2.8em;
+}
 .icard-spark { margin-top: 10px; }
 .icard-foot {
-  margin-top: auto; padding-top: 12px; font-size: 11.5px; color: var(--ink-muted);
+  margin-top: auto; padding-top: 12px; border-top: 1px solid var(--grid);
+  font-size: 11.5px; color: var(--ink-muted);
   display: flex; align-items: center; gap: 8px; justify-content: space-between;
 }
 .icard-foot button {
@@ -435,7 +467,37 @@ button.bar-row:focus-visible { outline: 2px solid var(--series); outline-offset:
 .icard-math td:first-child { padding-left: 0; color: var(--ink-muted); width: 1%; white-space: nowrap; }
 .icard-math .fnum { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
 
-.chips { display: flex; flex-wrap: wrap; gap: 8px; margin: 0 0 16px; }
+/*
+ * Row alignment, done by the grid rather than by guessing heights.
+ *
+ * The cards in a row carry the same seven parts, and every one of them is a
+ * different height: a headline runs to two lines or three, a body to four
+ * lines or six, a caption wraps or does not. Left alone that puts the big
+ * figures of one row on three different baselines, which is the thing that
+ * makes a grid of cards look like a pile of them.
+ *
+ * `subgrid` hands the card's rows back to the parent, so each part is sized
+ * across the whole row at once and every card's heading, figure, line and
+ * footer sit on one line with its neighbours'. It needs the parts to be
+ * present in every card, which is why the hero and spark slots above are
+ * always emitted, and it needs its own row-gap: a subgrid inherits the
+ * parent's 14px gap between its INTERNAL rows otherwise.
+ *
+ * Guarded, because without support `grid-row: span 7` alone would have each
+ * card swallow seven rows of the outer grid. Where it is unsupported the
+ * cards fall back to the flex column and its bottom-pinned footer, which is
+ * the layout this replaced — ragged in the middle, correct everywhere else.
+ */
+@supports (grid-template-rows: subgrid) {
+  .card-grid { grid-auto-rows: auto; }
+  .icard {
+    display: grid; grid-template-rows: subgrid; grid-row: span 7;
+    row-gap: 0; align-content: start;
+  }
+  .icard-foot { margin-top: 0; align-self: end; }
+}
+
+.chips { display: flex; flex-wrap: wrap; gap: 8px; margin: 0 0 14px; }
 .chip {
   font: inherit; font-size: 12px; cursor: pointer;
   border: 1px solid var(--hairline); border-radius: 999px; padding: 5px 12px;
@@ -447,20 +509,32 @@ button.bar-row:focus-visible { outline: 2px solid var(--series); outline-offset:
 .chip .n { color: var(--ink-muted); font-variant-numeric: tabular-nums; }
 .chip[aria-pressed="true"] .n { color: inherit; }
 
-/* Named for the cards, not "glossary": the page already has a .glossary, the
-   methodology <details> at the foot, and a second one here would have restyled
-   it from across the stylesheet. */
+/* The cards are a section of the summary card, ruled and labelled the way the
+   ranked list under every chart is — .ranked and .ranked-head verbatim, so it
+   is the page's own habit rather than an imitation of it. The heading rule is
+   restated at a higher specificity because .insight-item h3 is defined later
+   in this file and would otherwise restyle the label inside every history
+   entry. */
+.insight-cards .ranked-head :is(h3, h4) {
+  font-size: 12px; font-weight: 500; color: var(--ink-muted);
+  text-transform: uppercase; letter-spacing: .06em; margin: 0;
+}
+
+/* Named for the cards, not "glossary": the page already has a .glossary — the
+   methodology <details> at the foot — and a second one here would have
+   restyled it from across the stylesheet. A caption rather than a box: it
+   defines the words on the chips above it, and a bordered block in the cards'
+   own weight read as content rather than as reference. */
 .card-legend {
-  font-size: 12px; color: var(--ink-muted); line-height: 1.7;
-  border: 1px solid var(--hairline); border-radius: 8px; padding: 10px 14px; margin: 0 0 16px;
+  font-size: 12.5px; color: var(--ink-muted); line-height: 1.55;
+  margin: 0 0 18px; max-width: 88ch;
 }
 .card-legend b { color: var(--ink-2); font-weight: 600; }
 
 .insight-none {
-  color: var(--ink-muted); font-size: 13.5px; line-height: 1.6;
-  max-width: 60ch; margin: 0 auto; padding: 18px 0 22px; text-align: center;
+  color: var(--ink-muted); font-size: 13px; line-height: 1.6;
+  max-width: 74ch; margin: 0; padding: 0;
 }
-.insight-item .insight-none { margin: 0; padding: 0; text-align: left; }
 
 .drill-list { display: grid; gap: 2px; }
 .drill-row {
@@ -647,15 +721,15 @@ tbody tr:last-child td { border-bottom: 0; }
    the second column is simply the next line. `orphans`/`widows` stop the break
    stranding one or two lines on their own. */
 @media (min-width: 1080px) {
-  #narrative-body { columns: 2; column-gap: 46px; }
-  #narrative-body p { max-width: none; orphans: 3; widows: 3; }
+  #narrative-body.cols { columns: 2; column-gap: 46px; }
+  #narrative-body.cols p { max-width: none; orphans: 3; widows: 3; }
   #narrative-body p:first-child { margin-top: 0; }
 }
 
 /* One column on paper: a printed page is narrower than the screen it was laid
    out for, and columns there would be ~34ch. */
 @media print {
-  #narrative-body { columns: 1; }
+  #narrative-body.cols { columns: 1; }
 }
 
 /* ── Empty / loading ──────────────────────────────────────────────────── */
@@ -718,6 +792,10 @@ details.method li { margin-bottom: 7px; max-width: 82ch; }
   .tabs button { padding: 10px 10px; font-size: 13px; }
   .toolbar { gap: 12px; }
   .tool { flex-wrap: wrap; }
+  /* A card inside a card inside the body: three paddings taking 56px of a
+     390px screen, which is where the card text loses its measure. */
+  #panel-insights .card { padding: 18px 16px; }
+  .icard { padding: 14px 15px 12px; }
 }
 </style>
 </head>
@@ -856,11 +934,8 @@ details.method li { margin-bottom: 7px; max-width: 82ch; }
 
     <!-- ── Insights ─────────────────────────────────────────────────── -->
     <section role="tabpanel" id="panel-insights" aria-labelledby="tab-insights" tabindex="-1" hidden>
-      <p class="panel-intro">What changed, in words. Written each week from the same figures the rest of
-        this dashboard draws &mdash; and written in a way that makes inventing one impossible: the model
-        is given a numbered list of facts and writes about them by reference, never by typing a number.
-        Every figure below was substituted in afterwards, and you can open the facts under any summary
-        to see exactly which one each came from.</p>
+      <p class="panel-intro">What changed, in words. Every figure is one of the facts listed under the
+        summary &mdash; the model writes about them by reference and never types a number.</p>
 
       <div class="insight-cols" id="insight-cols">
         <section class="card" id="insight-week-card">
@@ -3878,10 +3953,10 @@ const cardKey = entry => `${entry.kind}:${entry.periodKey}`;
  * than carrying a copy.
  */
 function cardSpark(spark) {
-  if (!spark || !seriesRaw) return '';
+  if (!spark || !seriesRaw) return '<div class="icard-spark"></div>';
   const rows = seriesRaw.series.filter(e =>
     e.cut === spark.cut && (spark.dimension == null || e.dimension === spark.dimension));
-  if (!rows.length) return '';
+  if (!rows.length) return '<div class="icard-spark"></div>';
   const n = seriesRaw.weeks.length;
   const vals = [];
   for (let i = 0; i < n; i++) {
@@ -3894,8 +3969,11 @@ function cardSpark(spark) {
   }
   const present = vals.filter(v => v != null);
   // One point is a dot, not a line, and a flat line drawn from a single week
-  // would read as stability nobody measured.
-  if (present.length < 2) return '';
+  // would read as stability nobody measured. The slot is still emitted: the
+  // cards in a row line up part for part, and a missing line has to leave the
+  // gap it would have filled rather than pull the heading up past its
+  // neighbours'.
+  if (present.length < 2) return '<div class="icard-spark"></div>';
   return `<div class="icard-spark">${sparkline(vals, { w: 150, h: 26 })}</div>`;
 }
 
@@ -3912,7 +3990,17 @@ function cardMath(card, facts) {
     </tr>`).join('')}</tbody></table></div>`;
 }
 
-function renderCards(entry) {
+/*
+ * `depth` is how far this card set is nested in the page's headings, not a
+ * style: the week and month cards are h2s and their section is an h3, but a
+ * history entry is an h3 inside the "Earlier" h2, so its section has to be an
+ * h4 or the outline claims the section and the period it belongs to are the
+ * same rank. A reader tabbing the heading list is the only one who sees this,
+ * and it is the only one it is wrong for.
+ */
+function renderCards(entry, depth = 0) {
+  const HEAD = depth ? 'h4' : 'h3';
+  const CARD = depth ? 'h5' : 'h4';
   const cards = Array.isArray(entry.cards) ? entry.cards : [];
   if (!cards.length) return '';
 
@@ -3958,11 +4046,11 @@ function renderCards(entry) {
         <span class="icard-cat">${esc(label)}</span>
         <span class="icard-conf ${esc(c.confidence)}">${esc(c.confidence)} confidence</span>
       </div>
-      <h3>${esc(c.headline)}</h3>
-      <p class="icard-body">${esc(c.body)}</p>
-      ${hero ? `<div class="icard-hero"><span class="n">${esc(heroText)}</span>
-        <span class="cap">${esc(c.heroCaption)}</span></div>` : ''}
+      <div class="icard-hero">${hero ? `<span class="n">${esc(heroText)}</span>
+        <span class="cap">${esc(c.heroCaption)}</span>` : ''}</div>
       ${cardSpark(c.spark)}
+      <${CARD}>${esc(c.headline)}</${CARD}>
+      <p class="icard-body">${esc(c.body)}</p>
       <div class="icard-foot">
         <span>${c.facts.length} fact${c.facts.length === 1 ? '' : 's'} behind this</span>
         <button type="button" data-math="${esc(c.id)}" aria-expanded="false">See the math</button>
@@ -3971,7 +4059,14 @@ function renderCards(entry) {
     </article>`;
   }).join('');
 
-  return `${legend}${chips}<div class="card-grid">${body}</div>`;
+  const n = cards.length;
+  return `<section class="ranked insight-cards">
+    <div class="ranked-head">
+      <${HEAD}>What stands out</${HEAD}>
+      <p class="scope">${n} card${n === 1 ? '' : 's'}, each one figure and the facts under it</p>
+    </div>
+    ${chips}${legend}<div class="card-grid">${body}</div>
+  </section>`;
 }
 
 function insightCard(entry, { heading = true } = {}) {
@@ -4026,10 +4121,11 @@ function insightCard(entry, { heading = true } = {}) {
   // where the prose came from, the other is how you check it. They were two
   // loose blocks under the text, and the disclosure was a bare triangle that
   // did not read as something you could press.
-  const cards = renderCards(entry);
+  const cards = renderCards(entry, heading ? 1 : 0);
 
+  const paras = entry.narrative.split(/\n\n+/).filter(p => p.trim());
   return `${title}
-    <div class="insight-body">${entry.narrative.split(/\n\n+/)
+    <div class="insight-body${paras.length > 1 ? ' cols' : ''}">${paras
       .map(p => `<p>${esc(p.trim())}</p>`).join('')}</div>
     ${cards}
     <div class="insight-foot">
@@ -4763,8 +4859,10 @@ async function loadWeekDetail() {
   coverage = cov;
   coverageWeek = week;
   if (narr?.narrative) {
-    document.getElementById('narrative-body').innerHTML =
-      narr.narrative.split(/\n\n+/).map(p => `<p>${esc(p)}</p>`).join('');
+    const paras = narr.narrative.split(/\n\n+/).filter(p => p.trim());
+    const body = document.getElementById('narrative-body');
+    body.classList.toggle('cols', paras.length > 1);
+    body.innerHTML = paras.map(p => `<p>${esc(p)}</p>`).join('');
     // Named, because this is the only thing on the page that is about one week
     // rather than about the period on screen. Under a quarter view, a summary
     // with no date on it reads as a summary of the quarter.
