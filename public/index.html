@@ -610,15 +610,21 @@ button.bar-row:focus-visible { outline: 2px solid var(--series); outline-offset:
  *
  * It scrolls sideways rather than wrapping, the way the tab strip already does
  * on a phone: the dataset is four weeks now and the publisher keeps up to
- * sixty, so a strip that wraps would one day be four rows tall inside a
- * dialog that is mostly list.
+ * MAX_SERIES_WEEKS, which is 156, so a strip that wraps would one day be many
+ * rows tall inside a dialog that is mostly list.
  */
 .drill-weeks {
-  display: flex; gap: 6px; align-items: stretch;
   padding: 10px 20px 12px; border-bottom: 1px solid var(--grid);
+}
+/* The buttons scroll; the note under them does not. Keeping the note inside
+   the scroller made it part of the scrollable width — one nowrap sentence took
+   the strip from 425px to 809px on a 350px phone, pushing the very button the
+   dialog opens on further out of reach. */
+.drill-week-row {
+  display: flex; gap: 6px; align-items: stretch;
   overflow-x: auto; scroll-snap-type: x proximity; -webkit-overflow-scrolling: touch;
 }
-.drill-weeks::-webkit-scrollbar { height: 0; }
+.drill-week-row::-webkit-scrollbar { height: 0; }
 .drill-week {
   font: inherit; cursor: pointer; flex: 0 0 auto; scroll-snap-align: start;
   border: 1px solid var(--hairline); border-radius: 7px; padding: 5px 11px;
@@ -641,6 +647,15 @@ button.bar-row:focus-visible { outline: 2px solid var(--series); outline-offset:
 /* Nothing to look at is worth saying before the reader clicks. */
 .drill-week.none .wk, .drill-week.none .n { color: var(--ink-muted); }
 .drill-week.none { border-style: dashed; }
+/* A week the classifier did not finish. Marked, not hidden — it is real data,
+   it is simply not comparable with the weeks beside it. */
+.drill-week .mark { color: var(--bad); font-weight: 600; margin-left: 3px; }
+.drill-week-note {
+  display: block; margin-top: 8px;
+  font-size: 11px; color: var(--ink-muted);
+}
+.drill-thin { border-left: 2px solid var(--bad); padding-left: 10px; }
+.drill-thin b { color: var(--ink-2); }
 
 .drill-body { padding: 16px 20px 20px; overflow-y: auto; overscroll-behavior: contain; }
 
@@ -3064,6 +3079,8 @@ const DRILL_BY_PAGE = 'closedByPage';
 /* The periods the dialog was last drawn against. The arrow keys need the
    week list, and they fire between repaints rather than inside one. */
 let drillPeriods = null;
+/** The week the strip was last scrolled to. See renderDrillWeeks. */
+let drillStripAt = null;
 const drillWindowNow = () => (drillPeriods ? drillWindow(drillPeriods) : null);
 
 let drillMaximised = false;
@@ -3156,6 +3173,36 @@ function drillWeeks(win) {
 /** The cursor's "pooled" position. A sentinel, so it survives the URL. */
 const ALL_WEEKS = 'all';
 
+/**
+ * How much of a week the drill-down can speak for at all.
+ *
+ * Derived, not fetched: weeklyTotals already holds the classified count and
+ * the week's Space count, and their ratio reproduces coverage/<week>.json to
+ * within a rounding step. A second request per week for a figure the page has
+ * would be a network round trip to learn something it already knows.
+ *
+ * It matters here more than anywhere else on the page. The strip invites the
+ * reader to read four weeks against each other, and 2026-08-03 is not a quiet
+ * week — it is an outage. The LLM classifier never ran (bySource.model = 0),
+ * so only rule-matched Spaces were classified, 1,250 of 5,766. Rule matching
+ * selects the Spaces that describe themselves clearly, which are also the ones
+ * more likely to be noticed, and the week's traction rate comes out the
+ * HIGHEST of the four at 7.0% against 4.7-5.8%. Left unmarked, the strip would
+ * present the week with the worst data as the week with the most attention.
+ */
+const COVERAGE_COMPARABLE = 90;
+/** Below this the week did not merely fall short, something failed. */
+const COVERAGE_BROKEN = 50;
+
+function weekCoverage(week) {
+  const t = weeklyTotals();
+  const i = (seriesRaw?.weeks ?? []).indexOf(week);
+  if (i < 0) return null;
+  const total = t.spaces?.[i], done = t.classified?.[i];
+  if (!(total > 0) || done == null) return null;
+  return { total, classified: done, percent: (done / total) * 100 };
+}
+
 /** Steps the cursor along the strip, stopping at the ends rather than wrapping. */
 function stepDrillWeek(by) {
   const win = drillWindowNow();
@@ -3197,20 +3244,64 @@ function renderDrillWeeks(file, win) {
   const liked = w => file?.weeks?.[w]?.withTraction ?? 0;
   const total = weeks.reduce((n, w) => n + liked(w), 0);
 
-  const btn = (key, label, sub, current, none) =>
-    `<button type="button" class="drill-week${none ? ' none' : ''}" data-week="${esc(key)}"
-       aria-current="${current}">
-       <span class="wk">${esc(label)}</span><span class="n">${esc(sub)}</span></button>`;
+  const btn = (key, label, sub, current, none, warn) =>
+    `<button type="button" class="drill-week${none ? ' none' : ''}${warn ? ' partial' : ''}"
+       data-week="${esc(key)}" aria-current="${current}"${warn ? ` title="${esc(warn)}"` : ''}>
+       <span class="wk">${esc(label)}${warn ? '<span class="mark">†</span>' : ''}</span>
+       <span class="n">${esc(sub)}</span></button>`;
+
+  // A marker rather than a sentence on the button: the strip already overflows
+  // a phone at four weeks, and "· 22% classified" would half again the width of
+  // the one control travel depends on. The sentence goes underneath, once.
+  const thin = weeks.map(w => ({ w, cov: weekCoverage(w) }))
+    .filter(x => x.cov && x.cov.percent < COVERAGE_COMPARABLE);
+  const warnOf = w => {
+    const x = thin.find(t => t.w === w);
+    return x ? `Only ${x.cov.percent.toFixed(0)}% of this week's Spaces were classified, so its figures are not comparable with the other weeks'` : null;
+  };
 
   el.innerHTML =
-    btn(ALL_WEEKS, `All ${weeks.length} weeks`, `${num(total)} liked`,
-        at === null ? 'true' : 'false', false) +
-    weeks.map(w => btn(
-      w, shortWeek(w),
-      liked(w) ? `${num(liked(w))} liked` : 'none liked',
-      at === w ? 'true' : 'false',
-      liked(w) === 0,
-    )).join('');
+    `<div class="drill-week-row">${
+      btn(ALL_WEEKS, `All ${weeks.length} weeks`, `${num(total)} liked`,
+          at === null ? 'true' : 'false', false, null)}${
+      weeks.map(w => btn(
+        w, shortWeek(w),
+        liked(w) ? `${num(liked(w))} liked` : 'none liked',
+        at === w ? 'true' : 'false',
+        liked(w) === 0,
+        warnOf(w),
+      )).join('')}</div>` +
+    (thin.length ? `<span class="drill-week-note">† ${thin.map(x =>
+      `${esc(shortWeek(x.w))} is only ${x.cov.percent.toFixed(0)}% classified`).join(', ')
+      } &mdash; not comparable with the other weeks</span>` : '');
+
+  /*
+   * Bring the chosen week into view — the newest is emitted last, so on a
+   * phone it is the button furthest off the right edge, and it is the one the
+   * dialog opens on. Measured at 390px: 425px of buttons in 350px of strip,
+   * with the current week sitting at 318-385 and clipped.
+   *
+   * Only when it has actually changed. renderDrillWeeks runs on every
+   * renderAll, which includes every resize and every unrelated control change;
+   * scrolling unconditionally would drag a reader who had scrolled the strip
+   * sideways to look at a distant week back to the current one, repeatedly.
+   */
+  const key = at ?? ALL_WEEKS;
+  if (key !== drillStripAt) {
+    drillStripAt = key;
+    // After layout: the dialog may have been opened in this same frame, and a
+    // scroll computed against a box that does not exist yet moves nothing.
+    // Scrolling the row itself rather than calling scrollIntoView, which would
+    // also scroll the dialog and the page behind it.
+    requestAnimationFrame(() => {
+      const row = el.querySelector('.drill-week-row');
+      const cur = row?.querySelector('[aria-current="true"]');
+      if (!row || !cur) return;
+      const left = cur.offsetLeft, right = left + cur.offsetWidth;
+      if (right > row.scrollLeft + row.clientWidth) row.scrollLeft = right - row.clientWidth + 8;
+      else if (left < row.scrollLeft) row.scrollLeft = Math.max(0, left - 8);
+    });
+  }
 }
 
 async function renderDrill(cols) {
@@ -3286,6 +3377,27 @@ async function renderDrill(cols) {
   // reads as "the twenty biggest"; what it actually is, on this data, is every
   // Space in the period that anyone noticed at all.
   const where = at ? `in the week of ${shortWeek(at)}` : `across these ${allWeeks.length} weeks`;
+
+  /*
+   * A week the classifier did not finish is not a quiet week.
+   *
+   * Two thresholds, because two different things go wrong. Below 90% the week
+   * is incomplete and the strip marks it, so nobody reads a rate off it as if
+   * it were whole. Below 50% something failed outright — 2026-08-03 has
+   * bySource.model = 0, the LLM never ran, and 1,250 of 5,766 Spaces were
+   * classified by rule alone. Rule matching picks the Spaces that describe
+   * themselves clearly, which are also the ones more likely to be noticed, and
+   * that week's traction rate comes out the HIGHEST of the four at 7.0%
+   * against 4.7-5.8%. That is an artefact wearing the shape of a finding, and
+   * it gets a sentence above the list rather than a mark on a button.
+   */
+  const cov = at ? weekCoverage(at) : null;
+  const thinNote = cov && cov.percent < COVERAGE_BROKEN
+    ? `<p class="hint drill-thin" style="margin:-6px 0 14px"><b>This week is only ${
+        cov.percent.toFixed(0)}% classified.</b> ${num(cov.total - cov.classified)} of its ${
+        num(cov.total)} new Spaces were never labelled at all, so the list below is a fraction of
+        the week and its rate cannot be read against the other weeks'.</p>`
+    : '';
   /*
    * What this figure is, stated so it cannot be over-read.
    *
@@ -3309,17 +3421,28 @@ async function renderDrill(cols) {
     ${esc(titleCase(state.drill))} Spaces ${esc(where)} were liked by anyone at all${
       share == null ? '' : ` — ${share.toFixed(1)}%`}.
     A like count is whatever it was when the pipeline last saw that Space, and older weeks were
-    seen later in their life &mdash; so <b>how many Spaces got a like</b> compares fairly between
-    weeks, while <b>how many likes</b> does not.${at ? '' : ` Ranking across weeks favours the
-    older ones for the same reason; a single week is the like-for-like view.`}
+    seen later in their life. <b>How many Spaces got a like</b> is the steadier of the two figures
+    &mdash; a Space that had one like still has one &mdash; but a younger week has had less time
+    for its Spaces to reach that first like, so even this reads a little low on the newest column.
+    <b>How many likes</b> is not comparable between weeks at all.${at ? '' : ` Ranking across
+    weeks favours the older ones for the same reason; a single week is the closer comparison.`}
     <a href="https://huggingface.co/spaces" target="_blank" rel="noopener">The Hub</a> publishes
     no usage figure for a Space at all &mdash; not downloads, not views, not runs &mdash; so
-    likes are the only signal of attention there is.</p>`;
+    likes are the only signal of attention there is.</p>${thinNote}`;
 
   if (!data.spaces.length) {
+    // "None created" is a claim about the Hub, and it is not ours to make. A
+    // total of 0 means none was CLASSIFIED into this use case — which in the
+    // week of 3 Aug is the classifier not having run, not the Hub being empty:
+    // 5,766 Spaces were created that week and 4,516 were never labelled. The
+    // sentence that stood here said the opposite.
     setHTML(host, preamble + `<p class="empty">${data.total
       ? `Not one of the ${num(data.total)} had a single like when it was counted.`
-      : `No ${esc(titleCase(state.drill))} Space was created ${esc(where)}.`}</p>`);
+      : `No new Space was classified as ${esc(titleCase(state.drill))} ${esc(where)}${
+          cov && cov.percent < COVERAGE_COMPARABLE
+            ? `, in a week where only ${cov.percent.toFixed(0)}% of the ${num(cov.total)
+              } Spaces created were classified at all`
+            : ''}.`}</p>`);
     return;
   }
 
@@ -5511,6 +5634,7 @@ async function init() {
       const was = state.drill;
       state.drill = null;
       state.drillWeek = null;
+      drillStripAt = null;
       writeHash();
       renderAll();
       // The repaint replaced the bar that opened it, so focus is handed to its
