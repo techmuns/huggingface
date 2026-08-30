@@ -59,6 +59,8 @@
     --series-soft: #184f95;
     --good:        #0ca30c;
     --bad:         #e66767;
+    --cat-change: #6aa6f5; --cat-structural: #b28ae8; --cat-risk: #e66767;
+    --cat-opportunity: #45c489; --cat-watch: #e0a341;
     --shadow:      none;
 
     --s1: #3987e5;  --s2: #d95926;  --s3: #199e70;  --s4: #c98500;
@@ -422,11 +424,20 @@ button.bar-row:focus-visible { outline: 2px solid var(--series); outline-offset:
 .icard-hero .n {
   font-size: 26px; font-weight: 600; letter-spacing: -0.02em; font-variant-numeric: tabular-nums;
 }
-.icard-hero .cap {
-  font-size: 11.5px; color: var(--ink-muted); line-height: 1.4; flex: 1 1 140px;
-  min-height: 2.8em;
+.icard-hero .cap { font-size: 11.5px; color: var(--ink-muted); line-height: 1.4; flex: 1 1 140px; }
+/* Reserving the caption's second line is what keeps the sparklines of a row on
+   one height when only some captions wrap. The subgrid does that across the
+   whole row instead, and better, so the floor is only needed where there is
+   no subgrid — kept there, and off everywhere else, where it is a line of air
+   in every card of every row whose captions all fit on one. */
+@supports not (grid-template-rows: subgrid) {
+  .icard-hero .cap { min-height: 2.8em; }
 }
 .icard-spark { margin-top: 10px; }
+/* The hero and spark slots are always emitted so a row can line up part for
+   part. An empty one holds its place in the row and nothing else — the
+   templates put no whitespace inside them, so :empty matches. */
+.icard-hero:empty, .icard-spark:empty { margin-top: 0; }
 .icard-foot {
   margin-top: auto; padding-top: 12px; border-top: 1px solid var(--grid);
   font-size: 11.5px; color: var(--ink-muted);
