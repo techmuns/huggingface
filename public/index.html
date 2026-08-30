@@ -523,6 +523,85 @@ button.bar-row:focus-visible { outline: 2px solid var(--series); outline-offset:
   max-width: 74ch; margin: 0; padding: 0;
 }
 
+/* ── The drill-down dialog ────────────────────────────────────────────────
+ *
+ * It was a card at the bottom of the tab, and it was opened by clicking a bar
+ * in a list two screens above it — so the thing you asked for appeared where
+ * you could not see it, and you had to know to scroll. Over the page instead,
+ * where a click puts it under your eye.
+ *
+ * Built as a real <dialog> opened with showModal(), which is what buys the
+ * behaviour people expect of a window for free and correctly: Escape closes
+ * it, focus is trapped inside while it is open, everything behind it is inert,
+ * and the ::backdrop is a real element rather than a div pretending. It is
+ * styled as the page's own card — same surface, hairline and radius — so it
+ * reads as part of the dashboard rather than as a browser artefact.
+ */
+.drill {
+  width: min(760px, calc(100vw - 48px));
+  max-height: min(80vh, 860px);
+  /* Restated, because the page's `* { margin: 0 }` reset beats the UA rule
+     that centres a modal — without this it opens in the top-left corner. */
+  margin: auto;
+  padding: 0; border: 1px solid var(--hairline); border-radius: 12px;
+  background: var(--surface); color: var(--ink);
+  box-shadow: 0 12px 32px rgba(0,0,0,.18), 0 2px 8px rgba(0,0,0,.10);
+  overflow: hidden;                       /* the body scrolls, not the frame */
+  /* A dialog is display:none until open, so a grid here would apply to
+     nothing; it is set on [open] instead, where the rows are real. */
+}
+.drill[open] { display: grid; grid-template-rows: auto 1fr; }
+.drill::backdrop { background: rgba(11,11,11,.44); backdrop-filter: blur(2px); }
+:root[data-theme="dark"] .drill::backdrop { background: rgba(0,0,0,.62); }
+@media (prefers-color-scheme: dark) {
+  :root:where(:not([data-theme="light"])) .drill::backdrop { background: rgba(0,0,0,.62); }
+}
+
+/* Expanded. Not a second dialog and not a class on the body — the same element
+   with more room, so the scroll position and the loaded list survive the
+   toggle. The list goes multi-column at this size, which is the whole point of
+   the button: twenty rows at once instead of six. */
+.drill.max {
+  width: calc(100vw - 32px); max-height: calc(100vh - 32px);
+}
+.drill.max .drill-list {
+  grid-template-columns: repeat(auto-fill, minmax(min(380px, 100%), 1fr));
+  column-gap: 22px;
+}
+.drill.max .drill-body { padding: 18px 22px 22px; }
+
+.drill-head {
+  display: flex; align-items: flex-start; justify-content: space-between; gap: 16px;
+  padding: 18px 20px 14px; border-bottom: 1px solid var(--grid);
+  background: var(--surface);
+}
+.drill-head h2 { font-size: 14px; font-weight: 600; letter-spacing: -0.005em; }
+/* .hint is styled as `.card .hint`, and this is no longer inside a card — so
+   both the header's line and the preamble above the list fell through to the
+   browser's 16px default. Restated for the dialog, at the same values. */
+.drill .hint { font-size: 12.5px; color: var(--ink-muted); max-width: 74ch; }
+.drill-head .hint { margin-top: 2px; }
+.drill-head-text { min-width: 0; }
+.drill-tools { display: flex; align-items: center; gap: 6px; flex: 0 0 auto; }
+.drill-btn {
+  font: inherit; font-size: 12px; cursor: pointer; color: var(--ink-2);
+  background: none; border: 1px solid var(--hairline); border-radius: 6px;
+  padding: 5px 10px; display: inline-flex; align-items: center; gap: 7px;
+  line-height: 1;
+}
+.drill-btn:hover { color: var(--ink); border-color: var(--ink-muted); }
+.drill-btn:focus-visible { outline: 2px solid var(--series); outline-offset: 1px; }
+.drill-x { font-size: 18px; padding: 2px 9px 4px; }
+/* Two corners of a frame, which reads as "make this bigger" without a word;
+   the word is there anyway beside it, and both flip together on expand. */
+.drill-ico {
+  width: 11px; height: 11px; display: inline-block;
+  border: 1.5px solid currentColor; border-radius: 2px;
+}
+.drill-btn[aria-pressed="true"] .drill-ico { border-style: dashed; }
+
+.drill-body { padding: 16px 20px 20px; overflow-y: auto; overscroll-behavior: contain; }
+
 .drill-list { display: grid; gap: 2px; }
 .drill-row {
   display: grid; grid-template-columns: 56px 1fr; gap: 12px; align-items: baseline;
@@ -771,6 +850,18 @@ details.method li { margin-bottom: 7px; max-width: 82ch; }
      page cannot keep. Paper gets every card instead — see beforeprint. */
   .chips { display: none !important; }
   .icard { break-inside: avoid; }
+  /* A modal is painted in the top layer, which on paper means it lands over
+     the first page and the rest of the report is lost behind it. Printed as an
+     ordinary block instead, in the flow, keeping the list the reader had open.
+     Its controls are not printable things and go. */
+  .drill[open] {
+    position: static; display: block; width: auto; max-width: 100%;
+    max-height: none; box-shadow: none; border-color: var(--grid);
+    margin: 20px 0; break-inside: avoid;
+  }
+  .drill::backdrop { display: none; }
+  .drill-tools { display: none; }
+  .drill-body { overflow: visible; }
   .pmatrix th:first-child, .pmatrix td:first-child { position: static; box-shadow: none; }
 }
 
@@ -803,6 +894,13 @@ details.method li { margin-bottom: 7px; max-width: 82ch; }
      390px screen, which is where the card text loses its measure. */
   #panel-insights .card { padding: 18px 16px; }
   .icard { padding: 14px 15px 12px; }
+  /* A sheet, not a window. There is nothing to expand into at this width, so
+     the control that would promise it goes. */
+  .drill, .drill.max { width: calc(100vw - 20px); max-height: calc(100vh - 40px); }
+  .drill.max .drill-list { grid-template-columns: 1fr; }
+  #drill-expand { display: none; }
+  .drill-head { padding: 14px 16px 12px; }
+  .drill-body, .drill.max .drill-body { padding: 14px 16px 18px; }
 }
 </style>
 </head>
@@ -1009,14 +1107,29 @@ details.method li { margin-bottom: 7px; max-width: 82ch; }
         <div id="c-usecase-change"></div>
       </section>
 
-      <section class="card" id="usecase-drill-card" hidden>
-        <header>
-          <h2 id="drill-title">The Spaces behind it</h2>
-          <p class="hint">Ranked by the likes a Space had when the pipeline first saw it,
-            which is the only traction figure the Hub reports for Spaces at all.</p>
+<!-- The list behind one use case. A dialog rather than a fourth card down
+           the page: it is opened by a click on a bar two screens up, and a
+           panel that appears below the fold is a panel the reader has to go
+           looking for. -->
+      <dialog class="drill" id="usecase-drill-card" aria-labelledby="drill-title">
+        <header class="drill-head">
+          <div class="drill-head-text">
+            <h2 id="drill-title">The Spaces behind it</h2>
+            <p class="hint">Ranked by the likes a Space had when the pipeline first saw it,
+              which is the only traction figure the Hub reports for Spaces at all.</p>
+          </div>
+          <div class="drill-tools">
+            <button type="button" id="drill-expand" class="drill-btn"
+              aria-pressed="false" title="Fill the window (or press F)">
+              <span class="drill-ico" aria-hidden="true"></span>
+              <span class="drill-btn-label">Expand</span>
+            </button>
+            <button type="button" id="drill-close" class="drill-btn drill-x"
+              title="Close (Esc)" aria-label="Close">&times;</button>
+          </div>
         </header>
-        <div id="c-usecase-drill"></div>
-      </section>
+        <div class="drill-body" id="c-usecase-drill"></div>
+      </dialog>
 
       <section class="card" role="tabpanel" id="sub-vertical" aria-labelledby="subtab-vertical" tabindex="-1" hidden>
         <header>
@@ -2818,12 +2931,14 @@ function rankedBars(cols, { unit = '', chartId = '', whole = false, drill = fals
     // and does nothing is worse than one that never offered.
     const openable = drill && !RESIDUAL.has(r.dimension);
     const tag = openable ? 'button' : 'div';
+    // haspopup rather than expanded: the list opens in a dialog over the page
+    // now, and "expanded" promises a region that appears in place, below the
+    // control. It said that while the panel was a card at the foot of the tab.
     const attrs = openable
-      ? ` type="button" data-drill="${esc(r.dimension)}" aria-expanded="${
-          state.drill === r.dimension ? 'true' : 'false'}"`
+      ? ` type="button" data-drill="${esc(r.dimension)}" aria-haspopup="dialog"`
       : '';
     const label = openable
-      ? `${esc(tip)}. Click to see the Spaces behind it.` : esc(tip);
+      ? `${esc(tip)}. Click to open the Spaces behind it.` : esc(tip);
     return `<${tag} class="bar-row${residual}${openable ? ' openable' : ''}${
       state.drill === r.dimension ? ' open' : ''}"${attrs} title="${label}">
       <span class="bar-label"><span class="key-dot" style="background:${
@@ -2867,6 +2982,80 @@ function drillWindow(periods) {
   };
 }
 
+/*
+ * Whether the dialog is being closed BY the page or BY the reader.
+ *
+ * Both arrive as the same `close` event, and they must not mean the same
+ * thing. Switching to the Table hides the list the drill-down was opened from,
+ * so the dialog has to go — but state.drill is deliberately kept, so that
+ * toggling the Table back off restores what the reader was looking at. A
+ * reader pressing Escape means the opposite: they are done with it, and it
+ * must not reappear on the next repaint.
+ *
+ * Marked on the element rather than held in a variable around the close()
+ * call, because `close` is fired from a queued task and not synchronously —
+ * a flag set and cleared around close() is already back to false by the time
+ * the handler reads it, and every programmatic close would be mistaken for
+ * the reader's own. Measured: firedSynchronously false.
+ */
+const DRILL_BY_PAGE = 'closedByPage';
+
+/** Whether the reader last left the dialog filling the window. */
+let drillMaximised = false;
+try { drillMaximised = localStorage.getItem('drillMax') === '1'; } catch { /* private window */ }
+
+function drillDialog() { return document.getElementById('usecase-drill-card'); }
+
+function setDrillMax(on) {
+  drillMaximised = on;
+  const dlg = drillDialog();
+  if (dlg) dlg.classList.toggle('max', on);
+  const btn = document.getElementById('drill-expand');
+  if (btn) {
+    btn.setAttribute('aria-pressed', String(on));
+    btn.title = on ? 'Back to a reading width (or press F)' : 'Fill the window (or press F)';
+    const label = btn.querySelector('.drill-btn-label');
+    if (label) label.textContent = on ? 'Shrink' : 'Expand';
+  }
+  try { localStorage.setItem('drillMax', on ? '1' : '0'); } catch { /* private window */ }
+}
+
+/** Closes it without forgetting what was open. See DRILL_BY_PAGE. */
+function hideDrillCard() {
+  const dlg = drillDialog();
+  if (!dlg || !dlg.open) return;
+  dlg.dataset[DRILL_BY_PAGE] = '1';
+  dlg.close();
+}
+
+/*
+ * Swap the modal for a plain open dialog, and back, around printing.
+ *
+ * showModal() puts the element in the top layer, and the top layer is not
+ * something a print stylesheet can undo: `position` on it is ignored, so the
+ * list prints over the first page rather than in its place. show() opens the
+ * same element without the top layer, where `position: static` in the print
+ * block does apply and it prints as one more block of the report.
+ */
+let drillWasModal = false;
+
+function unmodalDrill() {
+  const dlg = drillDialog();
+  if (!dlg || !dlg.open) return;
+  drillWasModal = true;
+  dlg.dataset[DRILL_BY_PAGE] = '1';
+  dlg.close();
+  dlg.show();
+}
+
+function remodalDrill() {
+  const dlg = drillDialog();
+  if (!dlg || !drillWasModal) return;
+  drillWasModal = false;
+  if (dlg.open) { dlg.dataset[DRILL_BY_PAGE] = '1'; dlg.close(); }
+  if (state.drill) dlg.showModal();
+}
+
 function openDrill(useCase, periods) {
   state.drill = useCase;
   writeHash();
@@ -2877,23 +3066,29 @@ function openDrill(useCase, periods) {
 
 async function renderDrill(cols) {
   const host = document.getElementById('c-usecase-drill');
-  const card = document.getElementById('usecase-drill-card');
+  const card = drillDialog();
   if (!host || !card) return;
-  if (!state.drill) { card.hidden = true; return; }
+  if (!state.drill) { hideDrillCard(); return; }
 
-  // A link can name a use case the payload does not have. Closing the card is
-  // the honest answer; leaving it open on a request that will 400 is not.
+  // A link can name a use case the payload does not have. Closing is the
+  // honest answer; leaving it open on a request that will 404 is not.
   if (!cols.rows.some(r => r.dimension === state.drill)) {
-    card.hidden = true;
+    hideDrillCard();
     state.drill = null;
     writeHash();
     return;
   }
 
   const win = drillWindow(cols.periods);
-  if (!win) { card.hidden = true; return; }
+  if (!win) { hideDrillCard(); return; }
 
-  card.hidden = false;
+  // Guarded: renderAll runs on every resize and every control change, and
+  // showModal() on an already-open dialog throws.
+  if (!card.open) {
+    setDrillMax(drillMaximised);
+    card.showModal();
+    card.querySelector('.drill-body').scrollTop = 0;
+  }
   document.getElementById('drill-title').textContent =
     `${titleCase(state.drill)} — the Spaces behind it`;
 
@@ -3223,7 +3418,7 @@ function renderCutPanel(elId, cut, { unit = '', chartId, extraNote = '', rows = 
       <h3>${esc(name)}</h3>
       <span class="scope">${scopeLabel(cols.periods, cols.kind)}</span>
     </div>${rankedBars(cols, { unit, chartId, whole, drill, cut })}${drill
-      ? '<p class="hint" style="margin-top:10px">Click a use case to see the new Spaces behind it.</p>'
+      ? '<p class="hint" style="margin-top:10px">Click a use case to open the new Spaces behind it.</p>'
       : ''}`;
   el.appendChild(list);
 
@@ -3236,20 +3431,17 @@ function renderCutPanel(elId, cut, { unit = '', chartId, extraNote = '', rows = 
   }
 }
 
-/**
- * The drill card belongs to the ranked use-case list and to nothing else.
+/*
+ * The drill-down belongs to the ranked use-case list and to nothing else.
  *
  * It used to be left on screen by whatever last put it there: switching to
  * Industry left a list of Chat / assistant Spaces sitting under a chart about
  * industries, and switching to the Table left it showing the previous
  * selection's figures, because renderCutPanel returns before the drill wiring
- * in table mode. A card that outlives the thing that opened it is a card a
- * reader will read as belonging to what is now underneath it.
+ * in table mode. As a modal that cannot happen — the page behind it is inert
+ * and every one of those switches is a call to hideDrillCard, defined next to
+ * openDrill above.
  */
-function hideDrillCard() {
-  const card = document.getElementById('usecase-drill-card');
-  if (card) card.hidden = true;
-}
 
 /** What the figures in a cut ARE, in words, for the table and the list header. */
 const CUT_NAMES = {
@@ -5008,12 +5200,19 @@ async function init() {
     // Same reasoning as the collapsed <details>: a filter is a view of the
     // cards, and printing one would silently leave the rest off the paper.
     cardFilter.clear();
+    // A modal is in the top layer, and nothing in CSS takes it out — position
+    // is simply ignored there, so the printed list lands on top of page one
+    // instead of after the charts. Reopened non-modally for the duration:
+    // same element, same content, but back in the document where the print
+    // rules can put it in the flow.
+    unmodalDrill();
     renderAll();
   });
   window.addEventListener('afterprint', () => {
     printing = false;
     reopened.forEach(d => { d.open = false; });
     reopened = [];
+    remodalDrill();
     renderAll();
   });
 
@@ -5062,6 +5261,49 @@ async function init() {
     [...document.querySelectorAll('.legend-chip')]
       .find(c => c.dataset.chart === id && c.dataset.key === key)?.focus();
   });
+
+  // ── The drill-down dialog ───────────────────────────────────────────────
+  const drillDlg = drillDialog();
+  if (drillDlg) {
+    document.getElementById('drill-expand')
+      .addEventListener('click', () => setDrillMax(!drillMaximised));
+    document.getElementById('drill-close').addEventListener('click', () => drillDlg.close());
+
+    // Clicking the backdrop. The dialog's own box is the only thing painted
+    // inside it, so a click whose target IS the dialog landed outside that box
+    // — which is the backdrop, since ::backdrop cannot itself be a target.
+    drillDlg.addEventListener('click', e => { if (e.target === drillDlg) drillDlg.close(); });
+
+    // F for full, next to Escape for close. Only while it is open, and never
+    // while someone is typing into the page's selects.
+    drillDlg.addEventListener('keydown', e => {
+      if ((e.key === 'f' || e.key === 'F') && !e.metaKey && !e.ctrlKey && !e.altKey) {
+        e.preventDefault();
+        setDrillMax(!drillMaximised);
+      }
+    });
+
+    // Escape, the X and the backdrop all arrive here, and so does hideDrillCard.
+    // Only the reader's own close forgets the selection.
+    drillDlg.addEventListener('close', () => {
+      if (drillDlg.dataset[DRILL_BY_PAGE]) {
+        delete drillDlg.dataset[DRILL_BY_PAGE];
+        return;
+      }
+      const was = state.drill;
+      state.drill = null;
+      writeHash();
+      renderAll();
+      // The repaint replaced the bar that opened it, so focus is handed to its
+      // replacement rather than dropped at the top of the document. Matched on
+      // the attribute: CSS.escape produces an escaped identifier, and a key
+      // beginning with a digit does not survive it inside a quoted value.
+      if (was) {
+        [...document.querySelectorAll('button[data-drill]')]
+          .find(b => b.dataset.drill === was)?.focus();
+      }
+    });
+  }
 
   // Card controls, delegated for the same reason: the Insights tab is rendered
   // wholesale from the payload every time it is shown.
