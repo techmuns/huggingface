@@ -550,7 +550,7 @@ button.bar-row:focus-visible { outline: 2px solid var(--series); outline-offset:
   /* A dialog is display:none until open, so a grid here would apply to
      nothing; it is set on [open] instead, where the rows are real. */
 }
-.drill[open] { display: grid; grid-template-rows: auto 1fr; }
+.drill[open] { display: grid; grid-template-rows: auto auto 1fr; }
 .drill::backdrop { background: rgba(11,11,11,.44); backdrop-filter: blur(2px); }
 :root[data-theme="dark"] .drill::backdrop { background: rgba(0,0,0,.62); }
 @media (prefers-color-scheme: dark) {
@@ -599,6 +599,48 @@ button.bar-row:focus-visible { outline: 2px solid var(--series); outline-offset:
   border: 1.5px solid currentColor; border-radius: 2px;
 }
 .drill-btn[aria-pressed="true"] .drill-ico { border-style: dashed; }
+
+/*
+ * The week strip: travel, and the shape of the thing travelled through.
+ *
+ * A stepper alone would answer "let me see one week at a time" and hide which
+ * week is worth looking at. Each button carries its own week's figure, so
+ * choosing where to go and seeing where the attention was are the same act —
+ * and the arrow keys still walk it one week at a time.
+ *
+ * It scrolls sideways rather than wrapping, the way the tab strip already does
+ * on a phone: the dataset is four weeks now and the publisher keeps up to
+ * sixty, so a strip that wraps would one day be four rows tall inside a
+ * dialog that is mostly list.
+ */
+.drill-weeks {
+  display: flex; gap: 6px; align-items: stretch;
+  padding: 10px 20px 12px; border-bottom: 1px solid var(--grid);
+  overflow-x: auto; scroll-snap-type: x proximity; -webkit-overflow-scrolling: touch;
+}
+.drill-weeks::-webkit-scrollbar { height: 0; }
+.drill-week {
+  font: inherit; cursor: pointer; flex: 0 0 auto; scroll-snap-align: start;
+  border: 1px solid var(--hairline); border-radius: 7px; padding: 5px 11px;
+  background: none; color: var(--ink-2); text-align: left; line-height: 1.25;
+  display: grid; gap: 1px;
+}
+.drill-week:hover { color: var(--ink); border-color: var(--ink-muted); }
+.drill-week:focus-visible { outline: 2px solid var(--series); outline-offset: 1px; }
+.drill-week[aria-current="true"] {
+  background: var(--series-soft); border-color: transparent; color: var(--ink);
+}
+.drill-week .wk { font-size: 12px; font-weight: 500; white-space: nowrap; }
+/* The figure the button is chosen on. Tabular, so the strip reads as a column
+   of comparable numbers rather than as decoration. */
+.drill-week .n {
+  font-size: 11px; color: var(--ink-muted); font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.drill-week[aria-current="true"] .n { color: var(--ink-2); }
+/* Nothing to look at is worth saying before the reader clicks. */
+.drill-week.none .wk, .drill-week.none .n { color: var(--ink-muted); }
+.drill-week.none { border-style: dashed; }
 
 .drill-body { padding: 16px 20px 20px; overflow-y: auto; overscroll-behavior: contain; }
 
@@ -860,7 +902,10 @@ details.method li { margin-bottom: 7px; max-width: 82ch; }
     margin: 20px 0; break-inside: avoid;
   }
   .drill::backdrop { display: none; }
-  .drill-tools { display: none; }
+  /* Controls are not printable things. The week is named in the dialog's own
+     title and again in the sentence above the list, so the paper still says
+     which week it is about. */
+  .drill-tools, .drill-weeks { display: none; }
   .drill-body { overflow: visible; }
   .pmatrix th:first-child, .pmatrix td:first-child { position: static; box-shadow: none; }
 }
@@ -1115,8 +1160,8 @@ details.method li { margin-bottom: 7px; max-width: 82ch; }
         <header class="drill-head">
           <div class="drill-head-text">
             <h2 id="drill-title">The Spaces behind it</h2>
-            <p class="hint">Ranked by the likes a Space had when the pipeline first saw it,
-              which is the only traction figure the Hub reports for Spaces at all.</p>
+            <p class="hint">Ranked by likes &mdash; the only traction figure the Hub reports
+              for a Space. Step through the weeks to see each one on its own.</p>
           </div>
           <div class="drill-tools">
             <button type="button" id="drill-expand" class="drill-btn"
@@ -1128,6 +1173,7 @@ details.method li { margin-bottom: 7px; max-width: 82ch; }
               title="Close (Esc)" aria-label="Close">&times;</button>
           </div>
         </header>
+        <nav class="drill-weeks" id="drill-weeks" aria-label="Week"></nav>
         <div class="drill-body" id="c-usecase-drill"></div>
       </dialog>
 
@@ -1269,7 +1315,12 @@ const getJSON = (path) =>
 const DATA = "/data";
 
 /** What the drill-down card shows. The files keep more, so this can rise. */
-const DRILL_LIMIT = 20;
+/* The publisher stores 50 Spaces per use case per week (DRILL_LIMIT in
+   publish.ts). Reading back 20 of them made sense while the dialog pooled
+   every week into one list; a single week is a shorter list to begin with —
+   the biggest any week has is 50 and the median is 13 — so it is shown
+   whole. */
+const DRILL_LIMIT = 50;
 
 /**
  * The drill-down card, for one selection of weeks.
@@ -1467,6 +1518,15 @@ const state = {
   track: 'spaces_total',
   matrixUseCase: null, // which use case the family-by-use-case view follows
   drill: null,         // which use case the Spaces list underneath is open on
+  /**
+   * Which week of the drill-down the reader is looking at, or null for all of
+   * them at once. Its own field rather than a reuse of `picked`: picked is a
+   * selection of PERIODS made on the chart and shared by every panel on the
+   * page, and a month view would have no week to point at. This is one week,
+   * belonging to one dialog, and it has to survive a repaint without changing
+   * what the chart behind it is about.
+   */
+  drillWeek: null,
   /** Periods the reader picked out of the chart. Empty means all of them. */
   picked: new Set(),
   /** Series switched off from a legend, keyed by chart id. Colour follows the
@@ -3001,6 +3061,11 @@ function drillWindow(periods) {
 const DRILL_BY_PAGE = 'closedByPage';
 
 /** Whether the reader last left the dialog filling the window. */
+/* The periods the dialog was last drawn against. The arrow keys need the
+   week list, and they fire between repaints rather than inside one. */
+let drillPeriods = null;
+const drillWindowNow = () => (drillPeriods ? drillWindow(drillPeriods) : null);
+
 let drillMaximised = false;
 try { drillMaximised = localStorage.getItem('drillMax') === '1'; } catch { /* private window */ }
 
@@ -3064,6 +3129,90 @@ function openDrill(useCase, periods) {
   renderAll();
 }
 
+/**
+ * The weeks the reader may travel between, and the one they are on.
+ *
+ * Every week the dashboard has, not the ones the chart is scoped to. The two
+ * are not the same thing and it matters: with nothing picked on the chart,
+ * pickedIndexes returns the LAST period only, so the dialog has always been
+ * showing a single week — the newest — with no way to reach the others. That
+ * is the gap. The chart's scope still decides which week the dialog OPENS on;
+ * from there the strip is its own axis over the whole history, so travelling
+ * inside the dialog never rewrites what the page behind it is about.
+ *
+ * `drillWeek` is checked against that list rather than trusted: a shared link
+ * can name a week the dataset does not have.
+ */
+function drillWeeks(win) {
+  const weeks = seriesRaw?.weeks ?? win.weeks;
+  const at = state.drillWeek && weeks.includes(state.drillWeek)
+    ? state.drillWeek
+    // The week the selection implies: the newest of whatever the chart is
+    // scoped to, which with nothing picked is the newest week there is.
+    : (state.drillWeek === ALL_WEEKS ? null : win.weeks[win.weeks.length - 1] ?? null);
+  return { weeks, at };
+}
+
+/** The cursor's "pooled" position. A sentinel, so it survives the URL. */
+const ALL_WEEKS = 'all';
+
+/** Steps the cursor along the strip, stopping at the ends rather than wrapping. */
+function stepDrillWeek(by) {
+  const win = drillWindowNow();
+  if (!win) return;
+  const { weeks, at } = drillWeeks(win);
+  // From "all weeks", a step forward starts at the beginning and a step back
+  // at the end — the reader is entering the strip, not moving within it.
+  const from = at === null ? (by > 0 ? -1 : weeks.length) : weeks.indexOf(at);
+  const next = from + by;
+  if (next < 0 || next >= weeks.length) return;
+  setDrillWeek(weeks[next]);
+}
+
+/** One place the cursor moves, so the hash and the repaint cannot drift. */
+function setDrillWeek(week) {
+  state.drillWeek = week;
+  writeHash();
+  renderAll();
+  // The repaint throws away the button that was pressed; focus is handed to
+  // its replacement rather than dropped at the top of the dialog.
+  requestAnimationFrame(() => {
+    const want = week ?? ALL_WEEKS;
+    [...document.querySelectorAll('.drill-week')]
+      .find(x => x.dataset.week === want)?.focus();
+  });
+}
+
+/** The strip itself. Each week carries the figure it would be chosen on. */
+function renderDrillWeeks(file, win) {
+  const el = document.getElementById('drill-weeks');
+  if (!el) return;
+  const { weeks, at } = drillWeeks(win);
+
+  // One week on record is not a journey. The strip would be a single button
+  // that does nothing, so the header's own line says which week it is instead.
+  if (weeks.length < 2) { el.hidden = true; el.innerHTML = ''; return; }
+  el.hidden = false;
+
+  const liked = w => file?.weeks?.[w]?.withTraction ?? 0;
+  const total = weeks.reduce((n, w) => n + liked(w), 0);
+
+  const btn = (key, label, sub, current, none) =>
+    `<button type="button" class="drill-week${none ? ' none' : ''}" data-week="${esc(key)}"
+       aria-current="${current}">
+       <span class="wk">${esc(label)}</span><span class="n">${esc(sub)}</span></button>`;
+
+  el.innerHTML =
+    btn(ALL_WEEKS, `All ${weeks.length} weeks`, `${num(total)} liked`,
+        at === null ? 'true' : 'false', false) +
+    weeks.map(w => btn(
+      w, shortWeek(w),
+      liked(w) ? `${num(liked(w))} liked` : 'none liked',
+      at === w ? 'true' : 'false',
+      liked(w) === 0,
+    )).join('');
+}
+
 async function renderDrill(cols) {
   const host = document.getElementById('c-usecase-drill');
   const card = drillDialog();
@@ -3081,6 +3230,16 @@ async function renderDrill(cols) {
 
   const win = drillWindow(cols.periods);
   if (!win) { hideDrillCard(); return; }
+  drillPeriods = cols.periods;
+
+  // A cursor naming a week the dataset does not have is dropped rather than
+  // carried: the alternative is a dialog headed by one week and filled with
+  // another. A cursor outside the CHART's selection is fine — the strip is the
+  // dialog's own axis and deliberately reaches further than the chart does.
+  if (state.drillWeek && state.drillWeek !== ALL_WEEKS
+      && !(seriesRaw?.weeks ?? []).includes(state.drillWeek)) {
+    state.drillWeek = null;
+  }
 
   // Guarded: renderAll runs on every resize and every control change, and
   // showModal() on an already-open dialog throws.
@@ -3089,10 +3248,16 @@ async function renderDrill(cols) {
     card.showModal();
     card.querySelector('.drill-body').scrollTop = 0;
   }
-  document.getElementById('drill-title').textContent =
-    `${titleCase(state.drill)} — the Spaces behind it`;
+  const { weeks: allWeeks, at } = drillWeeks(win);
+  // "All weeks" means the dataset, not the chart's selection. The strip is the
+  // dialog's own axis, and a control offering four weeks that then pools one
+  // would be lying about what it did.
+  const shown = at ? [at] : allWeeks;
+  document.getElementById('drill-title').textContent = at
+    ? `${titleCase(state.drill)} — ${longWeek(at)}`
+    : `${titleCase(state.drill)} — ${allWeeks.length} weeks`;
 
-  const key = `${state.drill}|${win.weeks.join(',')}`;
+  const key = `${state.drill}|${shown.join(',')}`;
   const seq = ++drillSeq;
   if (!drillCache.has(key)) {
     setHTML(host, '<p class="empty">Loading…</p>');
@@ -3105,13 +3270,14 @@ async function renderDrill(cols) {
         file = await getJSON(`${DATA}/use-case-spaces/${encodeURIComponent(state.drill)}.json`);
         drillFiles.set(state.drill, file);
       }
-      drillCache.set(key, drillForWeeks(file, win.weeks, DRILL_LIMIT));
+      drillCache.set(key, drillForWeeks(file, shown, DRILL_LIMIT));
     } catch {
       if (seq === drillSeq) setHTML(host, '<p class="empty">That list could not be loaded just now.</p>');
       return;
     }
   }
   if (seq !== drillSeq) return;   // a later click already won
+  renderDrillWeeks(drillFiles.get(state.drill), win);
   const data = drillCache.get(key);
 
   const share = data.total > 0 ? (data.withTraction / data.total) * 100 : null;
@@ -3119,19 +3285,41 @@ async function renderDrill(cols) {
   // The denominator leads, deliberately. A top twenty with nothing beside it
   // reads as "the twenty biggest"; what it actually is, on this data, is every
   // Space in the period that anyone noticed at all.
+  const where = at ? `in the week of ${shortWeek(at)}` : `across these ${allWeeks.length} weeks`;
+  /*
+   * What this figure is, stated so it cannot be over-read.
+   *
+   * A Space's like count is whatever it was the last time the pipeline saw it,
+   * and the weeks were not all seen at the same age: three of the four were
+   * ingested in one pass on 25 August, so the oldest week's Spaces had about a
+   * month to gather likes and the newest week's had days. The page used to say
+   * the opposite — "recorded when we first see a Space, in the hours after it
+   * is created" — which is true of nothing in the file.
+   *
+   * The consequence is not that the figures are useless, it is that two of
+   * them behave differently. A Space that had one like when it was counted
+   * still has one like: re-reading a sample from the live Hub, the tail does
+   * not move, so HOW MANY Spaces got any like is a fair comparison between
+   * weeks. The head does move, and moves more the younger the week, so HOW
+   * MANY LIKES is not. The strip above therefore counts Spaces, not likes, and
+   * this sentence says which of the two the reader is allowed to compare.
+   */
   const preamble = `<p class="hint" style="margin-bottom:14px">
     <b>${num(data.withTraction)}</b> of <b>${num(data.total)}</b> new
-    ${esc(titleCase(state.drill))} Spaces in this selection were liked by anyone at all${
+    ${esc(titleCase(state.drill))} Spaces ${esc(where)} were liked by anyone at all${
       share == null ? '' : ` — ${share.toFixed(1)}%`}.
-    Likes are recorded when we first see a Space, in the hours after it is created, so this is
-    which ones got noticed fastest rather than which are most popular today.
+    A like count is whatever it was when the pipeline last saw that Space, and older weeks were
+    seen later in their life &mdash; so <b>how many Spaces got a like</b> compares fairly between
+    weeks, while <b>how many likes</b> does not.${at ? '' : ` Ranking across weeks favours the
+    older ones for the same reason; a single week is the like-for-like view.`}
     <a href="https://huggingface.co/spaces" target="_blank" rel="noopener">The Hub</a> publishes
     no usage figure for a Space at all &mdash; not downloads, not views, not runs &mdash; so
-    likes are the only signal of attention that exists.</p>`;
+    likes are the only signal of attention there is.</p>`;
 
   if (!data.spaces.length) {
-    setHTML(host, preamble + `<p class="empty">Not one of the ${
-      num(data.total)} had a like when we saw it.</p>`);
+    setHTML(host, preamble + `<p class="empty">${data.total
+      ? `Not one of the ${num(data.total)} had a single like when it was counted.`
+      : `No ${esc(titleCase(state.drill))} Space was created ${esc(where)}.`}</p>`);
     return;
   }
 
@@ -3148,8 +3336,8 @@ async function renderDrill(cols) {
       </span>
     </a>`;
   }).join('')}</div>${data.withTraction > data.spaces.length
-    ? `<p class="hint" style="margin-top:12px">The ${data.spaces.length} most-liked of ${
-        num(data.withTraction)}.</p>`
+    ? `<p class="hint" style="margin-top:12px">The ${data.spaces.length} most-liked of the ${
+        num(data.withTraction)} that were liked at all${at ? '' : ' across these weeks'}.</p>`
     : ''}`);
 }
 
@@ -4856,6 +5044,10 @@ function writeHash(push = false) {
   }
   if (state.tab === 'build' && state.sub.build === 'usecase' && state.drill) {
     p.set('drill', state.drill);
+    // Shared, because a link to one use case in one week is a thing worth
+    // sending someone. Left out when it is null so an unfiltered link stays
+    // the short one it was.
+    if (state.drillWeek) p.set('dw', state.drillWeek);
   }
   if (state.picked.size) p.set('sel', [...state.picked].join(','));
 
@@ -4917,6 +5109,11 @@ function readHash() {
   // naming one that is gone closes the card rather than leaving it loading.
   const drill = p.get('drill');
   state.drill = drill && /^[a-z0-9-]{1,40}$/.test(drill) && !RESIDUAL.has(drill) ? drill : null;
+  const dw = p.get('dw');
+  // Shape-checked here and membership-checked in renderDrill, which is the
+  // only place that knows which weeks the selection actually holds.
+  state.drillWeek = state.drill && dw && (dw === ALL_WEEKS || /^\d{4}-\d{2}-\d{2}$/.test(dw))
+    ? dw : null;
 
   // Keys not in the data are simply dropped: a link written under Month and
   // opened under Week would otherwise leave a selection nothing can clear.
@@ -5165,8 +5362,15 @@ async function init() {
   // every control writes to the hash, so the history entry is the whole view.
   const snapshot = () => {
     const chartId = activeChartId();
+    // The drill-down and its week belong here for the same reason everything
+    // else does: they are in the URL, so two history entries can differ by
+    // nothing else, and a snapshot that cannot tell them apart takes the early
+    // return and leaves the dialog showing the week the reader just left.
+    // Both happen to repaint today through another path; this stops that
+    // being load-bearing.
     return JSON.stringify([state.tab, state.sub, state.period, state.mode, state.table,
-      state.track, state.matrixUseCase, [...state.picked].sort(),
+      state.track, state.matrixUseCase, state.drill, state.drillWeek,
+      [...state.picked].sort(),
       chartId ? [...(state.off[chartId] || [])].sort() : null]);
   };
 
@@ -5274,12 +5478,26 @@ async function init() {
     // — which is the backdrop, since ::backdrop cannot itself be a target.
     drillDlg.addEventListener('click', e => { if (e.target === drillDlg) drillDlg.close(); });
 
-    // F for full, next to Escape for close. Only while it is open, and never
-    // while someone is typing into the page's selects.
+    // The strip. Delegated: it is rewritten on every repaint.
+    document.getElementById('drill-weeks').addEventListener('click', e => {
+      const b = e.target.closest('.drill-week');
+      if (!b) return;
+      setDrillWeek(b.dataset.week === ALL_WEEKS ? ALL_WEEKS : b.dataset.week);
+    });
+
+    // F for full, next to Escape for close; the arrows travel. Only while it
+    // is open, and the page's selects are behind a modal so nothing here is
+    // taking a key out of a text field.
     drillDlg.addEventListener('keydown', e => {
-      if ((e.key === 'f' || e.key === 'F') && !e.metaKey && !e.ctrlKey && !e.altKey) {
+      if (e.metaKey || e.ctrlKey || e.altKey) return;
+      if (e.key === 'f' || e.key === 'F') {
         e.preventDefault();
         setDrillMax(!drillMaximised);
+        return;
+      }
+      if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
+        e.preventDefault();
+        stepDrillWeek(e.key === 'ArrowRight' ? 1 : -1);
       }
     });
 
@@ -5292,6 +5510,7 @@ async function init() {
       }
       const was = state.drill;
       state.drill = null;
+      state.drillWeek = null;
       writeHash();
       renderAll();
       // The repaint replaced the bar that opened it, so focus is handed to its
