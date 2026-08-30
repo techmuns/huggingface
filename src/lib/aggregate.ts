@@ -10,7 +10,7 @@
  */
 import { D1_BATCH } from "./raw-store";
 
-import { TAXONOMY_VERSION } from "./taxonomy";
+import { TAXONOMY_VERSION, TECHNOLOGIES, USE_CASES, VERTICALS } from "./taxonomy";
 
 export interface AggregateSummary {
   metricsWritten: number;
@@ -35,6 +35,38 @@ const UPSERT_METRIC = `
 `;
 
 const MIN_DENOMINATOR = 10;
+
+/**
+ * Fills in the categories that scored nothing.
+ *
+ * GROUP BY returns no row for a group with no rows, so a category nobody built
+ * for that week simply vanished from the output — and a missing row publishes
+ * as null, which the dashboard draws as a gap in the line. A gap means "not
+ * measured". It was measured; the answer was none.
+ *
+ * The distinction is only safe to make because these vocabularies are closed:
+ * USE_CASES, VERTICALS and TECHNOLOGIES are the enums the classifier is bound
+ * to, so a category missing from a week's results is a category that scored
+ * zero, not one nobody had heard of yet. It is NOT applied to the SDK cut,
+ * whose values come from the Hub and can be anything, nor to the family
+ * cross-tab, where an absent pairing means no Space in that use case named
+ * that family and drawing it as 0% would fill the grid with false precision.
+ *
+ * Found in week 2026-08-03: `other` held no Space, and the use-case chart drew
+ * a hole in its line instead of a point on the axis. Five more cells across
+ * the vertical and technology cuts said the same thing.
+ */
+function withEmptyCategories(
+  rows: MetricRow[],
+  vocabulary: readonly string[],
+  blank: Omit<MetricRow, "dimension" | "value">,
+): MetricRow[] {
+  const seen = new Set(rows.map((r) => r.dimension));
+  const filled = vocabulary
+    .filter((dimension) => !seen.has(dimension))
+    .map((dimension) => ({ ...blank, dimension, value: 0 }));
+  return filled.length ? [...rows, ...filled] : rows;
+}
 
 interface MetricRow {
   weekStart: string;
@@ -115,18 +147,15 @@ async function newSpacesByUseCase(
   const classified = rows.results?.reduce((s, r) => s + r.cnt, 0) ?? 0;
   const coverage = denominator > 0 ? classified / denominator : null;
 
-  return (rows.results ?? []).map((r) => ({
-    weekStart,
-    cut: "spaces_by_use_case",
-    dimension: r.dim,
-    subDimension: "",
-    value: r.cnt,
-    denominator,
-    coverage,
-    delta1w: null,
-    delta4w: null,
-    delta12w: null,
-  }));
+  const blank = {
+    weekStart, cut: "spaces_by_use_case", subDimension: "",
+    denominator, coverage, delta1w: null, delta4w: null, delta12w: null,
+  };
+  return withEmptyCategories(
+    (rows.results ?? []).map((r) => ({ ...blank, dimension: r.dim, value: r.cnt })),
+    USE_CASES,
+    blank,
+  );
 }
 
 // ── 2. Share of new Spaces by use case (%) ──────────────────────────────────
@@ -150,18 +179,17 @@ async function shareByUseCase(
 
   const classified = rows.results?.reduce((s, r) => s + r.cnt, 0) ?? 0;
 
-  return (rows.results ?? []).map((r) => ({
-    weekStart,
-    cut: "share_by_use_case",
-    dimension: r.dim,
-    subDimension: "",
-    value: classified > 0 ? (r.cnt / classified) * 100 : 0,
-    denominator: classified,
-    coverage: null,
-    delta1w: null,
-    delta4w: null,
-    delta12w: null,
-  }));
+  const blank = {
+    weekStart, cut: "share_by_use_case", subDimension: "",
+    denominator: classified, coverage: null, delta1w: null, delta4w: null, delta12w: null,
+  };
+  return withEmptyCategories(
+    (rows.results ?? []).map((r) => ({
+      ...blank, dimension: r.dim, value: classified > 0 ? (r.cnt / classified) * 100 : 0,
+    })),
+    USE_CASES,
+    blank,
+  );
 }
 
 // ── 3. Breakdown by vertical (penetration) ──────────────────────────────────
@@ -196,18 +224,17 @@ async function breakdownByVertical(
 
   const denominator = total?.cnt ?? 0;
 
-  return (rows.results ?? []).map((r) => ({
-    weekStart,
-    cut: "vertical_penetration",
-    dimension: r.dim,
-    subDimension: "",
-    value: denominator > 0 ? (r.cnt / denominator) * 100 : 0,
-    denominator,
-    coverage: null,
-    delta1w: null,
-    delta4w: null,
-    delta12w: null,
-  }));
+  const blank = {
+    weekStart, cut: "vertical_penetration", subDimension: "",
+    denominator, coverage: null, delta1w: null, delta4w: null, delta12w: null,
+  };
+  return withEmptyCategories(
+    (rows.results ?? []).map((r) => ({
+      ...blank, dimension: r.dim, value: denominator > 0 ? (r.cnt / denominator) * 100 : 0,
+    })),
+    VERTICALS,
+    blank,
+  );
 }
 
 // ── 4. Model-family share within each use case ──────────────────────────────
@@ -285,18 +312,17 @@ async function technologyPenetration(
 
   const denominator = total?.cnt ?? 0;
 
-  return (rows.results ?? []).map((r) => ({
-    weekStart,
-    cut: "technology_penetration",
-    dimension: r.dim,
-    subDimension: "",
-    value: denominator > 0 ? (r.cnt / denominator) * 100 : 0,
-    denominator,
-    coverage: null,
-    delta1w: null,
-    delta4w: null,
-    delta12w: null,
-  }));
+  const blank = {
+    weekStart, cut: "technology_penetration", subDimension: "",
+    denominator, coverage: null, delta1w: null, delta4w: null, delta12w: null,
+  };
+  return withEmptyCategories(
+    (rows.results ?? []).map((r) => ({
+      ...blank, dimension: r.dim, value: denominator > 0 ? (r.cnt / denominator) * 100 : 0,
+    })),
+    TECHNOLOGIES,
+    blank,
+  );
 }
 
 // ── 5b. SDK distribution ────────────────────────────────────────────────────

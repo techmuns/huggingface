@@ -96,11 +96,17 @@ function regressedWeeks(
 }
 
 /** Applies the right merge for the file, or none where none is needed. */
-function merged(root: string, file: SnapshotFile): unknown {
+function merged(root: string, file: SnapshotFile, authoritative: readonly string[]): unknown {
   const path = join(root, file.path);
 
   if (file.path === "series.json" || file.path === "series-matrix.json") {
-    return mergeSeries(readJson<SeriesPayload>(path), file.value as SeriesPayload);
+    // The weeks are passed through because a cell-by-cell overlay is not
+    // enough on its own: a cell the run no longer produces has to go, or it
+    // stays forever quoting a denominator nothing else in its group shares.
+    // See mergeSeries.
+    return mergeSeries(
+      readJson<SeriesPayload>(path), file.value as SeriesPayload, undefined, authoritative,
+    );
   }
   if (file.path.startsWith("use-case-spaces/")) {
     return mergeDrill(readJson<DrillPayload>(path), file.value as DrillPayload);
@@ -155,7 +161,11 @@ export async function publishSnapshot(
       file = { path: file.path, value: { ...drill, weeks } satisfies DrillPayload };
     }
 
-    written.push(write(root, file.path, merged(root, file)));
+    // A week this run set out to compute but is regressing is not one it can
+    // speak for, so it does not get to delete anything either.
+    written.push(write(root, file.path, merged(
+      root, file, authoritativeWeeks.filter((w) => !regressed.has(w)),
+    )));
   }
 
   const index = files.find((f) => f.path === "index.json");

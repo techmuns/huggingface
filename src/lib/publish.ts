@@ -186,14 +186,57 @@ function flatten(payload: SeriesPayload | null): Map<string, FlatCell> {
  * `next` wins wherever the two describe the same cell, which is what makes a
  * re-run of an already-published week a correction rather than a duplicate.
  * Everything `next` is silent about is carried forward.
+ *
+ * With one exception, and it took a wrong number on the page to find it.
+ *
+ * Overlaying cell by cell means a cell the new run does NOT produce survives,
+ * whatever the new run says about the group it belongs to. 2026-08-17 was
+ * seeded from the old pipeline with 56 document-AI Spaces and then recomputed
+ * with 165. Every family the second run emitted was overwritten; the one it
+ * did not emit — kimi-moonshot, which the fuller data has no Space for — kept
+ * the seeded 1/56 and went on reporting 1.79% in a group where every other
+ * cell was a share of 165. The use case's family shares summed to 101.79%,
+ * and one cell was overstated threefold. Music generation had the same fault
+ * at 107.69%.
+ *
+ * So: for a week the run set out to compute, a cut it emitted ANY cell for is
+ * a cut it computed in full — the aggregate queries return a whole result set
+ * or none — and its cell set is the entire truth for that (cut, week).
+ * Anything the previous publish had there is dropped rather than carried.
+ *
+ * Both halves of that are load-bearing. Scoped to `authoritativeWeeks`,
+ * because a run's ingest window catches a few Spaces either side of its
+ * target — run #2 held 11 Spaces of a neighbouring week — and replacing that
+ * week's cells with what such a run holds would destroy it. Scoped per cut,
+ * because silence about a cut is not a statement about it.
  */
 export function mergeSeries(
   previous: SeriesPayload | null,
   next: SeriesPayload,
   maxWeeks: number = MAX_SERIES_WEEKS,
+  /** Weeks this run computed. Only their cells may be replaced wholesale. */
+  authoritativeWeeks: readonly string[] = [],
 ): SeriesPayload {
   const cells = flatten(previous);
-  for (const [key, cell] of flatten(next)) cells.set(key, cell);
+  const fresh = flatten(next);
+
+  // The (cut, week) pairs this run is the authority on.
+  const owned = new Set<string>();
+  if (authoritativeWeeks.length) {
+    const authoritative = new Set(authoritativeWeeks);
+    // The cut is the first field and the week the last; the two in between are
+    // the dimensions, and a dimension may itself contain the separator.
+    const cutWeek = (key: string) =>
+      key.slice(0, key.indexOf(SEP)) + SEP + key.slice(key.lastIndexOf(SEP) + 1);
+    for (const key of fresh.keys()) {
+      if (authoritative.has(key.slice(key.lastIndexOf(SEP) + 1))) owned.add(cutWeek(key));
+    }
+    for (const key of cells.keys()) {
+      if (owned.has(cutWeek(key)) && !fresh.has(key)) cells.delete(key);
+    }
+  }
+
+  for (const [key, cell] of fresh) cells.set(key, cell);
 
   const weekSet = new Set<string>();
   for (const key of cells.keys()) weekSet.add(key.slice(key.lastIndexOf(SEP) + 1));

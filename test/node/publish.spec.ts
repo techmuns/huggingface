@@ -46,8 +46,11 @@ const seriesOf = (
   })),
 });
 
+const MATRIX = "family_share_by_use_case";
+const MAX = 60;
+
 const valueAt = (payload: SeriesPayload, dimension: string, week: string): number | null => {
-  const entry = payload.series.find((e) => e.dimension === dimension);
+  const entry = payload.series.find((e) => e.dimension === dimension || e.subDimension === dimension);
   const at = payload.weeks.indexOf(week);
   return entry && at >= 0 ? (entry.values[at] ?? null) : null;
 };
@@ -105,6 +108,98 @@ describe("merging a series onto what was already published", () => {
 
     expect(merged.series).toHaveLength(2);
     expect(merged.series.map((e) => e.values[0]).sort()).toEqual([1, 2]);
+  });
+
+  it("drops a cell the authoritative re-run no longer produces", () => {
+    // The bug this was written for, found in the published data.
+    //
+    // 2026-08-17 was seeded from the old D1 pipeline with 56 document-AI
+    // Spaces, then recomputed by the runner with 165. Every family the second
+    // run emitted was overwritten. `kimi-moonshot` was NOT emitted — the
+    // fuller data had no such Space — so the seeded cell survived, and went on
+    // reporting 1/56 = 1.79% inside a group whose every other cell was over
+    // 165. The family shares for that use case summed to 101.79%, and one cell
+    // on the page was overstated threefold.
+    //
+    // A run that computed a cut for a week knows every cell of it. So its cell
+    // set is the whole truth for that (cut, week), and anything the previous
+    // publish had there and this run does not is gone, not carried forward.
+    const previous: SeriesPayload = {
+      taxonomyVersion: "1",
+      weeks: ["2026-08-17"],
+      series: [
+        { cut: MATRIX, dimension: "document-ai", subDimension: "qwen",
+          values: [12.5], denominators: [56], suppressed: [0] },
+        { cut: MATRIX, dimension: "document-ai", subDimension: "kimi-moonshot",
+          values: [1.7857142857142856], denominators: [56], suppressed: [0] },
+      ],
+    };
+    const next: SeriesPayload = {
+      taxonomyVersion: "1",
+      weeks: ["2026-08-17"],
+      series: [
+        { cut: MATRIX, dimension: "document-ai", subDimension: "qwen",
+          values: [14.545454545454545], denominators: [165], suppressed: [0] },
+      ],
+    };
+
+    const merged = mergeSeries(previous, next, MAX, ["2026-08-17"]);
+
+    expect(merged.series).toHaveLength(1);
+    expect(merged.series[0]?.subDimension).toBe("qwen");
+    expect(merged.series[0]?.denominators[0]).toBe(165);
+  });
+
+  it("only drops cells for the weeks and cuts the run actually recomputed", () => {
+    // The other half of it, and the reason the drop is scoped rather than
+    // wholesale. Run #2 was asked for 2026-08-17 and its ingest window also
+    // caught 11 Spaces of 2026-08-10 — enough to emit cells for a week it knew
+    // 0.2% of. Replacing that week's cell set with what such a run holds would
+    // destroy it. Only the week the run set out to compute is replaced.
+    const previous: SeriesPayload = {
+      taxonomyVersion: "1",
+      weeks: ["2026-08-10", "2026-08-17"],
+      series: [
+        { cut: MATRIX, dimension: "document-ai", subDimension: "qwen",
+          values: [12.4, 12.5], denominators: [145, 56], suppressed: [0, 0] },
+        { cut: MATRIX, dimension: "document-ai", subDimension: "gemma",
+          values: [3.4, 3.6], denominators: [145, 56], suppressed: [0, 0] },
+      ],
+    };
+    const next: SeriesPayload = {
+      taxonomyVersion: "1",
+      weeks: ["2026-08-10", "2026-08-17"],
+      series: [
+        { cut: MATRIX, dimension: "document-ai", subDimension: "qwen",
+          values: [100, 14.5], denominators: [1, 165], suppressed: [0, 0] },
+      ],
+    };
+
+    const merged = mergeSeries(previous, next, MAX, ["2026-08-17"]);
+
+    // The target week: gemma is gone, because the run that owns that week did
+    // not produce it.
+    expect(valueAt(merged, "gemma", "2026-08-17")).toBeNull();
+    // The week it merely brushed past: gemma stands, untouched.
+    expect(valueAt(merged, "gemma", "2026-08-10")).toBe(3.4);
+  });
+
+  it("carries a whole cut forward when the run did not compute it at all", () => {
+    // Silence about a cut is not a statement about it. A run that publishes
+    // only the matrix must not empty spaces_by_use_case for the same week.
+    const previous = seriesOf(["2026-08-17"], [["spaces_by_use_case", "coding", [42]]]);
+    const next: SeriesPayload = {
+      taxonomyVersion: "1",
+      weeks: ["2026-08-17"],
+      series: [
+        { cut: MATRIX, dimension: "document-ai", subDimension: "qwen",
+          values: [14.5], denominators: [165], suppressed: [0] },
+      ],
+    };
+
+    const merged = mergeSeries(previous, next, MAX, ["2026-08-17"]);
+
+    expect(valueAt(merged, "coding", "2026-08-17")).toBe(42);
   });
 
   it("trims from the old end, so the cap never drops the newest week", () => {

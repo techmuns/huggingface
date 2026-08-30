@@ -5,6 +5,7 @@ import { classifySpacesByRules } from "../src/lib/classify-rules";
 import { insertRawRecords } from "../src/lib/raw-store";
 import { parseRawModels, parseRawSpaces } from "../src/lib/parse";
 import { resolveModelFamilies } from "../src/lib/model-family";
+import { USE_CASES } from "../src/lib/taxonomy";
 
 const DB = env.DB;
 
@@ -115,6 +116,55 @@ describe("aggregateWeeklyMetrics", () => {
       .first<{ total: number }>();
 
     expect(rows?.total).toBeCloseTo(100, 0);
+  });
+
+  it("writes a zero for a category nobody built for, not a missing row", async () => {
+    // GROUP BY returns no row for an empty group, so a use case that scored
+    // nothing simply vanished — and a missing row publishes as null, which the
+    // dashboard draws as a gap. A gap means "not measured"; it was measured,
+    // and the answer was none. Real case: `other` held no Space in week
+    // 2026-08-03 and the chart drew a hole in its line.
+    await seedClassifiedSpaces([
+      { id: "a/chatbot", tags: ["conversational"] },
+      { id: "b/img", tags: ["text-to-image"] },
+    ]);
+
+    await aggregateWeeklyMetrics(DB, WEEK_START, WEEK_END);
+
+    const rows = await DB.prepare(
+      `SELECT dimension, value, denominator FROM hf_weekly_metrics
+       WHERE week_start = ?1 AND metric_cut = 'spaces_by_use_case'`,
+    )
+      .bind(WEEK_START)
+      .all<{ dimension: string; value: number; denominator: number }>();
+
+    const found = rows.results ?? [];
+    expect(new Set(found.map((r) => r.dimension))).toEqual(new Set(USE_CASES));
+    // Nothing was built for them, and every one of them says so.
+    for (const empty of ["robotics", "education", "other"]) {
+      expect(found.find((r) => r.dimension === empty)?.value, empty).toBe(0);
+    }
+    // A zero is still a share of the same base as everything else.
+    expect(new Set(found.map((r) => r.denominator))).toHaveLength(1);
+  });
+
+  it("leaves the SDK cut alone, because its values are not a closed set", async () => {
+    // The Hub can call an SDK anything, so an SDK missing from a week is a
+    // week nobody used it — or one the Hub has not invented yet. There is no
+    // vocabulary to fill against and inventing one would publish zeros for
+    // categories that do not exist.
+    await seedClassifiedSpaces([{ id: "a/chatbot", tags: ["conversational"], sdk: "gradio" }]);
+
+    await aggregateWeeklyMetrics(DB, WEEK_START, WEEK_END);
+
+    const rows = await DB.prepare(
+      `SELECT dimension FROM hf_weekly_metrics
+       WHERE week_start = ?1 AND metric_cut = 'sdk_distribution'`,
+    )
+      .bind(WEEK_START)
+      .all<{ dimension: string }>();
+
+    expect(rows.results?.map((r) => r.dimension)).toEqual(["gradio"]);
   });
 
   it("computes models_by_family", async () => {
