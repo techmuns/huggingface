@@ -713,8 +713,9 @@ button.bar-row:focus-visible { outline: 2px solid var(--series); outline-offset:
  */
 .drill-name { min-width: 0; overflow-wrap: anywhere; }
 .drill-meta { overflow-wrap: anywhere; }
-.drill-row:hover { background: color-mix(in srgb, var(--series) 7%, transparent); }
-.drill-row:focus-visible { outline: 2px solid var(--series); outline-offset: -2px; }
+/* No hover lift and no focus ring: the row is not a control. */
+/* The id, offered for copying rather than for clicking. */
+.drill-id { user-select: all; color: var(--ink-2); }
 .drill-likes {
   font-variant-numeric: tabular-nums; text-align: right; font-weight: 600;
   color: var(--series);
@@ -3531,23 +3532,35 @@ async function renderDrill(cols) {
 
   setHTML(host, preamble + listHead + `<div class="drill-list">${data.spaces.map(s => {
     const name = s.title || s.spaceId.split('/')[1] || s.spaceId;
-    // The id goes in the tooltip beside the description: it is what the link
-    // opens, and when the Hub answers a click with 404 — a Space made private
-    // or deleted since it was counted — it is the only way to tell which.
-    const tip = `${s.spaceId}${s.description ? ` — ${s.description}` : ''}`;
-    return `<a class="drill-row" href="https://huggingface.co/spaces/${
-      esc(s.spaceId)}" target="_blank" rel="noopener"
-      title="${esc(tip)}">
+    /*
+     * Not a link any more.
+     *
+     * It was one, and the URL was right: two reported Spaces —
+     * huggingface/anatomy-of-frontier-lab-model-intrusion and
+     * SageBio/rare-disease-real-kid-mva-hackathon-2026 — both answer 200 to an
+     * anonymous request, both report private:false, both serve a real page
+     * with the like count this file records. The same URLs return the Hub's
+     * own 404 in the reader's browser. Nothing about the id, the path or the
+     * data is wrong, and nothing that can be changed here changes the outcome.
+     *
+     * A control that reliably fails for the person using it is worse than no
+     * control, so the id is shown instead of being hidden behind a click:
+     * user-select:all means one click takes the whole string, ready to paste
+     * into the Hub's own search.
+     */
+    return `<div class="drill-row" title="${esc(s.description || '')}">
       <span class="drill-likes">${num(s.likes)}</span>
       <span class="drill-name">
         <b>${esc(name)}</b>
-        <span class="drill-meta">${esc(s.author || '')}${s.sdk ? ' &middot; ' + esc(titleCase(s.sdk)) : ''} &middot; ${
+        <span class="drill-meta"><span class="drill-id">${esc(s.spaceId)}</span>${
+          s.sdk ? ' &middot; ' + esc(titleCase(s.sdk)) : ''} &middot; ${
           esc(shortWeek(s.createdAt.slice(0, 10)))}${s.lowConfidence ? ' &middot; use case uncertain' : ''}</span>
       </span>
-    </a>`;
+    </div>`;
   }).join('')}</div>
-    <p class="hint drill-foot-note">Each row opens the Space on the Hub. A few have been made
-      private or taken down since they were counted, and the Hub answers those with a 404.</p>`);
+    <p class="hint drill-foot-note">The grey line under each name is the Space's id on the Hub —
+      click it once to select the whole thing, then search for it at
+      <a href="https://huggingface.co/spaces" target="_blank" rel="noopener">huggingface.co/spaces</a>.</p>`);
 }
 
 /* ── The period matrix ────────────────────────────────────────────────── */
