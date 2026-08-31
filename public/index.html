@@ -550,7 +550,20 @@ button.bar-row:focus-visible { outline: 2px solid var(--series); outline-offset:
   /* A dialog is display:none until open, so a grid here would apply to
      nothing; it is set on [open] instead, where the rows are real. */
 }
-.drill[open] { display: grid; grid-template-rows: auto auto 1fr; }
+/*
+ * `minmax(0, 1fr)` on the column, not `auto`.
+ *
+ * A grid column is min-content wide by default and its items may not shrink
+ * below their own min-content either, so the widest thing anywhere inside sets
+ * a floor for the whole dialog. Measured at 390px: the header's hint carries
+ * max-width 74ch, the column took 559px from it, and every row below inherited
+ * that width inside a 352px dialog — the body scrolled sideways and the right
+ * of every row was off-screen. Pre-dates the week strip; the strip only made
+ * the number bigger.
+ */
+.drill[open] {
+  display: grid; grid-template-rows: auto auto 1fr; grid-template-columns: minmax(0, 1fr);
+}
 .drill::backdrop { background: rgba(11,11,11,.44); backdrop-filter: blur(2px); }
 :root[data-theme="dark"] .drill::backdrop { background: rgba(0,0,0,.62); }
 @media (prefers-color-scheme: dark) {
@@ -568,6 +581,9 @@ button.bar-row:focus-visible { outline: 2px solid var(--series); outline-offset:
   grid-template-columns: repeat(auto-fill, minmax(min(380px, 100%), 1fr));
   column-gap: 22px;
 }
+/* Expanded, the lede is a headline rather than a paragraph: one line across
+   the top of a wide panel, with the detail still one click away underneath. */
+.drill.max .drill-lede { font-size: 14px; max-width: none; }
 .drill.max .drill-body { padding: 18px 22px 22px; }
 
 .drill-head {
@@ -659,11 +675,44 @@ button.bar-row:focus-visible { outline: 2px solid var(--series); outline-offset:
 
 .drill-body { padding: 16px 20px 20px; overflow-y: auto; overscroll-behavior: contain; }
 
+/* The summary line, and the small print folded behind it. */
+.drill-sum { margin-bottom: 14px; }
+.drill-lede { font-size: 13px; color: var(--ink-2); line-height: 1.5; max-width: 90ch; }
+.drill-lede b { color: var(--ink); font-weight: 600; }
+.drill-how { margin-top: 6px; }
+.drill-how summary {
+  cursor: pointer; font-size: 12px; color: var(--ink-muted);
+  display: inline-flex; align-items: center; gap: 6px; list-style: none;
+}
+.drill-how summary::-webkit-details-marker { display: none; }
+.drill-how summary::after {
+  content: ''; width: 5px; height: 5px; border-right: 1.5px solid currentColor;
+  border-bottom: 1.5px solid currentColor; transform: rotate(45deg) translate(-1px, -1px);
+}
+.drill-how[open] summary::after { transform: rotate(-135deg) translate(-2px, -2px); }
+.drill-how summary:hover { color: var(--ink-2); }
+.drill-how p { font-size: 12.5px; color: var(--ink-muted); line-height: 1.55; max-width: 78ch; margin-top: 8px; }
+.drill-how p b { color: var(--ink-2); font-weight: 600; }
+
+/* The figures had no name; the heart is a decoration, not a label. */
+.drill-list-head { margin: 0 0 8px; padding-top: 12px; border-top: 1px solid var(--grid); }
+.drill-foot-note { margin-top: 12px; }
+
 .drill-list { display: grid; gap: 2px; }
 .drill-row {
-  display: grid; grid-template-columns: 56px 1fr; gap: 12px; align-items: baseline;
+  display: grid; grid-template-columns: 56px minmax(0, 1fr); gap: 12px; align-items: baseline;
   padding: 8px 10px; text-decoration: none; color: inherit; border-radius: 3px;
 }
+/*
+ * A grid track is min-content wide by default, and a Space name is a slug
+ * somebody chose — "SKINDISEASETRIAL1", or an id with no spaces in it at all.
+ * One of those sets the floor for the whole column, and the row grows past the
+ * dialog that contains it: measured at 390px, a 352px dialog holding 467px
+ * rows, which the body then scrolled sideways to reach. minmax(0, 1fr) lets
+ * the track shrink and the two rules below let the word itself break.
+ */
+.drill-name { min-width: 0; overflow-wrap: anywhere; }
+.drill-meta { overflow-wrap: anywhere; }
 .drill-row:hover { background: color-mix(in srgb, var(--series) 7%, transparent); }
 .drill-row:focus-visible { outline: 2px solid var(--series); outline-offset: -2px; }
 .drill-likes {
@@ -3262,18 +3311,25 @@ function renderDrillWeeks(file, win) {
 
   el.innerHTML =
     `<div class="drill-week-row">${
-      btn(ALL_WEEKS, `All ${weeks.length} weeks`, `${num(total)} liked`,
+      btn(ALL_WEEKS, `All ${weeks.length} weeks`,
+          `${num(total)} Space${total === 1 ? '' : 's'}`,
           at === null ? 'true' : 'false', false, null)}${
       weeks.map(w => btn(
         w, shortWeek(w),
-        liked(w) ? `${num(liked(w))} liked` : 'none liked',
+        // "12 liked" reads as twelve likes. It is twelve SPACES that got at
+        // least one — and for this week the likes on those twelve come to 23,
+        // so the two numbers are visibly different and the label was picking
+        // the wrong one. Spaces is also the figure that survives comparison
+        // between weeks, which is what this strip is for.
+        liked(w) ? `${num(liked(w))} Space${liked(w) === 1 ? '' : 's'}` : 'none liked',
         at === w ? 'true' : 'false',
         liked(w) === 0,
         warnOf(w),
       )).join('')}</div>` +
-    (thin.length ? `<span class="drill-week-note">† ${thin.map(x =>
-      `${esc(shortWeek(x.w))} is only ${x.cov.percent.toFixed(0)}% classified`).join(', ')
-      } &mdash; not comparable with the other weeks</span>` : '');
+    `<span class="drill-week-note">Each week: how many of its Spaces got at least one like.${
+      thin.length ? ` &nbsp;† ${thin.map(x =>
+        `${esc(shortWeek(x.w))} is only ${x.cov.percent.toFixed(0)}% classified`).join(', ')
+        } &mdash; not comparable with the other weeks` : ''}</span>`;
 
   /*
    * Bring the chosen week into view — the newest is emitted last, so on a
@@ -3416,19 +3472,36 @@ async function renderDrill(cols) {
    * MANY LIKES is not. The strip above therefore counts Spaces, not likes, and
    * this sentence says which of the two the reader is allowed to compare.
    */
-  const preamble = `<p class="hint" style="margin-bottom:14px">
-    <b>${num(data.withTraction)}</b> of <b>${num(data.total)}</b> new
-    ${esc(titleCase(state.drill))} Spaces ${esc(where)} were liked by anyone at all${
-      share == null ? '' : ` — ${share.toFixed(1)}%`}.
-    A like count is whatever it was when the pipeline last saw that Space, and older weeks were
-    seen later in their life. <b>How many Spaces got a like</b> is the steadier of the two figures
-    &mdash; a Space that had one like still has one &mdash; but a younger week has had less time
-    for its Spaces to reach that first like, so even this reads a little low on the newest column.
-    <b>How many likes</b> is not comparable between weeks at all.${at ? '' : ` Ranking across
-    weeks favours the older ones for the same reason; a single week is the closer comparison.`}
-    <a href="https://huggingface.co/spaces" target="_blank" rel="noopener">The Hub</a> publishes
-    no usage figure for a Space at all &mdash; not downloads, not views, not runs &mdash; so
-    likes are the only signal of attention there is.</p>${thinNote}`;
+  /*
+   * The figures lead; the caveats fold away.
+   *
+   * Four sentences of methodology set at a 74ch measure left 1,200px of the
+   * expanded dialog empty beside them — a column of small print where the
+   * reader had just asked for the widest possible list. They are not dropped,
+   * because two of them are the difference between reading this right and
+   * reading it wrong; they are behind a disclosure that names itself, which
+   * is the same device the summary card uses for its facts table.
+   */
+  const likeSum = (data.spaces || []).reduce((n, sp) => n + (sp.likes || 0), 0);
+  const preamble = `<div class="drill-sum">
+      <p class="drill-lede"><b>${num(data.withTraction)}</b> of <b>${num(data.total)}</b> new
+        ${esc(titleCase(state.drill))} Spaces ${esc(where)} got at least one like${
+          share == null ? '' : ` — ${share.toFixed(1)}%`}${
+          likeSum ? `, and <b>${num(likeSum)}</b> like${likeSum === 1 ? '' : 's'} between them` : ''}.</p>
+      <details class="drill-how">
+        <summary>What this counts, and what it cannot</summary>
+        <p>A like count is whatever it was when the pipeline last saw that Space, and older weeks
+        were seen later in their life. <b>How many Spaces got a like</b> is the steadier of the
+        two figures &mdash; a Space that had one like still has one &mdash; but a younger week has
+        had less time for its Spaces to reach that first like, so even this reads a little low on
+        the newest column. <b>How many likes</b> is not comparable between weeks at all.${
+          at ? '' : ` Ranking across weeks favours the older ones for the same reason; a single
+          week is the closer comparison.`}</p>
+        <p><a href="https://huggingface.co/spaces" target="_blank" rel="noopener">The Hub</a>
+        publishes no usage figure for a Space at all &mdash; not downloads, not views, not runs
+        &mdash; so likes are the only signal of attention there is.</p>
+      </details>
+    </div>${thinNote}`;
 
   if (!data.spaces.length) {
     // "None created" is a claim about the Hub, and it is not ours to make. A
@@ -3446,11 +3519,25 @@ async function renderDrill(cols) {
     return;
   }
 
-  setHTML(host, preamble + `<div class="drill-list">${data.spaces.map(s => {
+  // The column of figures is the first thing read and it had no name — the
+  // heart glyph is a decoration, not a label. Said once, above the list, along
+  // with the order the list is already in.
+  const listHead = `<div class="ranked-head drill-list-head">
+      <h3>Likes</h3>
+      <p class="scope">Most liked first${
+        data.spaces.length < data.withTraction
+          ? ` &middot; the top ${data.spaces.length} of ${num(data.withTraction)}` : ''}</p>
+    </div>`;
+
+  setHTML(host, preamble + listHead + `<div class="drill-list">${data.spaces.map(s => {
     const name = s.title || s.spaceId.split('/')[1] || s.spaceId;
+    // The id goes in the tooltip beside the description: it is what the link
+    // opens, and when the Hub answers a click with 404 — a Space made private
+    // or deleted since it was counted — it is the only way to tell which.
+    const tip = `${s.spaceId}${s.description ? ` — ${s.description}` : ''}`;
     return `<a class="drill-row" href="https://huggingface.co/spaces/${
       esc(s.spaceId)}" target="_blank" rel="noopener"
-      title="${esc(s.description || s.spaceId)}">
+      title="${esc(tip)}">
       <span class="drill-likes">${num(s.likes)}</span>
       <span class="drill-name">
         <b>${esc(name)}</b>
@@ -3458,10 +3545,9 @@ async function renderDrill(cols) {
           esc(shortWeek(s.createdAt.slice(0, 10)))}${s.lowConfidence ? ' &middot; use case uncertain' : ''}</span>
       </span>
     </a>`;
-  }).join('')}</div>${data.withTraction > data.spaces.length
-    ? `<p class="hint" style="margin-top:12px">The ${data.spaces.length} most-liked of the ${
-        num(data.withTraction)} that were liked at all${at ? '' : ' across these weeks'}.</p>`
-    : ''}`);
+  }).join('')}</div>
+    <p class="hint drill-foot-note">Each row opens the Space on the Hub. A few have been made
+      private or taken down since they were counted, and the Hub answers those with a 404.</p>`);
 }
 
 /* ── The period matrix ────────────────────────────────────────────────── */
