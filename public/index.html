@@ -1320,7 +1320,13 @@ details.method li { margin-bottom: 7px; max-width: 82ch; }
       <section class="card">
         <header>
           <h2>Engagement</h2>
-          <p class="hint">Downloads count the last 30 days and keep moving; likes are a running total that only grows.</p>
+          <!-- Each column is the week's own cohort — the repos created in it — not a
+               running total of the Hub. Said plainly here because the figures fall week
+               to week and the old wording ("likes are a running total that only grows")
+               left a reader to read that fall as a collapse in interest. -->
+          <p class="hint">Each week counts the repos created in it: downloads are their rolling
+            30-day figure, likes the total they have collected so far. A different week is a
+            different set of repos, so a lower week is a quieter cohort rather than a fall.</p>
         </header>
         <div id="c-engagement"></div>
       </section>
@@ -2935,6 +2941,108 @@ function combineBase(denominators, idx, kind) {
   return kind === 'level' ? last : sum;
 }
 
+/* ── The benchmark column ─────────────────────────────────────────────── */
+
+/**
+ * Which cut's coverage says how much of a period was actually measured.
+ *
+ * Only the cuts drawn from the classified Spaces are in here. `models_by_family`
+ * is over model repos and resolves every one of them, `unknown` included, and
+ * `sdk_distribution` reads a field every Space carries — neither has a
+ * classifier standing between it and the truth, and running the coverage rule
+ * over them returns a ratio of two different populations (families over Spaces
+ * came out at 307% / 353% / 424% on the live data).
+ *
+ * `share_by_use_case` and the cross-tab ARE classifier-limited but carry the
+ * whole population as their denominator, so their own coverage reads 100% on a
+ * week that was 21.7% classified. They borrow the use-case cut's, which is the
+ * same set of Spaces counted the way `coverageByPeriod` can see.
+ */
+const BENCHMARK_COVERAGE = {
+  [CUTS.usecase]:  CUTS.usecase,
+  [CUTS.share]:    CUTS.usecase,
+  [CUTS.matrix]:   CUTS.usecase,
+  [CUTS.vertical]: CUTS.vertical,
+  [CUTS.tech]:     CUTS.tech,
+};
+
+/**
+ * The periods an average may be drawn from.
+ *
+ * Finished ones only: a period still filling would drag the benchmark down by
+ * however many days have not happened yet, which would make the current column
+ * look good against an average it had itself depressed.
+ *
+ * And, for the cuts that only ever see the Spaces the classifier got through,
+ * only the periods classified to a comparable depth. 2026-08-03 was 21.7%
+ * classified; averaging its 269 chat-assistant Spaces in with the 867, 903 and
+ * 914 of the weeks around it prints 742 as what a normal week looks like when
+ * the answer is 895. That week is not a quiet week, it is a week we did not
+ * finish measuring — the same reason the change table refuses to compare
+ * across it, applied to the benchmark instead of to a pair.
+ *
+ * Comparable means "within COVERAGE_GAP of the best-measured period", not a
+ * fixed 90%: a stretch where every period ran at 80% is a stretch that can be
+ * averaged, and a hard threshold would silently delete the column instead.
+ */
+function benchmarkIndex(periods, cut = null, period = state.period) {
+  const finished = periods.map((p, i) => (p.partial ? -1 : i)).filter(i => i >= 0);
+  const covCut = cut ? BENCHMARK_COVERAGE[cut] : null;
+  if (!covCut || finished.length < 2) return finished;
+  const cov = coverageByPeriod(covCut, period);
+  // Keyed, not indexed: the cross-tab draws its columns from its own payload,
+  // which can hold a different set of weeks from the one coverage is read off.
+  const known = finished.filter(i => cov.get(periods[i].key) != null);
+  if (known.length < 2) return finished;
+  const best = Math.max(...known.map(i => cov.get(periods[i].key)));
+  return finished.filter(i => {
+    const c = cov.get(periods[i].key);
+    return c == null || c >= best - COVERAGE_GAP;
+  });
+}
+
+/**
+ * The benchmark figure itself, combined the way its cut combines.
+ *
+ * Counts average per period; shares pool by base, because the flat mean of six
+ * shares over six periods of different sizes is not a share of anything —
+ * voice / speech reads 6.4% pooled and 9.2% averaged flat, a 42% overstatement
+ * of a figure a reader would take at face value. Levels average as readings:
+ * `combine` would report the last one, which is the column the average exists
+ * to be compared against.
+ */
+function benchmarkOf(values, denominators, idx, kind) {
+  if (kind === 'percent') return combine(values, denominators, idx, 'percent');
+  let sum = null, n = 0;
+  for (const i of idx) {
+    const v = values[i];
+    if (v == null) continue;
+    sum = (sum ?? 0) + v;
+    n++;
+  }
+  return n ? sum / n : null;
+}
+
+/** How a benchmark was arrived at, in the reader's words. */
+function averagedAs(kind, word) {
+  if (kind === 'percent') return 'shares pooled by each one’s own base rather than averaged flat';
+  if (kind === 'level') return `each ${word} is a reading rather than a running total, so the readings are averaged`;
+  return `counts averaged per ${word}`;
+}
+
+/**
+ * The sentence that names what a benchmark left out, or nothing at all.
+ *
+ * A column drawn from three of five periods must say so where it says what it
+ * is, not in a footnote three paragraphs down: a reader comparing 4.4% against
+ * an average is entitled to know which weeks the average is of.
+ */
+function benchmarkOmits(dropped, word) {
+  if (!dropped) return '';
+  return ` ${dropped} ${word}${dropped === 1 ? '' : 's'} the pipeline classified far less of ${
+    dropped === 1 ? 'is' : 'are'} left out too, because a ${word} measured to a different depth is not a ${word} to average against.`;
+}
+
 /**
  * The block of columns immediately before the selection, of equal length.
  *
@@ -3574,7 +3682,7 @@ async function renderDrill(cols) {
  * a category name that scrolls out of sight leaves a row of figures belonging
  * to nothing.
  */
-function periodTable(cols, { unit = '', name = 'Value', whole = false } = {}) {
+function periodTable(cols, { unit = '', name = 'Value', whole = false, cut = null } = {}) {
   const { rows, periods, kind, like = null } = cols;
   if (!periods.length || !rows.length) return noSeriesNote();
 
@@ -3591,43 +3699,30 @@ function periodTable(cols, { unit = '', name = 'Value', whole = false } = {}) {
    * The benchmark column: what a normal period looks like, so the newest one
    * can be read as high or low rather than just as a number.
    *
-   * Over FINISHED periods only. A period still filling would drag the
-   * benchmark down by however many days have not happened yet, which would
-   * make the current column look good against an average it had itself
-   * depressed. Fewer than two finished periods and there is nothing to average,
-   * so the column goes away rather than printing a copy of the one column
-   * there is.
+   * Which periods it may be drawn from is `benchmarkIndex`; how they combine
+   * is `benchmarkOf`. Both are shared with the change table, so the two cannot
+   * print two different averages of the same cut.
+   *
+   * Fewer than two eligible periods and there is nothing to average, so the
+   * column goes away rather than printing a copy of the one column there is.
    *
    * It does not respond to the reader's selection. Picking a month and
    * watching the benchmark move to match it would leave nothing to compare
    * against — the average is the fixed thing the selection is measured
    * against.
    */
-  const avgIdx = periods.map((p, i) => (p.partial ? -1 : i)).filter(i => i >= 0);
-  const showAvg = kind !== 'level' && avgIdx.length >= 2;
+  const word = PERIOD_WORD[state.period];
+  const avgIdx = benchmarkIndex(periods, cut);
+  const dropped = periods.filter(p => !p.partial).length - avgIdx.length;
+  const showAvg = avgIdx.length >= 2;
   const avgHead = showAvg
     ? `<th class="avg" title="The average across the ${avgIdx.length} finished ${
-        esc(PERIOD_WORD[state.period])}s on record. ${isCount
-          ? 'Counts are averaged per ' + esc(PERIOD_WORD[state.period]) + '.'
-          : 'Shares are pooled by each period\u2019s own base, not averaged flat.'
-        } Periods still filling are left out of it.">Average</th>`
+        esc(word)}s ${dropped ? 'it can be drawn from' : 'on record'}: ${
+        esc(averagedAs(kind, word))}. A ${esc(word)} still filling is left out of it.${
+        esc(benchmarkOmits(dropped, word))}">Average</th>`
     : '';
 
-  /* Counts average per period; shares pool by base, because the flat mean of
-     six shares over six periods of different sizes is not a share of anything.
-     Voice / speech reads 6.4% pooled and 9.2% averaged flat — a 42% overstatement
-     of a figure a reader would take at face value. */
-  const avgOf = (values, denominators) => {
-    if (kind === 'percent') return combine(values, denominators, avgIdx, 'percent');
-    let sum = null, n = 0;
-    for (const i of avgIdx) {
-      const v = values[i];
-      if (v == null) continue;
-      sum = (sum ?? 0) + v;
-      n++;
-    }
-    return n ? sum / n : null;
-  };
+  const avgOf = (values, denominators) => benchmarkOf(values, denominators, avgIdx, kind);
   const avgCell = (v, sup = false) => showAvg
     ? `<td class="avg${sup ? ' suppressed' : ''}">${esc(exact(v, unit))}</td>` : '';
   const avgBlank = showAvg ? '<td class="avg"></td>' : '';
@@ -3737,12 +3832,12 @@ function periodTable(cols, { unit = '', name = 'Value', whole = false } = {}) {
     </tbody>
   </table></div>
   <p class="hint" style="margin-top:12px">Click a column heading to look at just that ${
-    esc(PERIOD_WORD[state.period])}.${showAvg
-      ? ` <b>Average</b> is what a normal ${esc(PERIOD_WORD[state.period])} looks like, across the ${
-          avgIdx.length} finished ones on record &mdash; ${isCount
-            ? 'counts averaged per ' + esc(PERIOD_WORD[state.period])
-            : 'shares pooled by each one&rsquo;s own base rather than averaged flat'
-          }. A ${esc(PERIOD_WORD[state.period])} still filling is left out of it, and it does not move when you pick a column.`
+    esc(word)}.${showAvg
+      ? ` <b>Average</b> is what a normal ${esc(word)} looks like, across the ${
+          avgIdx.length} finished ones ${dropped ? 'it can be drawn from' : 'on record'} &mdash; ${
+          esc(averagedAs(kind, word))
+          }. A ${esc(word)} still filling is left out of it.${esc(benchmarkOmits(dropped, word))
+          } It does not move when you pick a column.`
       : ''}${anyPart
       ? ` A heading marked <b>so far</b> is a ${esc(PERIOD_WORD[state.period])} still in progress, and one marked <b>3/4w</b> is one the pipeline is missing weeks from &mdash; either way its figures are not final. Growth into such a ${esc(PERIOD_WORD[state.period])} is measured against the same span of the one before it, and the cell says <b>so far</b>; where that span cannot be assembled it reads &ldquo;part period&rdquo; instead of a fall that is really just days that have not happened yet.`
       : ''}${anySuppressed
@@ -3777,7 +3872,7 @@ function renderCutPanel(elId, cut, { unit = '', chartId, extraNote = '', rows = 
     // card would keep the last selection's figures. state.drill is left alone,
     // so toggling back restores it.
     if (cut === CUTS.usecase) hideDrillCard();
-    setHTML(el, periodTable(cols, { unit, name, whole }));
+    setHTML(el, periodTable(cols, { unit, name, whole, cut }));
     wireTableHeads(el, cols.periods);
     return;
   }
@@ -4217,7 +4312,7 @@ function renderEngagement(el) {
   if (!cols.rows.length) { setHTML(el, noSeriesNote()); return; }
 
   if (state.table) {
-    setHTML(el, periodTable(cols, { name: 'Engagement' }));
+    setHTML(el, periodTable(cols, { name: 'Engagement', cut: CUTS.engage }));
     wireTableHeads(el, cols.periods);
     return;
   }
@@ -4888,7 +4983,10 @@ function coverageByPeriod(cut, period) {
   // denominator rule gives 100 / 100 / 100 / 100 on a week that was 21.7%.
   const counts = KIND[cut] === 'count';
 
-  return cls.periods.map((_, i) => {
+  // Keyed by period rather than returned as a bare array: the benchmark column
+  // reads this against columns it built itself, and an index is only good
+  // against the array it came from.
+  return new Map(cls.periods.map((p, i) => {
     const measure = counts
       ? cls.rows.reduce((sum, r) => sum + (r.values?.[i] ?? 0), 0)
       : cls.rows.reduce((best, r) => {
@@ -4896,8 +4994,8 @@ function coverageByPeriod(cut, period) {
           return d != null && d > best ? d : best;
         }, 0);
     const whole = totals[i];
-    return whole > 0 && measure > 0 ? (measure / whole) * 100 : null;
-  });
+    return [p.key, whole > 0 && measure > 0 ? (measure / whole) * 100 : null];
+  }));
 }
 
 /** Below this much difference in coverage, two periods are comparable. */
@@ -4955,8 +5053,8 @@ function changeAgainstPrevious(cut, period) {
   const cov = KIND[cut] === 'percent' || KIND[cut] === 'count'
     ? coverageByPeriod(cut, period)
     : null;
-  const covNow = cov?.[now] ?? null;
-  const covBefore = cov?.[before] ?? null;
+  const covNow = cov?.get(cols.periods[now].key) ?? null;
+  const covBefore = cov?.get(cols.periods[before].key) ?? null;
   const gapTooWide = covNow != null && covBefore != null
     && Math.abs(covNow - covBefore) > COVERAGE_GAP;
 
@@ -5067,20 +5165,57 @@ function renderChangeTable(hostId, hintId, cut, opts = {}) {
       <td>${change}${r.reason === 'coverage differs' ? '' : ' ' + pts}</td>`;
   };
 
+  /**
+   * What a normal period looks like, beside the one being reported.
+   *
+   * One figure and its change answer "did it move"; they do not answer "is
+   * this a lot", and on a table headed What moved that is the question a
+   * reader asks second. Same two helpers as the period table — the same
+   * finished, comparably-classified periods, combined the same way — so the
+   * Build tab and this one cannot print two different averages of one cut.
+   *
+   * Per grain, not one column for both: the average of a week and the average
+   * of a month are different figures, and a single column headed Average
+   * beside four others would not say which.
+   */
+  const bench = (res, period) => {
+    if (!res.ok) return null;
+    const idx = benchmarkIndex(res.cols.periods, cut, period);
+    if (idx.length < 2) return null;
+    return {
+      n: idx.length,
+      dropped: res.cols.periods.filter(p => !p.partial).length - idx.length,
+      by: new Map(res.cols.rows.map(r =>
+        [r.dimension, benchmarkOf(r.values, r.denominators, idx, res.cols.kind)])),
+    };
+  };
+  const avg = { week: bench(week, 'week'), month: bench(month, 'month') };
+  const avgHead = (word) => {
+    const b = avg[word];
+    return b ? `<th class="avg" title="The average across the ${b.n} finished ${
+      esc(word)}s ${b.dropped ? 'it can be drawn from' : 'on record'}: ${esc(averagedAs(
+        (word === 'week' ? week : month).cols.kind, word))}. A ${esc(word)} still filling is left
+        out of it.${esc(benchmarkOmits(b.dropped, word))}">Average ${esc(word)}</th>` : '';
+  };
+  const avgCell = (word, dim) => {
+    const b = avg[word];
+    return b ? `<td class="avg">${esc(exact(b.by.get(dim) ?? null, unit))}</td>` : '';
+  };
+
   // Named, not "this week": the newest week on screen is usually still
   // filling, and this table is deliberately reporting the one before it.
   const shortOf = (res) => res.cols.periods[
     lastTwoFinished(res.cols.periods).now].label;
   const head = `<tr>
     <th>${esc(label)}</th>
-    ${week.ok ? `<th>${esc(shortOf(week))}</th><th>vs the week before</th>` : ''}
-    ${month.ok ? `<th>${esc(shortOf(month))}</th><th>vs the month before</th>` : ''}
+    ${week.ok ? `<th>${esc(shortOf(week))}</th><th>vs the week before</th>${avgHead('week')}` : ''}
+    ${month.ok ? `<th>${esc(shortOf(month))}</th><th>vs the month before</th>${avgHead('month')}` : ''}
   </tr>`;
 
   const body = order.map(dim => `<tr>
     <td>${esc(titleCase(dim))}</td>
-    ${week.ok ? cell(at(week, dim)) : ''}
-    ${month.ok ? cell(at(month, dim)) : ''}
+    ${week.ok ? cell(at(week, dim)) + avgCell('week', dim) : ''}
+    ${month.ok ? cell(at(month, dim)) + avgCell('month', dim) : ''}
   </tr>`).join('');
 
   const anySup = order.some(d => at(week, d)?.suppressed || at(month, d)?.suppressed);
@@ -5089,7 +5224,11 @@ function renderChangeTable(hostId, hintId, cut, opts = {}) {
     <p class="hint" style="margin-top:12px">Each figure counts the
     <b>classified</b> new Spaces of a <b>finished</b> period that ${describe}, against the
     finished period before it &mdash; a week two days old would read as a collapse rather than as a
-    week that has not happened yet.${
+    week that has not happened yet.${['week', 'month'].filter(w => avg[w]).map(w =>
+      ` <b>Average ${w}</b> is what a normal ${w} looks like, across the ${avg[w].n} finished ones
+       ${avg[w].dropped ? 'it can be drawn from' : 'on record'} &mdash; ${
+       esc(averagedAs((w === 'week' ? week : month).cols.kind, w))}.
+       A ${w} still filling is left out of it.${esc(benchmarkOmits(avg[w].dropped, w))}`).join('')}${
       [week, month].filter(r => r.ok && r.incomparable).map(r =>
         r.gapTooWide
           ? ` Changes are withheld for ${esc(shortOf(r))}: ${r.covNow.toFixed(0)}% of that period was
