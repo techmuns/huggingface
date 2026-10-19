@@ -1,1 +1,1 @@
-{"weekStart":"2026-10-05","totalSpaces":6475,"classifiedSpaces":6475,"coveragePercent":100,"bySource":{"rule":1453,"model":5022},"llmModel":"us.anthropic.claude-haiku-4-5-20251001-v1:0","lowConfidence":2643}
+{"weekStart":"2026-10-05","totalSpaces":6476,"classifiedSpaces":6475,"coveragePercent":99.98455836936381,"bySource":{"rule":1453,"model":5022},"llmModel":"us.anthropic.claude-haiku-4-5-20251001-v1:0","lowConfidence":2643}
