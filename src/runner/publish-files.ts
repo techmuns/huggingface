@@ -45,10 +45,22 @@ function readJson<T>(path: string): T | null {
   }
 }
 
+// A Hugging Face access token is `hf_` followed by 34+ url-safe characters.
+// Space metadata occasionally echoes one back verbatim, and GitHub's push
+// protection then refuses the commit that carries the generated file — even
+// though the token is someone else's published string, not a secret of ours.
+// Redacting the shape before writing keeps the published data committable,
+// without the publisher having to judge whether any given match is still live.
+const HF_TOKEN_SHAPE = /hf_[A-Za-z0-9_-]{34,}/g;
+
+export function redactSecretShapes(json: string): string {
+  return json.replace(HF_TOKEN_SHAPE, "hf_[redacted]");
+}
+
 function write(root: string, rel: string, value: unknown): string {
   const path = join(root, rel);
   mkdirSync(dirname(path), { recursive: true });
-  writeFileSync(path, `${JSON.stringify(value)}\n`);
+  writeFileSync(path, `${redactSecretShapes(JSON.stringify(value))}\n`);
   return rel;
 }
 
